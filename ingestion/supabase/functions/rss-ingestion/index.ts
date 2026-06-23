@@ -219,7 +219,8 @@ async function insertBatch(
 // ─────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
-  // Health check — used by GitHub Actions to verify the function is alive
+  // Health check — used by GitHub Actions to verify the function is alive.
+  // Kept public (no secret) because it leaks nothing and only returns status.
   if (req.method === 'GET') {
     return new Response(JSON.stringify({ status: 'ok' }), {
       headers: { 'Content-Type': 'application/json' },
@@ -229,6 +230,21 @@ Deno.serve(async (req: Request) => {
   if (req.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 })
   }
+
+  // ── SECURITY GATE ──────────────────────────────────────────────
+  // Endpoint is deployed with --no-verify-jwt and reachable publicly.
+  // Anon key is public (designed for browsers), so Authorization alone
+  // is NOT enough — anyone could hammer this and burn quota / get us
+  // rate-limited by Detik/Kompas. Require a shared secret header.
+  const cronSecret = Deno.env.get('CRON_SECRET')
+  if (!cronSecret) {
+    console.error('[FATAL] CRON_SECRET env var not set — refusing to run insecure')
+    return new Response('server misconfigured', { status: 500 })
+  }
+  if (req.headers.get('x-cron-secret') !== cronSecret) {
+    return new Response('unauthorized', { status: 401 })
+  }
+  // ────────────────────────────────────────────────────────────────
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
@@ -278,8 +294,24 @@ Deno.serve(async (req: Request) => {
   const totalInserted = Object.values(summary).reduce((a, s) => a + s.inserted, 0)
   console.log(`[DONE] total_inserted=${totalInserted}`, JSON.stringify(summary))
 
+  // ── 4. Enqueue newly-inserted rows to PGMQ (Layer 3 buffer) ──
+  // NLP worker dequeues from pgmq instead of polling raw_texts directly.
+  // This RPC atomically flips status 'pending'→'queued' AND enqueues.
+  // Failure here is non-fatal: rows stay 'pending' and the next run
+  // (or the enqueue RPC's own retry) will pick them up.
+  let enqueued = 0
+  if (totalInserted > 0) {
+    const { data: enqData, error: enqErr } = await supabase.rpc('enqueue_pending_raw_texts')
+    if (enqErr) {
+      console.error('[ENQUEUE_ERROR]', enqErr.message)
+    } else {
+      enqueued = (enqData as { enqueued_count: number }[])?.[0]?.enqueued_count ?? 0
+      console.log(`[ENQUEUE] ${enqueued} rows pushed to nlp_processing_queue`)
+    }
+  }
+
   return new Response(
-    JSON.stringify({ ok: true, total_inserted: totalInserted, summary }),
+    JSON.stringify({ ok: true, total_inserted: totalInserted, enqueued, summary }),
     { headers: { 'Content-Type': 'application/json' } },
   )
 })

@@ -9,6 +9,9 @@
 # Setup secrets (Settings → Secrets → Actions):
 #   SUPABASE_EDGE_FUNCTION_URL  → https://<project>.supabase.co/functions/v1/rss-ingestion
 #   SUPABASE_ANON_KEY           → eyJ... (anon key, untuk invoke Edge Function)
+#   CRON_SECRET                 → string acak (mis. `openssl rand -hex 32`)
+#                                 WAJIB sama dengan secret di Edge Function env.
+#                                 Tanpa ini, Edge Function akan tolak 401.
 # ──────────────────────────────────────────────────────────────────
 
 name: RSS Ingestion Trigger
@@ -40,11 +43,18 @@ jobs:
         run: |
           echo "Triggering RSS ingestion at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
+          # Jitter 0-59s agar tidak selalu tepat :00/:30 — mengurangi pola bot
+          # yang gampang dideteksi publisher (Detik/Kompas/Google News).
+          SLEEP=$((RANDOM % 60))
+          echo "Jitter sleep: ${SLEEP}s"
+          sleep $SLEEP
+
           HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
             --request POST \
             --max-time 90 \
             --header "Content-Type: application/json" \
             --header "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            --header "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
             "${{ secrets.SUPABASE_EDGE_FUNCTION_URL }}")
 
           echo "HTTP Status: $HTTP_STATUS"
