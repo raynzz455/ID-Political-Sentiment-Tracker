@@ -1,0 +1,394 @@
+"""
+ID-Sentiment CLI — NLP Testing Tool (Terminal)
+================================================
+Tujuan: Lihat data real dari queue, jalankan sentiment model, observe distribusi
+        sebelum commit ke production pipeline.
+
+Usage:
+    python cli_test.py inspect          # Lihat isi queue tanpa proses
+    python cli_test.py sample 10        # Proses 10 item, tampilkan hasil
+    python cli_test.py batch 50         # Proses 50, tampilkan distribusi
+    python cli_test.py single "teks"    # Test 1 teks manual
+    python cli_test.py stats            # Lihat statistik DB (processed/pending)
+
+Env vars (bisa lewat .env atau environment):
+    SUPABASE_URL
+    SUPABASE_SERVICE_ROLE_KEY
+"""
+
+import os
+import sys
+import json
+import argparse
+from collections import Counter
+from datetime import datetime
+
+# Lazy imports — beri pesan jelas kalau belum install
+try:
+    from supabase import create_client, Client
+except ImportError:
+    print("[ERROR] pip install supabase")
+    sys.exit(1)
+
+
+# ============================================================
+# Config
+# ============================================================
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+
+
+def get_client() -> Client:
+    if not SUPABASE_URL or not SERVICE_KEY:
+        print("[ERROR] Set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY env vars")
+        print("        Atau buat file .env di folder ini")
+        sys.exit(1)
+    return create_client(SUPABASE_URL, SERVICE_KEY)
+
+
+# ============================================================
+# Model placeholder — INI YANG AKAN DIGANTI ONNX NANTI
+# ============================================================
+# Untuk CLI testing awal, pakai rule-based dummy.
+# Begitu ONNX model siap, ganti body fungsi ini.
+# Output format HARUS konsisten: (label, confidence, [neg, neu, pos])
+# confidence = max(neg, neu, pos)
+
+def predict_sentiment(text: str):
+    """
+    PLACEHOLDER — rule-based sentiment untuk testing struktur.
+    Target: ganti dengan IndoBERT ONNX inference.
+
+    Returns: (label: str, confidence: float, scores: tuple)
+    """
+    t = text.lower()
+
+    # Kamus kata sederhana (Indonesia)
+    positive_words = [
+        "bagus", "baik", "hebat", "sukses", "dukung", "mendukung", "kompak",
+        "positif", "berhasil", "prestasi", "menguntungkan", "cerdas", "juara",
+        "memuaskan", "unggul", "maju", "stabil", "aman", "prosperous",
+    ]
+    negative_words = [
+        "buruk", "gagal", "korupsi", "skandal", "korup", "kritisi", "kritik",
+        "negatif", "turun", "rugi", "tertangkap", "diduga", "tersangka",
+        "kasus", "pelanggaran", "terlibat", "didakwa", "salah", "kecewa",
+        "rusak", "krisis", "konflik", "demo", "unjuk rasa", "menolak",
+    ]
+
+    pos_count = sum(1 for w in positive_words if w in t)
+    neg_count = sum(1 for w in negative_words if w in t)
+
+    # Skor dummy (akan diganti softmax model asli)
+    if pos_count > neg_count:
+        scores = (0.15, 0.20, 0.65)  # positive dominant
+        label = "positive"
+    elif neg_count > pos_count:
+        scores = (0.65, 0.20, 0.15)  # negative dominant
+        label = "negative"
+    else:
+        scores = (0.20, 0.60, 0.20)  # neutral dominant
+        label = "neutral"
+
+    confidence = max(scores)
+    return label, confidence, scores
+
+
+# ============================================================
+# Entity matching (sama dengan yang akan dipakai worker production)
+# ============================================================
+ENTITY_CACHE = None
+
+
+def load_entities(sb: Client):
+    """Cache political_entities + aliases ke memori."""
+    global ENTITY_CACHE
+    if ENTITY_CACHE is not None:
+        return ENTITY_CACHE
+
+    res = sb.table("political_entities") \
+            .select("id, canonical_name, aliases, is_active") \
+            .eq("is_active", True) \
+            .execute()
+    ENTITY_CACHE = res.data
+    return ENTITY_CACHE
+
+
+def match_entities(text: str, entities: list) -> list:
+    """Match teks ke tokoh via aliases (case-insensitive substring)."""
+    t = text.lower()
+    matched = []
+    for e in entities:
+        all_names = [e["canonical_name"].lower()] + [a.lower() for a in e.get("aliases", [])]
+        if any(name in t for name in all_names):
+            matched.append(e)
+    return matched
+
+
+# ============================================================
+# Commands
+# ============================================================
+def cmd_inspect(sb: Client, args):
+    """Lihat isi queue tanpa memproses (peek-only)."""
+    res = sb.rpc("dequeue_nlp_batch", {"p_vt": 60, "p_qty": 5}).execute()
+    items = res.data or []
+
+    print(f"\n{'='*60}")
+    print(f"PEEK QUEUE (peek-only, tidak ack)")
+    print(f"{'='*60}")
+    print(f"Items returned: {len(items)}")
+    print()
+
+    for i, item in enumerate(items, 1):
+        text = (item.get("text") or "")[:120]
+        title = (item.get("title") or "(no title)")[:80]
+        print(f"[{i}] source: {item.get('source', '?')}")
+        print(f"    title:  {title}")
+        print(f"    text:   {text}{'...' if len(item.get('text','')) > 120 else ''}")
+        print()
+
+    print("Catatan: 5 item ini sekarang invisible di queue selama 60s (vt).")
+    print("         Mereka akan reappear otomatis kalau tidak di-ack.")
+    print(f"{'='*60}\n")
+
+
+def cmd_sample(sb: Client, args):
+    """Proses N item, tampilkan hasil, AKAN ack + insert score."""
+    n = args.count
+    res = sb.rpc("dequeue_nlp_batch", {"p_vt": 120, "p_qty": n}).execute()
+    items = res.data or []
+
+    print(f"\n{'='*60}")
+    print(f"SAMPLE PROCESS — {n} items")
+    print(f"{'='*60}")
+
+    if not items:
+        print("Queue kosong. Jalankan ingestion dulu (curl edge function).")
+        return
+
+    entities = load_entities(sb)
+    print(f"Entities loaded: {len(entities)} tokoh aktif\n")
+
+    processed = 0
+    no_entity = 0
+
+    for i, item in enumerate(items, 1):
+        text = item.get("text", "")
+        raw_id = item.get("raw_text_id")
+        msg_id = item.get("msg_id")
+
+        # Predict
+        label, conf, scores = predict_sentiment(text)
+        matched = match_entities(text, entities)
+
+        title_preview = (item.get("title") or "")[:70]
+        text_preview = text[:100]
+        print(f"[{i}/{len(items)}] {title_preview}")
+        print(f"       text: {text_preview}{'...' if len(text) > 100 else ''}")
+        print(f"       label: {label} (conf={conf:.3f})")
+        print(f"       matched: {len(matched)} tokoh — {[m['canonical_name'] for m in matched][:3]}")
+
+        if not matched:
+            print(f"       ⚠️  no entity matched — skip insert (no score)")
+            no_entity += 1
+            continue
+
+        # Insert score untuk tiap matched entity
+        for e in matched:
+            res_ins = sb.rpc("insert_sentiment_score", {
+                "p_raw_text_id": raw_id,
+                "p_entity_id": e["id"],
+                "p_label": label,
+                "p_neg": float(scores[0]),
+                "p_neu": float(scores[1]),
+                "p_pos": float(scores[2]),
+                "p_confidence": float(conf),
+            }).execute()
+            print(f"       → inserted score for {e['canonical_name']}")
+
+        # Ack message
+        sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
+        print(f"       ✓ acked msg_id={msg_id}")
+        processed += 1
+        print()
+
+    print(f"{'='*60}")
+    print(f"SUMMARY: processed={processed}, skipped (no entity)={no_entity}")
+    print(f"{'='*60}\n")
+
+
+def cmd_batch(sb: Client, args):
+    """Proses N item, tampilkan distribusi sentiment. Akan commit."""
+    n = args.count
+    res = sb.rpc("dequeue_nlp_batch", {"p_vt": 300, "p_qty": n}).execute()
+    items = res.data or []
+
+    print(f"\n{'='*60}")
+    print(f"BATCH PROCESS — {n} items (distribusi)")
+    print(f"{'='*60}")
+
+    if not items:
+        print("Queue kosong.")
+        return
+
+    entities = load_entities(sb)
+    label_counts = Counter()
+    entity_counts = Counter()
+    conf_buckets = Counter()
+    processed = 0
+    no_entity = 0
+    conf_sum = 0.0
+
+    for item in items:
+        text = item.get("text", "")
+        raw_id = item.get("raw_text_id")
+        msg_id = item.get("msg_id")
+
+        label, conf, scores = predict_sentiment(text)
+        matched = match_entities(text, entities)
+
+        label_counts[label] += 1
+        conf_sum += conf
+
+        # Bucket confidence
+        if conf < 0.5:
+            conf_buckets["<0.5"] += 1
+        elif conf < 0.7:
+            conf_buckets["0.5-0.7"] += 1
+        elif conf < 0.85:
+            conf_buckets["0.7-0.85"] += 1
+        else:
+            conf_buckets[">=0.85"] += 1
+
+        if not matched:
+            no_entity += 1
+            continue
+
+        for e in matched:
+            entity_counts[e["canonical_name"]] += 1
+            sb.rpc("insert_sentiment_score", {
+                "p_raw_text_id": raw_id,
+                "p_entity_id": e["id"],
+                "p_label": label,
+                "p_neg": float(scores[0]),
+                "p_neu": float(scores[1]),
+                "p_pos": float(scores[2]),
+                "p_confidence": float(conf),
+            }).execute()
+        sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
+        processed += 1
+
+    total = len(items)
+    print(f"\nTotal items: {total}")
+    print(f"Processed (with entity): {processed}")
+    print(f"Skipped (no entity match): {no_entity}")
+    print(f"Avg confidence: {conf_sum/total:.3f}")
+    print()
+    print("Sentiment distribution:")
+    for label in ["positive", "neutral", "negative"]:
+        c = label_counts.get(label, 0)
+        bar = "█" * int((c / total) * 40)
+        pct = (c / total) * 100
+        print(f"  {label:10s} {c:3d} ({pct:5.1f}%) {bar}")
+    print()
+    print("Confidence buckets:")
+    for bucket in ["<0.5", "0.5-0.7", "0.7-0.85", ">=0.85"]:
+        c = conf_buckets.get(bucket, 0)
+        pct = (c / total) * 100
+        print(f"  {bucket:10s} {c:3d} ({pct:5.1f}%)")
+    print()
+    print("Top mentioned entities:")
+    for name, c in entity_counts.most_common(10):
+        print(f"  {name:30s} {c:3d} mentions")
+    print(f"\n{'='*60}\n")
+
+
+def cmd_single(sb: Client, args):
+    """Test 1 teks manual."""
+    text = args.text
+    entities = load_entities(sb)
+
+    print(f"\n{'='*60}")
+    print(f"SINGLE TEST")
+    print(f"{'='*60}")
+    print(f"Text: {text}\n")
+
+    label, conf, scores = predict_sentiment(text)
+    matched = match_entities(text, entities)
+
+    print(f"Label: {label}")
+    print(f"Confidence: {conf:.3f}")
+    print(f"Scores: neg={scores[0]:.3f}, neu={scores[1]:.3f}, pos={scores[2]:.3f}")
+    print(f"Matched entities: {[m['canonical_name'] for m in matched]}")
+    print(f"{'='*60}\n")
+
+
+def cmd_stats(sb: Client, args):
+    """Statistik DB: processed vs pending, queue depth."""
+    print(f"\n{'='*60}")
+    print(f"DB STATS")
+    print(f"{'='*60}")
+
+    # raw_texts status
+    res = sb.table("raw_texts").select("status").execute()
+    status_counts = Counter(r["status"] for r in res.data)
+    print("\nraw_texts by status:")
+    for status, c in status_counts.most_common():
+        print(f"  {status:15s} {c:5d}")
+    print(f"  {'TOTAL':15s} {len(res.data):5d}")
+
+    # sentiment_scores count
+    res2 = sb.table("sentiment_scores").select("id", count="exact").execute()
+    print(f"\nsentiment_scores total: {len(res2.data)}")
+
+    # Top entities by mention
+    print("\nTop tokoh di sentiment_scores (kalau ada):")
+    res3 = sb.table("sentiment_scores") \
+             .select("entity_id, political_entities(canonical_name)") \
+             .limit(500) \
+             .execute()
+    entity_counter = Counter()
+    for r in res3.data:
+        name = r.get("political_entities", {}).get("canonical_name", "?")
+        entity_counter[name] += 1
+    for name, c in entity_counter.most_common(10):
+        print(f"  {name:30s} {c:5d}")
+
+    print(f"\n{'='*60}\n")
+
+
+# ============================================================
+# Main
+# ============================================================
+def main():
+    parser = argparse.ArgumentParser(
+        description="ID-Sentiment CLI — NLP testing tool"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_inspect = sub.add_parser("inspect", help="Lihat isi queue tanpa proses")
+    p_inspect.set_defaults(func=cmd_inspect)
+
+    p_sample = sub.add_parser("sample", help="Proses N item, tampilkan hasil detail")
+    p_sample.add_argument("count", type=int, help="jumlah item")
+    p_sample.set_defaults(func=cmd_sample)
+
+    p_batch = visual = sub.add_parser("batch", help="Proses N item, tampilkan distribusi")
+    p_batch.add_argument("count", type=int, help="jumlah item")
+    p_batch.set_defaults(func=cmd_batch)
+
+    p_single = sub.add_parser("single", help="Test 1 teks manual")
+    p_single.add_argument("text", type=str, help="teks untuk dianalisis")
+    p_single.add_argument("--no-insert", action="store_true", help="jangan insert ke DB")
+    p_single.set_defaults(func=cmd_single)
+
+    p_stats = sub.add_parser("stats", help="Lihat statistik DB")
+    p_stats.set_defaults(func=cmd_stats)
+
+    args = parser.parse_args()
+    sb = get_client()
+    args.func(sb, args)
+
+
+if __name__ == "__main__":
+    main()
