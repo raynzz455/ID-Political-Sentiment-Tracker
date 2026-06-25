@@ -1,80 +1,49 @@
 # HANDOFF STATUS — ID-Sentiment-Tracker
 
-> **Tgl update:** 2026-06-25 (sesi 2)
+> **Tgl update:** 2026-06-25 (sesi 3)
 > **Project Ref:** `bawvxtivogcuwvqdqoae`
 > **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
-> **Status:** ⚠️ Layer 1-3 pernah working, tapi DB saat ini KOSONK. Layer 4-6 belum dimulai.
+> **Status:** ⚠️ DB sudah re-ingest (data kembali). Queue drain working. BUG: text kosong dari RSS → entity matching 0.
 
 Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten AI
 (GLM/ZCode ↔ Claude). Setiap perubahan production DB atau code WAJIB update dokumen ini.
 
 ---
 
-## 🚨 STATUS TERKINI — DB KOSONK (2026-06-25 sesi 2)
+## 🚨 STATUS TERKINI — Sesi 3 (2026-06-25)
 
-### Apa yang terjadi
-1. Sesi 1: Pipeline berhasil — curl return `total_inserted: 50, enqueued: 200`. Tempo 50, CNN 100 (dedup), Republika 15 (dedup). Data masuk, queue terisi.
-2. Sesi 2: `python cli_test.py stats` return `raw_texts TOTAL 0, sentiment_scores total 0`. **SEMUA DATA HILANG.**
+### Progress sesi 3
+1. ✅ Queue orphan dibersihkan + data re-ingested (curl berhasil)
+2. ✅ `dequeue_nlp_batch` RPC error **RESOLVED** — setelah queue dibersihkan, dequeue jalan normal
+3. ✅ CLI tool `batch` command jalan — 100 item berhasil dequeue + ack (queue drain bersih)
+4. 🐛 **BUG BARU ditemukan:** `entity_id = NULL` untuk 100% item — text kosong di queue
 
-### Penyebab diduga
-Antara sesi 1 dan 2, kemungkinan:
-- `schema_final_v2.sql` di-run ulang → file itu diawali `DROP TABLE IF EXISTS raw_texts CASCADE` → semua data terhapus
-- Atau query DROP/ALTER lain yang menghapus data
+### Bug #7: RSS text body kosong → entity matching 0%
+**Gejala:** `python cli_test.py batch 100` → 0 entity matched, semua skip+ack
+**Root cause:** RSS feed (khususnya CNN, Detik, dll) cuma kirim **title**, body/text kosong.
+Title berisi nama tokoh ("Jokowi Mania", "Kapolri", "Roy Suryo") tapi `match_entities()`
+hanya scan kolom `text`, bukan `title`.
 
-**PEMBELAJARAN:** JANGAN run `schema_final_v2.sql` ulang di production. File itu untuk setup awal saja.
-Setelah DB jalan, gunakan `migration_*.sql` untuk perubahan incremental.
-
-### Konsekuensi saat ini
-- `raw_texts` kosong → tidak ada data untuk diproses NLP
-- `pgmq.q_nlp_processing_queue` berisi ~200 message **orphan** (menunjuk `raw_text_id` yang sudah hilang)
-- CLI tool `cli_test.py` error saat panggil `dequeue_nlp_batch` — kemungkinan karena message orphan menyebabkan LEFT JOIN ke `raw_texts` return NULL lalu jsonb parse gagal
-
-### Yang harus dilakukan URGENT
-1. **Bersihkan queue orphan:**
-   ```sql
-   SELECT pgmq.purge('nlp_processing_queue');
-   -- atau kalau purge tidak ada:
-   DELETE FROM pgmq.q_nlp_processing_queue;
-   ```
-2. **Re-ingest data:**
-   ```powershell
-   $CRON_SECRET = "<secret-anda>"
-   $ANON_KEY = "<anon-key>"
-   curl.exe -X POST `
-     -H "Authorization: Bearer $ANON_KEY" `
-     -H "x-cron-secret: $CRON_SECRET" `
-     "https://bawvxtivogcuwvqdqoae.supabase.co/functions/v1/rss-ingestion"
-   ```
-3. **Verifikasi data kembali:**
-   ```sql
-   SELECT status, COUNT(*) FROM raw_texts GROUP BY status;
-   SELECT COUNT(*) FROM pgmq.q_nlp_processing_queue;
-   ```
-4. **JANGAN run `schema_final_v2.sql` lagi** — semua DROP TABLE akan menghapus ulang data
-
-### Error RPC `dequeue_nlp_batch` saat testing CLI
+**Evidence dari `inspect`:**
 ```
-APIError: {'message': 'invalid input syntax for type json', 'code': '22P02',
-           'details': 'Token "(" is invalid.'}
+[1] source: cnnindonesia_nasional
+    title:  Jokowi Mania Pertanyakan Keputusan Kejaksaan Tak Tahan Roy Suryo-Tifa
+    text:   (KOSONG)
 ```
-**Penyebab diduga:** Function `dequeue_nlp_batch` di `migration_pgmq_queue.sql` melakukan
-`LEFT JOIN raw_texts rt ON rt.id = ((m->'message')->>'raw_text_id')::UUID` — saat
-message orphan (raw_text_id tidak ada di raw_texts), LEFT JOIN return NULL. Kemudian
-`jsonb_array_elements(v_msgs)` gagal parse output dari `pgmq.read` karena queue corruption.
 
-**Debug yang perlu dilakukan:**
-```sql
--- Test A: panggil function langsung di SQL Editor
-SELECT * FROM dequeue_nlp_batch(60, 5);
+**Fix (sudah diaplikasi ke `cli_test.py`):**
+- `match_entities()` sekarang gabungkan `title + text` untuk scanning aliases
+- `predict_sentiment()` di `cmd_sample` dan `cmd_batch` juga pakai `title + text` combined
+- Signature: `match_entities(text, title, entities)` — `title` default ""
 
--- Test B: cek apakah ada overload (seperti kasus get_entity_ranking)
-SELECT proname, pg_get_function_arguments(oid)
-FROM pg_proc WHERE proname = 'dequeue_nlp_batch';
+**Catatan:** `cmd_sample` masih insert dengan `entity_id=NULL` saat no match.
+`cmd_batch` sudah diubah ke **skip + ack** (jangan insert non-politik).
 
--- Test C: cek isi queue
-SELECT msg_id, vt, enqueued_at FROM pgmq.q_nlp_processing_queue LIMIT 5;
-```
-Kalau Test A error juga → function perlu di-rewrite. Kalau Test A sukses → masalah di Python client.
+### Konsekuensi data hilang (sesi 2)
+- Sesi 1: Pipeline berhasil — curl return `total_inserted: 50, enqueued: 200`
+- Sesi 2: `raw_texts TOTAL 0` — semua data hilang
+- Penyebab diduga: `schema_final_v2.sql` di-run ulang (DROP TABLE CASCADE)
+- **PEMBELAJARAN:** JANGAN run `schema_final_v2.sql` ulang. Gunakan `migration_*.sql` saja.
 
 ---
 
@@ -180,10 +149,16 @@ Publisher blokir User-Agent non-browser. Skip dulu.
 ### Issue D — `last_run_at` tidak ter-update
 `scraping_configs.last_run_at` hanya update kalau feed return ≥1 item. Design flaw.
 
-### Issue E — `dequeue_nlp_batch` RPC error (BARU)
-`invalid input syntax for type json` saat dipanggil dari Python client.
-Bersamaan dengan raw_texts TOTAL 0 (data hilang). Kemungkinan terkait queue orphan.
-Perlu debug: cek Test A/B/C di bagian "Yang harus dilakukan URGENT" di atas.
+### Issue E — `dequeue_nlp_batch` RPC error ~~(BARU)~~ **FIXED (sesi 3)**
+Error `invalid input syntax for type json` — disebabkan queue orphan (LEFT JOIN NULL).
+Fix: bersihkan queue, re-ingest data. RPC jalan normal setelah itu.
+
+### Issue F — RSS body kosong, entity matching 0% **(BARU, sesi 3)**
+Beberapa RSS feed (CNN, dll) hanya kirim title, body/text kosong.
+`match_entities()` hanya scan `text` → 0 match.
+**Fix:** Sudah diaplikasi — gabungkan `title + text` untuk scanning.
+**Masih perlu verifikasi:** run `batch 50` setelah fix untuk cek match rate.
+**Root cause di Edge Function:** mungkin perlu improve `fetchAndParse` untuk extract full article body.
 
 ---
 
@@ -192,15 +167,15 @@ Perlu debug: cek Test A/B/C di bagian "Yang harus dilakukan URGENT" di atas.
 ### URGENT (sebelum apapun)
 | # | Tugas | Status |
 |---|---|---|
-| U1 | Bersihkan queue orphan (`DELETE FROM pgmq.q_nlp_processing_queue`) | ⏳ |
-| U2 | Re-ingest data via curl edge function | ⏳ |
-| U3 | Debug `dequeue_nlp_batch` RPC error (Test A/B/C di SQL Editor) | ⏳ |
-| U4 | Verifikasi CLI tool bisa peek queue + proses item | ⏳ |
+| U1 | ~~Bersihkan queue orphan~~ | ✅ Done (sesi 3) |
+| U2 | ~~Re-ingest data via curl~~ | ✅ Done (sesi 3) |
+| U3 | ~~Debug `dequeue_nlp_batch` RPC error~~ | ✅ Fixed (sesi 3, queue orphan cause) |
+| U4 | Verifikasi entity match rate setelah title+text fix | ⏳ **lanjutkan** |
 
 ### Layer 4 — NLP Worker
 | # | Tugas | Status |
 |---|---|---|
-| 4a | Fix CLI tool error + test distribusi dummy model | ⏳ |
+| 4a | ~~Fix CLI tool error~~ | ✅ Done (sesi 3 — queue drain + match fix) |
 | 4b | Ganti `predict_sentiment()` ke IndoBERT ONNX | ⏳ |
 | 4c | Validasi akurasi (target 85-90% di domain news) | ⏳ |
 | 4d | Build production worker (poll queue, not CLI) | ⏳ |
@@ -288,12 +263,13 @@ Bentar lagi di grebek/
 │   ├── schema_final_v2.sql                 ← ⚠️ JANGAN RUN ULANG — HAPUS DATA
 │   ├── migration_pgmq_queue.sql             ← queue + RPC enqueue/dequeue/ack
 │   ├── migration_fix_partition_key.sql      ← HOTFIX ingested_month (sudah applied)
+│   ├── migration_allow_null_entity.sql     ← ALTER entity_id DROP NOT NULL (belum di-run)
 │   ├── HANDOFF_STATUS.md                   ← FILE INI (single source of truth)
 │   └── seed/
 │       ├── 01_political_entities.sql        ← 18+ tokoh politik + foto
 │       └── 02_scraping_configs.sql          ← 23 RSS configs
 ├── nlp-worker/
-│   ├── cli_test.py                          ← CLI testing tool (dummy model, error saat ini)
+│   ├── cli_test.py                          ← CLI testing tool (dummy model, FIXED sesi 3)
 │   ├── requirements.txt                     ← pip dependencies
 │   └── README.md
 ├── ingestion/
@@ -327,6 +303,10 @@ Bentar lagi di grebek/
 5. **Supabase auto-inject secrets:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, dan
    `SUPABASE_ANON_KEY` tersedia otomatis di Edge Function. Tidak perlu set manual.
    Satu-satunya custom secret: `CRON_SECRET`.
+
+6. **`match_entities()` sekarang gabungkan `title + text`.** RSS feed sering kirim body kosong,
+   jadi entity matching DAN sentiment prediction harus scan title+text gabungan. Jangan
+   revert ke hanya scan `text`.
 
 ---
 

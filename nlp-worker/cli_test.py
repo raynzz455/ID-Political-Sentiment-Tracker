@@ -114,9 +114,10 @@ def load_entities(sb: Client):
     return ENTITY_CACHE
 
 
-def match_entities(text: str, entities: list) -> list:
-    """Match teks ke tokoh via aliases (case-insensitive substring)."""
-    t = text.lower()
+def match_entities(text: str, title: str = "", entities: list) -> list:
+    """Match teks + title ke tokoh via aliases (case-insensitive substring)."""
+    # Gabungkan title + text karena RSS sering kirim body kosong
+    t = f"{title} {text}".lower()
     matched = []
     for e in entities:
         all_names = [e["canonical_name"].lower()] + [a.lower() for a in e.get("aliases", [])]
@@ -174,12 +175,16 @@ def cmd_sample(sb: Client, args):
 
     for i, item in enumerate(items, 1):
         text = item.get("text", "")
+        title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
 
+        # Gabungkan title + text untuk match & predict (body RSS sering kosong)
+        combined = f"{title} {text}".strip()
+
         # Predict
-        label, conf, scores = predict_sentiment(text)
-        matched = match_entities(text, entities)
+        label, conf, scores = predict_sentiment(combined)
+        matched = match_entities(text, title, entities)
 
         title_preview = (item.get("title") or "")[:70]
         text_preview = text[:100]
@@ -189,8 +194,22 @@ def cmd_sample(sb: Client, args):
         print(f"       matched: {len(matched)} tokoh — {[m['canonical_name'] for m in matched][:3]}")
 
         if not matched:
-            print(f"       ⚠️  no entity matched — skip insert (no score)")
+            # Insert dengan entity_id = NULL untuk pipeline testing
+            res_ins = sb.rpc("insert_sentiment_score", {
+                "p_raw_text_id": raw_id,
+                "p_entity_id": None,
+                "p_label": label,
+                "p_neg": float(scores[0]),
+                "p_neu": float(scores[1]),
+                "p_pos": float(scores[2]),
+                "p_confidence": float(conf),
+            }).execute()
+            print(f"       → inserted score (no entity, entity_id=NULL)")
             no_entity += 1
+            sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
+            print(f"       ✓ acked msg_id={msg_id}")
+            processed += 1
+            print()
             continue
 
         # Insert score untuk tiap matched entity
@@ -213,7 +232,7 @@ def cmd_sample(sb: Client, args):
         print()
 
     print(f"{'='*60}")
-    print(f"SUMMARY: processed={processed}, skipped (no entity)={no_entity}")
+    print(f"SUMMARY: processed={processed}, no-entity (NULL)={no_entity}")
     print(f"{'='*60}\n")
 
 
@@ -241,11 +260,15 @@ def cmd_batch(sb: Client, args):
 
     for item in items:
         text = item.get("text", "")
+        title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
 
-        label, conf, scores = predict_sentiment(text)
-        matched = match_entities(text, entities)
+        # Gabungkan title + text (body RSS sering kosong)
+        combined = f"{title} {text}".strip()
+
+        label, conf, scores = predict_sentiment(combined)
+        matched = match_entities(text, title, entities)
 
         label_counts[label] += 1
         conf_sum += conf
@@ -262,6 +285,7 @@ def cmd_batch(sb: Client, args):
 
         if not matched:
             no_entity += 1
+            sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
             continue
 
         for e in matched:
@@ -280,8 +304,8 @@ def cmd_batch(sb: Client, args):
 
     total = len(items)
     print(f"\nTotal items: {total}")
-    print(f"Processed (with entity): {processed}")
-    print(f"Skipped (no entity match): {no_entity}")
+    print(f"Processed (entity matched + inserted): {processed}")
+    print(f"Skipped (no entity match, acked only): {no_entity}")
     print(f"Avg confidence: {conf_sum/total:.3f}")
     print()
     print("Sentiment distribution:")
@@ -314,7 +338,7 @@ def cmd_single(sb: Client, args):
     print(f"Text: {text}\n")
 
     label, conf, scores = predict_sentiment(text)
-    matched = match_entities(text, entities)
+    matched = match_entities(text, "", entities)
 
     print(f"Label: {label}")
     print(f"Confidence: {conf:.3f}")
