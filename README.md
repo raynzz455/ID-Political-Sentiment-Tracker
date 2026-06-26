@@ -1,4 +1,4 @@
-# 🇮🇩 ID Political Sentiment Tracker
+# ID Political Sentiment Tracker
 
 > Basically ini kayak "termometer digital" buat ngukur suhu publik terhadap tokoh politik Indonesia — positif, netral, atau negatif — otomatis, real-time, dan gratis total.
 
