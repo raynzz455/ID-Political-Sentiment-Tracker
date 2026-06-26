@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import argparse
+import re
 from collections import Counter
 from datetime import datetime
 
@@ -114,15 +115,24 @@ def load_entities(sb: Client):
     return ENTITY_CACHE
 
 
-def match_entities(text: str, title: str = "", entities: list) -> list:
+def match_entities(text: str, title: str, entities: list) -> list:
     """Match teks + title ke tokoh via aliases (case-insensitive substring)."""
     # Gabungkan title + text karena RSS sering kirim body kosong
-    t = f"{title} {text}".lower()
+    combined = f"{title} {text}".lower()
     matched = []
+    seen_ids = set()
     for e in entities:
-        all_names = [e["canonical_name"].lower()] + [a.lower() for a in e.get("aliases", [])]
-        if any(name in t for name in all_names):
-            matched.append(e)
+        if e["id"] in seen_ids:
+            continue
+        all_names = [e["canonical_name"]] + list(e.get("aliases", []))
+        for name in all_names:        
+            if len(name) < 4:
+                continue
+            pattern = r'\b' + re.escape(name.lower()) + r'\b'
+            if re.search(pattern, combined):
+                matched.append(e)
+                seen_ids.add(e["id"])
+                break  
     return matched
 
 

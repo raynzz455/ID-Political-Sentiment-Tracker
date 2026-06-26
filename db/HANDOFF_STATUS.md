@@ -1,7 +1,7 @@
 # HANDOFF STATUS — ID-Sentiment-Tracker
 
 > **Tgl update:** 2026-06-25 (sesi 3)
-> **Project Ref:** `bawvxtivogcuwvqdqoae`
+> **Project Ref:** `bawvxti***` (lihat Supabase Dashboard)
 > **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
 > **Status:** ⚠️ DB sudah re-ingest (data kembali). Queue drain working. BUG: text kosong dari RSS → entity matching 0.
 
@@ -241,7 +241,7 @@ SEKARANG (URGENT)
 |---|---|---|
 | `CRON_SECRET` | Dashboard → Edge Functions → Secrets | String hex 64-char |
 | `SUPABASE_SERVICE_ROLE_KEY` | Dashboard → Settings → API | Auto-injected ke edge function |
-| `SUPABASE_URL` | Auto-injected | `https://bawvxtivogcuwvqdqoae.supabase.co` |
+| `SUPABASE_URL` | Auto-injected | `https://<project-ref>.supabase.co` |
 
 **GitHub Actions Secrets (BELUM setup):**
 | Secret | Value |
