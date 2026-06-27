@@ -29,8 +29,8 @@ env/
 .deno/
 
 # ===== Supabase =====
-supabase/.branches
-supabase/.temp
+infra/supabase/.branches
+infra/supabase/.temp
 
 # ===== Model weights (jangan commit, besar) =====
 *.onnx

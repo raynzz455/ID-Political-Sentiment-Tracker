@@ -42,8 +42,8 @@ hanya scan kolom `text`, bukan `title`.
 ### Konsekuensi data hilang (sesi 2)
 - Sesi 1: Pipeline berhasil — curl return `total_inserted: 50, enqueued: 200`
 - Sesi 2: `raw_texts TOTAL 0` — semua data hilang
-- Penyebab diduga: `schema_final_v2.sql` di-run ulang (DROP TABLE CASCADE)
-- **PEMBELAJARAN:** JANGAN run `schema_final_v2.sql` ulang. Gunakan `migration_*.sql` saja.
+- Penyebab diduga: `schema.sql` di-run ulang (DROP TABLE CASCADE)
+- **PEMBELAJARAN:** JANGAN run `schema.sql` ulang. Gunakan `migration_*.sql` saja.
 
 ---
 
@@ -75,7 +75,7 @@ Trigger tidak pernah sempat mengisinya, meskipun trigger function-nya benar.
 3. RPC `insert_sentiment_score` mengisi `scored_at` + `scored_month` eksplisit.
 4. `GRANT EXECUTE` ke `service_role` untuk kedua function.
 
-**File referensi:** `db/migration_fix_partition_key.sql`
+**File referensi:** `packages/db/migrations/001_fix_partition_key.sql`
 
 ### Bug #2: Materialized View tidak bisa punya RLS
 **Root cause:** PostgreSQL tidak mendukung `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` pada
@@ -255,32 +255,37 @@ SEKARANG (URGENT)
 ## 📁 Lokasi file penting
 
 ```
-Bentar lagi di grebek/
-├── supabase/
-│   ├── config.toml                          ← dari `supabase init`
-│   └── functions/rss-ingestion/index.ts     ← Edge Function Layer 2 (CRON_SECRET + enqueue)
-├── db/
-│   ├── schema_final_v2.sql                 ← ⚠️ JANGAN RUN ULANG — HAPUS DATA
-│   ├── migration_pgmq_queue.sql             ← queue + RPC enqueue/dequeue/ack
-│   ├── migration_fix_partition_key.sql      ← HOTFIX ingested_month (sudah applied)
-│   ├── migration_allow_null_entity.sql     ← ALTER entity_id DROP NOT NULL (belum di-run)
-│   ├── HANDOFF_STATUS.md                   ← FILE INI (single source of truth)
-│   └── seed/
-│       ├── 01_political_entities.sql        ← 18+ tokoh politik + foto
-│       └── 02_scraping_configs.sql          ← 23 RSS configs
-├── nlp-worker/
-│   ├── cli_test.py                          ← CLI testing tool (dummy model, FIXED sesi 3)
-│   ├── requirements.txt                     ← pip dependencies
-│   └── README.md
-├── ingestion/
-│   ├── trigger-ingestion.yml               ← GitHub Actions (dengan CRON_SECRET + jitter)
-│   └── README2.md
-├── frontend/
-│   └── README.md
+ID-Political-Sentiment-Tracker/
+├── apps/
+│   └── web/                               ← Next.js dashboard (belum dibangun)
+├── packages/
+│   ├── db/
+│   │   ├── schema.sql                     ← ⚠️ JANGAN RUN ULANG — HAPUS DATA
+│   │   ├── migrations/
+│   │   │   ├── 001_fix_partition_key.sql  ← HOTFIX ingested_month (sudah applied)
+│   │   │   ├── 002_pgmq_queue.sql        ← queue + RPC enqueue/dequeue/ack
+│   │   │   └── 003_allow_null_entity.sql ← ALTER entity_id DROP NOT NULL
+│   │   └── seeds/
+│   │       ├── 01_political_entities.sql  ← 18+ tokoh politik + foto
+│   │       └── 02_scraping_configs.sql    ← 23 RSS configs
+│   └── nlp-worker/
+│       ├── cli_test.py                     ← CLI testing tool (dummy model, FIXED sesi 3)
+│       ├── requirements.txt               ← pip dependencies
+│       └── README.md
+├── infra/
+│   └── supabase/
+│       ├── config.toml                    ← dari `supabase init`
+│       └── functions/rss-ingestion/index.ts  ← Edge Function Layer 2 (CRON_SECRET + enqueue)
+├── .github/
+│   └── workflows/
+│       └── trigger-ingestion.yml          ← GitHub Actions (dengan CRON_SECRET + jitter)
 ├── docs/
-│   ├── architecture.md                      ← dari ai.md (aturan PDP, 6-layer)
-│   └── workflow.drawio
-└── .env.example
+│   ├── architecture.md                    ← aturan PDP, 6-layer
+│   ├── workflow.drawio
+│   └── internal/
+│       └── HANDOFF_STATUS.md              ← FILE INI (single source of truth)
+├── .env.example
+└── README.md
 ```
 
 ---
@@ -289,9 +294,9 @@ Bentar lagi di grebek/
 
 1. **JANGAN recreate trigger `set_raw_texts_month` / `set_sentiment_scores_month` / `trg_set_partition_month()`.
    Mereka sudah di-DROP karena unreliable di partitioned table. Partition key diisi eksplisit
-   di RPC. Kalau Anda baca `schema_final_v2.sql` dan lihat trigger-nya, itu KODE LAMA — JANGAN apply.**
+   di RPC. Kalau Anda baca `schema.sql` dan lihat trigger-nya, itu KODE LAMA — JANGAN apply.**
 
-2. **JANGAN run `schema_final_v2.sql` di production.** File itu untuk setup awal saja.
+2. **JANGAN run `schema.sql` di production.** File itu untuk setup awal saja.
    Gunakan `migration_*.sql` untuk perubahan incremental.
 
 3. **JANGAN tambah RLS policy ke `mv_dashboard_summary`.** Materialized views tidak mendukung

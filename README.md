@@ -197,11 +197,20 @@ Project ini patuh UU Perlindungan Data Pribadi Indonesia:
 
 ```
 ID-Political-Sentiment-Tracker/
-├── db/              # Skema database (SQL) — L5
-├── ingestion/       # RSS fetcher (Deno/TS) — L2
-├── nlp-worker/      # AI sentiment analyzer (Python) — L4
-├── frontend/        # Dashboard publik (Next.js) — L6
-└── docs/            # Diagram arsitektur + dokumentasi teknis
+├── apps/
+│   └── web/                    # Dashboard publik (Next.js) — L6
+├── packages/
+│   ├── db/                     # Schema, migrations, seeds — L5
+│   │   ├── schema.sql          #   Setup awal (JANGAN run ulang di production)
+│   │   ├── migrations/         #   Perubahan incremental (safe to re-run)
+│   │   └── seeds/              #   Data awal (tokoh + RSS configs)
+│   └── nlp-worker/             # AI sentiment analyzer (Python) — L4
+├── infra/
+│   └── supabase/               # Edge Functions + config — L2
+├── .github/workflows/          # GitHub Actions scheduler
+├── docs/                       # Arsitektur + dokumentasi teknis
+│   └── internal/               #   Dokumen internal (AI handoff)
+└── .env.example
 ```
 
 ---
