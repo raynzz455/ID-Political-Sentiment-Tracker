@@ -23,7 +23,11 @@ import argparse
 import re
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
 
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 # Lazy imports — beri pesan jelas kalau belum install
 try:
     from supabase import create_client, Client
@@ -137,6 +141,70 @@ def match_entities(text: str, title: str, entities: list) -> list:
 
 
 # ============================================================
+# Content enrichment (Lapis 2 — 2-stage pipeline)
+# ============================================================
+# Saat body text dari RSS kosong/pendek, follow source_url:
+#   1. Google News redirect → artikel asli (detik/kompas/cnn/...)
+#   2. trafilatura.extract() → main content bersih dari HTML
+# Ini unlock full body 300-500 kata untuk akurasi sentiment.
+
+try:
+    import requests
+    from trafilatura import extract as traf_extract
+    FETCH_AVAILABLE = True
+except ImportError:
+    FETCH_AVAILABLE = False
+
+
+def fetch_full_body(url: str, timeout: int = 10) -> str:
+    """
+    Follow source_url (gnews redirect) → scrape main content via trafilatura.
+    Returns: full body text, atau string kosong kalau gagal.
+    """
+    if not FETCH_AVAILABLE:
+        return ""
+    if not url:
+        return ""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; ID-Sentiment-Tracker/1.0)"
+        }
+        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if not resp.ok:
+            return ""
+        # trafilatura auto-detect bahasa, extract main content, buang menu/ad/footer
+        body = traf_extract(resp.text, include_comments=False, include_tables=False)
+        return body or ""
+    except Exception as e:
+        print(f"       [fetch_full_body error] {type(e).__name__}: {e}")
+        return ""
+
+
+def enrich_if_needed(item: dict, min_len: int = 80) -> str:
+    """
+    Kembalikan text yang siap untuk NLP.
+    Kalau body RSS kosong/pendek (< min_len) & ada source_url → fetch full body.
+    Fallback ke title+text kalau fetch gagal.
+    """
+    text = (item.get("text") or "").strip()
+    title = (item.get("title") or "").strip()
+    source_url = item.get("source_url") or ""
+
+    # Sudah cukup panjang → pakai langsung
+    if len(text) >= min_len:
+        return f"{title} {text}".strip()
+
+    # Body pendek/kosong + ada URL → fetch full article
+    if source_url:
+        full = fetch_full_body(source_url)
+        if len(full) >= min_len:
+            return f"{title} {full}".strip()
+
+    # Fallback terakhir: title + text apa adanya
+    return f"{title} {text}".strip()
+
+
+# ============================================================
 # Commands
 # ============================================================
 def cmd_inspect(sb: Client, args):
@@ -188,13 +256,20 @@ def cmd_sample(sb: Client, args):
         title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
+        item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
 
         # Gabungkan title + text untuk match & predict (body RSS sering kosong)
         combined = f"{title} {text}".strip()
 
         # Predict
         label, conf, scores = predict_sentiment(combined)
-        matched = match_entities(text, title, entities)
+
+        # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
+        if item_entity_id:
+            matched = [e for e in entities if e["id"] == item_entity_id]
+        else:
+            # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
+            matched = match_entities(text, title, entities)
 
         title_preview = (item.get("title") or "")[:70]
         text_preview = text[:100]
@@ -273,12 +348,19 @@ def cmd_batch(sb: Client, args):
         title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
+        item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
 
         # Gabungkan title + text (body RSS sering kosong)
         combined = f"{title} {text}".strip()
 
         label, conf, scores = predict_sentiment(combined)
-        matched = match_entities(text, title, entities)
+
+        # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
+        if item_entity_id:
+            matched = [e for e in entities if e["id"] == item_entity_id]
+        else:
+            # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
+            matched = match_entities(text, title, entities)
 
         label_counts[label] += 1
         conf_sum += conf

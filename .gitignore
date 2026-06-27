@@ -4,6 +4,8 @@
 .env.*.local
 *.env
 !*.env.example
+run-code.txt
+HANDOFF_STATUS.md
 
 # ===== Node / Next.js =====
 node_modules/

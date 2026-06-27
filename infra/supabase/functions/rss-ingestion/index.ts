@@ -104,7 +104,15 @@ function parseItems(xml: string, configName: string): BatchItem[] {
 
     // Prefer content:encoded (full body) over description (snippet)
     const rawContent = extractTag(raw, 'content:encoded') ?? extractTag(raw, 'description') ?? ''
-    const text       = cleanText(rawContent)
+    let text = cleanText(rawContent)
+
+    // FALLBACK: Google News & banyak feed general hanya kirim <title>,
+    // body kosong. Headline politik Indonesia cukup ekspresif untuk NLP,
+    // jadi pakai title sebagai text saat body kosong.
+    // (Lebih baik headline-only daripada artikel hilang sama sekali.)
+    if (text.length < 20 && title) {
+      text = title
+    }
 
     // Image priority: enclosure → media:content → media:thumbnail → og from description
     const imageUrl =
