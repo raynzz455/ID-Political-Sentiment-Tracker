@@ -1,12 +1,62 @@
 # HANDOFF STATUS — ID-Sentiment-Tracker
 
-> **Tgl update:** 2026-06-25 (sesi 3)
+> **Tgl update:** 2026-06-28 (sesi 5)
 > **Project Ref:** `bawvxti***` (lihat Supabase Dashboard)
 > **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
-> **Status:** ⚠️ DB sudah re-ingest (data kembali). Queue drain working. BUG: text kosong dari RSS → entity matching 0.
+> **Status:** ✅ Pipeline L2→L3→L4 end-to-end proven. HTML clean. Entity match working.
+> Menunggu: IndoBERT ONNX (4b), GitHub Actions (2a), alias fix Prabowo.
 
 Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten AI
 (GLM/ZCode ↔ Claude). Setiap perubahan production DB atau code WAJIB update dokumen ini.
+
+---
+
+> **Tgl update:** 2026-06-26 (sesi 4)
+> **Project Ref:** `bawvxti***` (lihat Supabase Dashboard)
+> **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
+> **Status:** ✅ Arsitektur 3-lapis didesain. Lapis 2 (2-stage scraping) terimplementasi. Repo di-restructure ke monorepo.
+
+Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten AI
+(GLM/ZCode ↔ Claude). Setiap perubahan production DB atau code WAJIB update dokumen ini.
+
+---
+
+## 🏗️ ARSITEKTUR 3-LAPIS (BARU — sesi 4)
+
+### Latar belakang
+Sesi 3 menemukan keterbatasan fundamental: Google News RSS hanya mengirim
+`<title>` + `<description>` (HTML link fragment), TIDAK mengirim body artikel.
+Body kosong → sentiment tidak akurat.
+
+**Validasi kritis:** gnews encoded link (`/rss/articles/CBMi...`) menggunakan
+**server-side HTTP redirect (301/302)**, BUKAN JavaScript redirect.
+Diverifikasi manual: link → load Google News bentar → redirect ke domain asli
+(detik.com, beritanasional.com, dll). Artinya `fetch()`/`requests` bisa follow.
+
+### Lapis 1 — Discovery (Edge Function, sudah ada)
+- RSS gnews + RSS native → `raw_texts` (title + source_url, body boleh kosong)
+- Enqueue ke pgmq dengan entity_id
+- **Tidak ada perubahan besar** — edge function tetap ringan
+
+### Lapis 2 — Enrich + Predict (NLP Worker, BARU terimplementasi)
+Saat body RSS kosong/pendek (<80 chars) & ada `source_url`:
+1. `requests.get(source_url, allow_redirects=True)` → follow gnews redirect → HTML asli
+2. `trafilatura.extract(html)` → main content bersih 300-500 kata (buang menu/ad/footer)
+3. Combined = title + full body → predict sentiment
+
+**Lokasi:** `packages/nlp-worker/cli_test.py`
+- `fetch_full_body(url)` — fetch + trafilatura extract
+- `enrich_if_needed(item, min_len=80)` — fallback logic: RSS body → fetch → title
+- **Dependency baru:** `requests`, `trafilatura` (lihat requirements.txt)
+
+**Perubahan RPC:** `dequeue_nlp_batch` sekarang return `source_url` kolom
+(migration `005_dequeue_add_source_url.sql` — WAJIB run sebelum test Lapis 2).
+
+### Lapis 3 — Public Opinion (YouTube Data API, belum dimulai)
+- Beda segment: media tone (Lapis 1-2) vs public opinion (Lapis 3)
+- Komentar video tokoh → sentiment opini publik
+- Free tier: 10.000 quota/day — cukup untuk 18 tokoh
+- Status: **BELUM DIMULAI**
 
 ---
 
@@ -206,6 +256,18 @@ Beberapa RSS feed (CNN, dll) hanya kirim title, body/text kosong.
 
 ---
 
+## 📋 KEPUTUSAN ARSITEKTURAL
+
+| # | Keputusan | Status |
+|---|---|---|
+| 1 | Free-tier only (Supabase + HF Spaces + Vercel + GitHub Actions) | ✅ Final |
+| 2 | RSS-only Lapis 1 (23 feed aktif) | ✅ Active |
+| 3 | Evaluasi distribusi SEBELUM commit ke ONNX | ✅ — distribusi belum bisa dievaluasi (dummy model) |
+| 4 | Historical: archive scraper / GDELT, bukan Kaggle/Wayback | ✅ Final, belum diimplementasi |
+| 5 | Hotline tokoh: dynamic priority scraping | ✅ Desain done, belum diimplementasi |
+| 6 | CLI dulu sebelum production worker | ✅ CLI proven, siap ke ONNX |
+
+---
 ## 🗺️ Urutan eksekusi yang disarankan (DIUPDATE)
 
 ```
@@ -232,58 +294,78 @@ SEKARANG (URGENT)
   FRONTEND
   → 6a-6d: Dashboard (teman user kerjakan)
 ```
+## 🗺️ Urutan eksekusi recommended (By Claude)
+
+```
+SEKARANG (< 5 menit total)
+  → FIX-1: SQL fix alias Prabowo (30 detik)
+  → 2a: GitHub Actions 3 secrets (2 menit)
+      ↓
+SESI BERIKUTNYA
+  → 4b: IndoBERT ONNX (ganti dummy predict_sentiment)
+  → 4c: Validasi distribusi real
+  → 4d: Production worker di HF Spaces
+      ↓
+PARALEL (bisa dikerjakan sambil ONNX running)
+  → 2c: Fix parser mismatch 5 feed
+  → H1-H4: Archive scraper + backfill
+  → L3: YouTube comments
+      ↓
+SETELAH DATA CUKUP
+  → 6a-6d: Frontend Next.js
+```
 
 ---
 
-## 🔐 Secrets & Credential (RAHASIA — jangan commit)
+## 🔐 Secrets & Credentials
 
-| Secret | Lokasi | Catatan |
+| Secret | Lokasi | Status |
 |---|---|---|
-| `CRON_SECRET` | Dashboard → Edge Functions → Secrets | String hex 64-char |
-| `SUPABASE_SERVICE_ROLE_KEY` | Dashboard → Settings → API | Auto-injected ke edge function |
-| `SUPABASE_URL` | Auto-injected | `https://<project-ref>.supabase.co` |
-
-**GitHub Actions Secrets (BELUM setup):**
-| Secret | Value |
-|---|---|
-| `SUPABASE_EDGE_FUNCTION_URL` | `https://bawvxtivogcuwvqdqoae.supabase.co/functions/v1/rss-ingestion` |
-| `SUPABASE_ANON_KEY` | `eyJ...` (anon key) |
-| `CRON_SECRET` | (sama dengan di Edge Function) |
+| `CRON_SECRET` | Supabase Dashboard → Edge Functions → Secrets | ✅ Set |
+| `SUPABASE_SERVICE_ROLE_KEY` | Auto-injected ke Edge Function | ✅ |
+| `SUPABASE_URL` | Auto-injected | ✅ |
+| `SUPABASE_EDGE_FUNCTION_URL` | GitHub Actions Secrets | ⏳ BELUM |
+| `SUPABASE_ANON_KEY` | GitHub Actions Secrets | ⏳ BELUM |
+| `CRON_SECRET` | GitHub Actions Secrets | ⏳ BELUM |
 
 ---
 
-## 📁 Lokasi file penting
+## 📁 Struktur repo (current)
 
 ```
 ID-Political-Sentiment-Tracker/
 ├── apps/
-│   └── web/                               ← Next.js dashboard (belum dibangun)
+│   └── web/                               ← Next.js (belum dibangun)
 ├── packages/
 │   ├── db/
-│   │   ├── schema.sql                     ← ⚠️ JANGAN RUN ULANG — HAPUS DATA
+│   │   ├── schema.sql                     ← ⚠️ JANGAN RUN ULANG
 │   │   ├── migrations/
-│   │   │   ├── 001_fix_partition_key.sql  ← HOTFIX ingested_month (sudah applied)
-│   │   │   ├── 002_pgmq_queue.sql        ← queue + RPC enqueue/dequeue/ack
-│   │   │   └── 003_allow_null_entity.sql ← ALTER entity_id DROP NOT NULL
+│   │   │   ├── 001_fix_partition_key.sql  ✅ applied
+│   │   │   ├── 002_pgmq_queue.sql         ✅ applied
+│   │   │   ├── 003_allow_null_entity.sql  ✅ applied
+│   │   │   ├── 004_purge_empty_text.sql   ✅ applied
+│   │   │   ├── 005_dequeue_add_source_url.sql ✅ applied
+│   │   │   └── 006_fix_dequeue_html.sql   ✅ applied (sesi 5)
 │   │   └── seeds/
-│   │       ├── 01_political_entities.sql  ← 18+ tokoh politik + foto
-│   │       └── 02_scraping_configs.sql    ← 23 RSS configs
+│   │       ├── 01_political_entities.sql  ✅ 18 tokoh
+│   │       └── 02_scraping_configs.sql    ✅ 23 configs
 │   └── nlp-worker/
-│       ├── cli_test.py                     ← CLI testing tool (dummy model, FIXED sesi 3)
-│       ├── requirements.txt               ← pip dependencies
+│       ├── cli_test.py                    ✅ working (dummy model)
+│       ├── requirements.txt              ← requests, trafilatura, supabase
 │       └── README.md
 ├── infra/
 │   └── supabase/
-│       ├── config.toml                    ← dari `supabase init`
-│       └── functions/rss-ingestion/index.ts  ← Edge Function Layer 2 (CRON_SECRET + enqueue)
+│       ├── config.toml
+│       └── functions/rss-ingestion/
+│           └── index.ts                  ✅ deployed (cleanText fix)
 ├── .github/
 │   └── workflows/
-│       └── trigger-ingestion.yml          ← GitHub Actions (dengan CRON_SECRET + jitter)
+│       └── trigger-ingestion.yml         ✅ ready — secrets belum diset
 ├── docs/
-│   ├── architecture.md                    ← aturan PDP, 6-layer
+│   ├── architecture.md
 │   ├── workflow.drawio
 │   └── internal/
-│       └── HANDOFF_STATUS.md              ← FILE INI (single source of truth)
+│       └── HANDOFF_STATUS.md             ← FILE INI
 ├── .env.example
 └── README.md
 ```
@@ -313,6 +395,13 @@ ID-Political-Sentiment-Tracker/
    jadi entity matching DAN sentiment prediction harus scan title+text gabungan. Jangan
    revert ke hanya scan `text`.
 
+7. **Lapis 2 (2-stage scraping) butuh dependency Python: `trafilatura` + `requests`.**
+   Kalau ImportError saat run CLI → `pip install trafilatura requests`. Fungsi `enrich_if_needed()`
+   otomatis fallback ke title-only kalau library tidak ada (tidak crash).
+
+8. **`dequeue_nlp_batch` sekarang return kolom `source_url`.** Migration `005_dequeue_add_source_url.sql`
+   WAJIB di-run sebelum Lapis 2 bisa fetch full body. Tanpa `source_url`, enrich tidak bisa follow gnews redirect.
+
 ---
 
 ## 🔍 Cara verifikasi cepat (kapan saja)
@@ -332,12 +421,12 @@ $ANON_KEY = "<anon-key>"
 curl.exe -X POST `
   -H "Authorization: Bearer $ANON_KEY" `
   -H "x-cron-secret: $CRON_SECRET" `
-  "https://bawvxtivogcuwvqdqoae.supabase.co/functions/v1/rss-ingestion"
+  "supabase.co/functions/v1/rss-ingestion"
 ```
 
 ```powershell
 # CLI testing (set env dulu)
-$env:SUPABASE_URL = "https://bawvxtivogcuwvqdqoae.supabase.co"
+$env:SUPABASE_URL = "supabase.co"
 $env:SUPABASE_SERVICE_ROLE_KEY = "eyJ..."
 python cli_test.py stats
 python cli_test.py inspect
