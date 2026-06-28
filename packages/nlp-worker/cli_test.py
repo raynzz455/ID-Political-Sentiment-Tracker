@@ -258,10 +258,11 @@ def cmd_sample(sb: Client, args):
         msg_id = item.get("msg_id")
         item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
 
-        # Gabungkan title + text untuk match & predict (body RSS sering kosong)
-        combined = f"{title} {text}".strip()
+        # LAPIS 2: enrich body kalau RSS kosong/pendek (follow source_url → scrape)
+        combined = enrich_if_needed(item)
+        fetched = len(combined) > len(f"{title} {text}".strip()) + 20
 
-        # Predict
+        # Predict (pakai combined yang sudah di-enrich)
         label, conf, scores = predict_sentiment(combined)
 
         # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
@@ -269,12 +270,13 @@ def cmd_sample(sb: Client, args):
             matched = [e for e in entities if e["id"] == item_entity_id]
         else:
             # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
-            matched = match_entities(text, title, entities)
+            matched = match_entities(combined, title, entities)
 
         title_preview = (item.get("title") or "")[:70]
-        text_preview = text[:100]
-        print(f"[{i}/{len(items)}] {title_preview}")
-        print(f"       text: {text_preview}{'...' if len(text) > 100 else ''}")
+        text_preview = combined[:100]
+        fetch_tag = " [fetched]" if fetched else ""
+        print(f"[{i}/{len(items)}] {title_preview}{fetch_tag}")
+        print(f"       text: {text_preview}{'...' if len(combined) > 100 else ''} ({len(combined)} chars)")
         print(f"       label: {label} (conf={conf:.3f})")
         print(f"       matched: {len(matched)} tokoh — {[m['canonical_name'] for m in matched][:3]}")
 
@@ -350,8 +352,8 @@ def cmd_batch(sb: Client, args):
         msg_id = item.get("msg_id")
         item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
 
-        # Gabungkan title + text (body RSS sering kosong)
-        combined = f"{title} {text}".strip()
+        # LAPIS 2: enrich body kalau RSS kosong/pendek (follow source_url → scrape)
+        combined = enrich_if_needed(item)
 
         label, conf, scores = predict_sentiment(combined)
 
@@ -360,7 +362,7 @@ def cmd_batch(sb: Client, args):
             matched = [e for e in entities if e["id"] == item_entity_id]
         else:
             # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
-            matched = match_entities(text, title, entities)
+            matched = match_entities(combined, title, entities)
 
         label_counts[label] += 1
         conf_sum += conf

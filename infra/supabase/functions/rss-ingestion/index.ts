@@ -73,13 +73,16 @@ function extractAttr(xml: string, tag: string, attr: string): string | null {
 /** Strip HTML tags, decode common entities, collapse whitespace */
 function cleanText(html: string): string {
   return html
-    .replace(/<[^>]+>/g, ' ')
+    // Step 1: decode HTML entities dulu
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'")
     .replace(/&nbsp;/g, ' ')
+    // Step 2: BARU strip HTML tags
+    .replace(/<[^>]+>/g, ' ')
+    // Step 3: collapse whitespace
     .replace(/\s+/g, ' ')
     .trim()
 }
