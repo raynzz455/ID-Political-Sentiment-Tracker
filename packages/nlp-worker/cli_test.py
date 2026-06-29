@@ -467,7 +467,8 @@ def cmd_stats(sb: Client, args):
              .execute()
     entity_counter = Counter()
     for r in res3.data:
-        name = r.get("political_entities", {}).get("canonical_name", "?")
+        pe = r.get("political_entities") or {}
+        name = pe.get("canonical_name", "?")        
         entity_counter[name] += 1
     for name, c in entity_counter.most_common(10):
         print(f"  {name:30s} {c:5d}")
