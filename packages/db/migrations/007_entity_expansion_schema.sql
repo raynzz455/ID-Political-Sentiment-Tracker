@@ -1,27 +1,20 @@
 -- ============================================================
--- 007_entity_expansion_schema.sql (FIXED — Ponytail audit)
--- ============================================================
+-- 007_entity_expansion_schema.sql
 -- Ekspansi schema political_entities untuk support:
 -- 1. Kategori lebih luas (pengamat, influencer, historis, dll)
 -- 2. Hotness scoring (seberapa sering disebut)
 -- 3. Tabel entity_candidates sebagai staging auto-discovery
---
--- FIX vs versi Claude:
---   Bug #1: `is_within_5_years BOOLEAN GENERATED ALWAYS AS (... NOW())`
---           PostgreSQL tolak karena NOW() volatile (not immutable).
---           FIX: jadikan kolom biasa, compute di Python (auto_discover.py).
---
--- PRE-REQUISITE: 009_pre_expansion_unique_constraints.sql WAJIB di-run dulu.
--- Idempotent. Safe to re-run.
 -- ============================================================
 
 -- ─────────────────────────────────────────────────────────────
 -- STEP 1: Ekspansi entity_type CHECK constraint
 -- ─────────────────────────────────────────────────────────────
 
+-- Drop constraint lama
 ALTER TABLE political_entities
   DROP CONSTRAINT IF EXISTS political_entities_entity_type_check;
 
+-- Recreate dengan nilai lebih luas
 ALTER TABLE political_entities
   ADD CONSTRAINT political_entities_entity_type_check
   CHECK (entity_type IN (
@@ -34,10 +27,10 @@ ALTER TABLE political_entities
     -- Partai
     'party', 'party_official',
     -- Non-pejabat tapi aktif di politik
-    'commentator',
-    'influencer',
-    'academic',
-    'journalist',
+    'commentator',   -- Rocky Gerung, Refly Harun, Ferry Irwandi
+    'influencer',    -- konten kreator dengan konten politik
+    'academic',      -- dosen/peneliti yang komentar politik
+    'journalist',    -- Najwa Shihab, Karni Ilyas
     -- Tokoh historis
     'former_official',
     'other'
@@ -48,51 +41,61 @@ ALTER TABLE political_entities
 -- ─────────────────────────────────────────────────────────────
 
 ALTER TABLE political_entities
+  -- Kategori era politik (array — bisa lintas era)
   ADD COLUMN IF NOT EXISTS era TEXT[] DEFAULT '{}',
+  -- Relevansi temporal
   ADD COLUMN IF NOT EXISTS birth_year SMALLINT,
   ADD COLUMN IF NOT EXISTS active_since_year SMALLINT,
-  ADD COLUMN IF NOT EXISTS last_relevant_year SMALLINT,
+  ADD COLUMN IF NOT EXISTS last_relevant_year SMALLINT,  -- NULL = masih aktif
+  -- Hotness scoring (diupdate pg_cron harian)
   ADD COLUMN IF NOT EXISTS mention_count_7d  INTEGER DEFAULT 0,
   ADD COLUMN IF NOT EXISTS mention_count_30d INTEGER DEFAULT 0,
   ADD COLUMN IF NOT EXISTS last_mentioned_at TIMESTAMPTZ,
+  -- Auto-discovery metadata
   ADD COLUMN IF NOT EXISTS auto_discovered   BOOLEAN DEFAULT false,
-  ADD COLUMN IF NOT EXISTS discovery_source  TEXT,
+  ADD COLUMN IF NOT EXISTS discovery_source  TEXT,      -- 'wikipedia', 'ner', 'manual'
   ADD COLUMN IF NOT EXISTS discovery_confidence REAL DEFAULT 1.0,
+  -- Wikipedia URL untuk enrichment
   ADD COLUMN IF NOT EXISTS wikipedia_id_url  TEXT,
   ADD COLUMN IF NOT EXISTS wikipedia_en_url  TEXT;
 
 -- ─────────────────────────────────────────────────────────────
 -- STEP 3: Tabel entity_candidates (staging auto-discovery)
--- FIX: is_within_5_years jadi kolom biasa (bukan GENERATED) karena
---       NOW() tidak immutable. Computed di Python saat insert.
 -- ─────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS entity_candidates (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   detected_name     TEXT NOT NULL UNIQUE,
-  normalized_name   TEXT,
-  detection_source  TEXT NOT NULL
+  normalized_name   TEXT,                    -- lowercase, no title
+  detection_source  TEXT NOT NULL            -- 'wikipedia', 'title_scan', 'ner', 'manual'
     CHECK (detection_source IN ('wikipedia', 'title_scan', 'ner', 'manual')),
-  mention_count     INTEGER DEFAULT 0,
-  gnews_hit_count   INTEGER DEFAULT 0,
-  sample_titles     TEXT[] DEFAULT '{}',
+  -- Bukti relevansi
+  mention_count     INTEGER DEFAULT 0,       -- berapa kali muncul di raw_texts
+  gnews_hit_count   INTEGER DEFAULT 0,       -- hasil validasi Google News
+  sample_titles     TEXT[] DEFAULT '{}',     -- sample judul yang menyebut nama ini
+  -- Wikipedia data (kalau tersedia)
   wikipedia_url     TEXT,
   wikipedia_snippet TEXT,
-  suggested_type    TEXT DEFAULT 'other',
+  suggested_type    TEXT DEFAULT 'other',    -- entity_type yang disarankan
   suggested_aliases TEXT[] DEFAULT '{}',
+  -- Status review
   status            TEXT DEFAULT 'pending'
     CHECK (status IN ('pending', 'approved', 'rejected', 'duplicate')),
-  confidence_score  REAL DEFAULT 0.5,
+  confidence_score  REAL DEFAULT 0.5,        -- 0-1, threshold auto-approve = 0.8
   promoted_entity_id UUID REFERENCES political_entities(id),
+  -- Temporal filter: apakah masih relevan 5 tahun terakhir?
   last_seen_year    SMALLINT,
-  -- FIX: kolom biasa, diisi Python (NOW() tidak immutable untuk GENERATED)
-  is_within_5_years BOOLEAN DEFAULT true,
+  is_within_5_years BOOLEAN GENERATED ALWAYS AS
+    (last_seen_year IS NULL OR last_seen_year >= EXTRACT(YEAR FROM NOW())::SMALLINT - 5)
+    STORED,
+  -- Audit
   first_detected    TIMESTAMPTZ DEFAULT NOW(),
   last_updated      TIMESTAMPTZ DEFAULT NOW(),
   reviewed_at       TIMESTAMPTZ,
   notes             TEXT
 );
 
+-- Index untuk query frequent
 CREATE INDEX IF NOT EXISTS idx_candidates_status
   ON entity_candidates (status, confidence_score DESC);
 
@@ -101,9 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_candidates_active
   WHERE status = 'pending';
 
 -- ─────────────────────────────────────────────────────────────
--- STEP 4: Function auto_promote kandidat yang qualified
--- FIX: suggested_type default 'other' (bukan 'politician' yang tidak
---       ada di CHECK constraint).
+-- STEP 4: Function auto-promote kandidat yang qualified
 -- ─────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION auto_promote_candidates(
@@ -116,7 +117,6 @@ LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v_candidate RECORD;
   v_entity_id UUID;
-  v_safe_type TEXT;
 BEGIN
   FOR v_candidate IN
     SELECT *
@@ -129,35 +129,28 @@ BEGIN
     ORDER BY confidence_score DESC, mention_count DESC
     LIMIT 50
   LOOP
-    -- FIX: pastikan suggested_type valid sebelum insert
-    v_safe_type := CASE
-      WHEN v_candidate.suggested_type IN (
-        'president','vp','minister','former_minister','legislator',
-        'governor','mayor','party','party_official','commentator',
-        'influencer','academic','journalist','former_official','other'
-      ) THEN v_candidate.suggested_type
-      ELSE 'other'
-    END;
-
+    -- Insert ke political_entities
     INSERT INTO political_entities (
       canonical_name, aliases, entity_type,
       auto_discovered, discovery_source, discovery_confidence,
-      wikipedia_id_url, is_active, era
+      wikipedia_id_url, is_active,
+      era
     ) VALUES (
       v_candidate.detected_name,
       v_candidate.suggested_aliases,
-      v_safe_type,
+      v_candidate.suggested_type,
       true,
       v_candidate.detection_source,
       v_candidate.confidence_score,
       v_candidate.wikipedia_url,
       true,
-      ARRAY['Post-Reformasi']
+      ARRAY['Post-Reformasi']   -- default era, bisa diupdate manual
     )
-    ON CONFLICT (canonical_name) DO NOTHING
+    ON CONFLICT DO NOTHING
     RETURNING id INTO v_entity_id;
 
     IF v_entity_id IS NOT NULL THEN
+      -- Update kandidat jadi approved
       UPDATE entity_candidates
       SET status             = 'approved',
           promoted_entity_id = v_entity_id,
@@ -166,6 +159,7 @@ BEGIN
 
       RETURN QUERY SELECT v_candidate.detected_name, v_entity_id;
     ELSE
+      -- Sudah ada di DB → mark duplicate
       UPDATE entity_candidates
       SET status = 'duplicate'
       WHERE id = v_candidate.id;
@@ -208,6 +202,7 @@ $$;
 
 GRANT EXECUTE ON FUNCTION refresh_entity_hotness() TO service_role;
 
+-- Schedule: update hotness tiap malam
 SELECT cron.schedule(
   'refresh-entity-hotness',
   '0 2 * * *',

@@ -1,11 +1,434 @@
 # HANDOFF STATUS — ID-Sentiment-Tracker
 
-> **Tgl update:** 2026-06-28 (sesi 5)
+---
+
+## 📋 SESI 8 REPORT — 2026-06-30
+
+### Yang dikerjakan
+
+**A. Kritik terhadap laporan GLM sesi 7 (Decision 7 & 8)**
+- Ditemukan inkonsistensi: Decision 7 menyatakan "data quality > model quality"
+  tapi prioritas aktualnya menaruh ekspansi entitas DI ATAS fix parser bug
+  (Issue B, 5 feed mati) — bertentangan dengan filosofi sendiri
+- Gating metric "≥5000 raw_texts" salah sasaran — masalahnya per-entity
+  (skewed: Prabowo 36 vs Muhaimin 2), bukan agregat. Reaching 5000 total
+  tidak menjamin coverage per-tokoh yang dibutuhkan untuk breakdown tahunan
+- Keputusan 3 (evaluasi distribusi sebelum ONNX) dibatalkan tanpa basis
+  konsisten — dummy run sebelumnya (56% netral) sebenarnya di BAWAH
+  threshold 80% yang menurut rule asli berarti "lanjut ke ONNX", bukan
+  "tunda terus". Tapi juga dicatat: dummy heuristic bukan instrumen valid
+  untuk ukur distribusi real sejak awal
+- **Verified via search:** GitHub Actions scheduled workflow delay (observed
+  ~3-4 jam vs konfigurasi 30 menit) adalah documented behavior resmi GitHub
+  ("best effort", no SLA) — bukan bug project. Mitigasi: offset cron minute
+  dari `:00`/`:30`, atau terima cadence lambat dan hitung ulang timeline
+- **Verified via search:** "ModernBERT" tidak native multilingual/Indonesia.
+  Turunannya (mmBERT, Sept 2025) belum proven untuk sentimen Indonesia.
+  Literatur akademik konsisten: IndoBERT monolingual masih unggul vs model
+  multilingual generik untuk domain ini (F1 0.9353 vs mBERT lebih rendah)
+
+**B. Upgrade model sentimen — dari dummy ke real, context-aware**
+- Riset: ditemukan studi SocialX+Telkom University+BRIN (April 2026) yang
+  membuktikan model SmSA-based umum (kemungkinan termasuk
+  `taufiqdp/indonesian-sentiment`) collapse ke 59-63% akurasi & F1 kelas
+  positif <0.211 saat dievaluasi out-of-domain (review vs berita politik)
+- Model pengganti dipilih: `apriandito/indobert-sentiment-classifier`
+  (context-conditioned, F1 0.856) + `apriandito/indobert-relevancy-classifier`
+  (F1 0.948) — keduanya dari paper yang sama, didesain dipakai berpasangan
+- `sentiment_model.py` v1 dibuat (single context-conditioned model) →
+  ditemukan FLAW desain test: sentiment confidence TIDAK BISA deteksi
+  entity mismatch (kasus Kapolri "Listyo Sigit Prabowo" vs Presiden Prabowo
+  tetap dapat confidence 0.906, karena itu task relevansi bukan task sentimen)
+- **Dikoreksi ke v2: 2-stage gated pipeline**
+  `Stage 1 (RelevancyModel) -> Stage 2 (SentimentModel, hanya jika relevan)`
+  Ini sekaligus jadi solusi permanen untuk masalah false-positive alias
+  matching yang berulang kali muncul sejak sesi awal (Prabowo/Listyo Sigit,
+  RK/Ridwan Kamil vs kriminal)
+- `test_sentiment_model.py` v2 ditulis ulang — test relevancy gate eksplisit
+  (bukan sentiment confidence), termasuk 2 kasus false-positive historis
+
+**C. Kritik terhadap laporan evaluasi Gemini (CLI testing sesi ini)**
+- Klaim "confidence 0.985 rata-rata" tidak jelas dari stage mana (relevancy
+  atau sentiment) — dua pertanyaan berbeda, tidak boleh dicampur
+- Rekomendasi "hapus logic insert NULL" **DITOLAK** — kalau diikuti akan
+  menghapus kemampuan `mv_national_monthly_summary` /
+  `mv_national_yearly_summary` (fitur national mood index yang sudah
+  disepakati eksplisit beberapa sesi lalu). NULL bukan sampah, itu data
+  untuk agregat nasional — yang salah cuma konsistensi KAPAN insert-nya
+- **Temuan kritis yang Gemini lewatkan:** 88 baris `sentiment_scores` dari
+  dummy model lama (sesi 7) kemungkinan BELUM dibersihkan sebelum testing
+  model real — total sekarang 111 baris bisa jadi campuran dummy+real
+  tanpa cara membedakan. Ini mengkontaminasi SEMUA statistik di laporan
+  Gemini (confidence avg, distribusi)
+- n=13 untuk klaim "distribusi sentimen dinamis" — terlalu kecil secara
+  statistik untuk disimpulkan apa pun
+- "Siap jadi daemon production" — conflate stabilitas rekayasa (terbukti)
+  dengan validitas model/data (BELUM terbukti, belum ada ground truth)
+
+**D. Toolkit ground truth evaluation dibangun**
+- SQL diagnostic kontaminasi (deteksi via confidence persis 0.65/0.60 —
+  hardcoded value dummy lama)
+- Redesain logic NULL: SELALU hitung fallback document-level untuk national
+  index (`model_version='indobert-fallback-v1'`), entity-specific HANYA
+  kalau lolos relevancy gate (`model_version='indobert-ctx-relevancy-gated-v1'`)
+- `export_sentiment_ground_truth.py` — stratified sample per label
+- `export_relevancy_review.py` — re-scan raw_texts, capture SEMUA kandidat
+  (lolos maupun ditolak gate) untuk validasi manusia
+- `eval_metrics.py` — precision/recall/F1/confusion matrix TERPISAH per
+  stage + calibration check (uji empiris klaim "overconfident")
+- `GROUND_TRUTH_EVAL_GUIDE.md` — urutan kerja lengkap end-to-end
+
+### Belum dikerjakan (lanjutkan sesi berikutnya)
+
+## 📐 Architectural Notes (AI Recommendation — 2026-06-30)
+
+> **Status:** Informational (bukan prioritas implementasi saat ini)
+>
+> Catatan ini merupakan hasil evaluasi arsitektur. Saat ini **tetap mengikuti fokus utama project**, yaitu:
+>
+> 1. Ekspansi entity
+> 2. Historical data collection
+> 3. Perbaikan parser
+>
+> Optimasi NLP dilakukan setelah data dianggap cukup.
+
+### 1. Bottleneck project bukan latency model
+
+Evaluasi pipeline menunjukkan bahwa waktu inferensi model **bukan bottleneck utama**.
+
+Pipeline saat ini:
+
+```
+RSS
+    ↓
+Download HTML
+    ↓
+Trafilatura Extract
+    ↓
+Entity Matching
+    ↓
+Sentiment Model
+    ↓
+Insert Database
+```
+
+Estimasi waktu:
+
+| Tahapan          | Estimasi    |
+| ---------------- | ----------- |
+| Download article | 300-1000 ms |
+| HTML extraction  | 100-400 ms  |
+| Entity matching  | <10 ms      |
+| NLP inference    | 100-300 ms  |
+| Database insert  | 50-150 ms   |
+
+Mayoritas waktu habis pada network dan preprocessing, bukan inference.
+
+**Kesimpulan:**
+Jangan mengorbankan akurasi hanya demi mengurangi latency model.
+
+---
+
+### 2. Prioritaskan throughput dibanding latency
+
+Project menggunakan asynchronous queue (`pgmq`) sehingga dashboard tidak melakukan inferensi secara realtime.
+
+Yang lebih penting adalah:
+
+```
+berapa artikel selesai diproses per jam
+```
+
+daripada
+
+```
+berapa cepat satu artikel selesai diproses
+```
+
+Untuk workload ±1000 artikel/hari, latency 200 ms maupun 500 ms hampir tidak berpengaruh terhadap operasional pipeline.
+
+---
+
+### 3. Batch inference lebih penting daripada model lebih cepat
+
+Jika production worker dibuat nanti, lebih disarankan:
+
+```
+dequeue 16-32 artikel
+
+↓
+
+predict sekaligus
+
+↓
+
+insert batch
+```
+
+daripada
+
+```
+dequeue 1
+
+↓
+
+predict
+
+↓
+
+ulang
+```
+
+Batch inference meningkatkan throughput CPU secara signifikan dibanding optimasi latency individual.
+
+---
+
+### 4. Hugging Face Free diperkirakan masih mencukupi
+
+Estimasi workload:
+
+```
+1000 artikel / hari
+
+≈42 artikel / jam
+
+≈1 artikel setiap ±1.4 menit
+```
+
+Dengan inference ±0.8 detik/artikel, worker masih memiliki kapasitas yang cukup.
+
+Namun perlu diperhatikan:
+
+* Hugging Face Free memiliki cold start
+* Space dapat sleep
+* Tidak ada SLA
+* Resource tidak dijamin
+
+Untuk skripsi dan proof-of-concept masih sangat layak digunakan.
+
+Jika nanti project berkembang menjadi production service, worker sebaiknya dipindahkan ke VPS/container yang selalu aktif tanpa mengubah arsitektur pipeline.
+
+---
+
+### 5. Evaluasi model setelah data cukup
+
+Saat ini **belum disarankan mengganti dummy model**.
+
+Urutan yang direkomendasikan tetap:
+
+```
+Perbanyak entity
+
+↓
+
+Perbanyak historical data
+
+↓
+
+Perbaiki parser
+
+↓
+
+Minimal ±5000 raw_texts
+
+↓
+
+Evaluasi model NLP
+
+↓
+
+Production worker
+```
+
+Pemilihan model dilakukan setelah tersedia dataset representatif.
+
+Kandidat yang layak dievaluasi:
+
+* ModernBERT (arsitektur modern, CPU friendly)
+* IndoBERT (baseline Indonesia)
+* XLM-RoBERTa
+* MiniLM Multilingual
+
+Pemilihan akhir didasarkan pada trade-off:
+
+* akurasi
+* ukuran model
+* throughput CPU
+* kemudahan ONNX
+
+bukan semata-mata latency inferensi.
+
+---
+
+### 6. Potensi peningkatan akurasi terbesar
+
+Peningkatan akurasi terbesar kemungkinan **bukan berasal dari mengganti model**, melainkan dari peningkatan kualitas pipeline:
+
+* full article extraction
+* entity detection yang lebih baik
+* alias management
+* historical corpus lebih besar
+* evaluasi Targeted Sentiment Analysis (ABSA) setelah pipeline stabil
+
+Dengan kata lain:
+
+```
+Data Quality
+>
+Model Quality
+>
+Latency Optimization
+```
+
+untuk kebutuhan project ini.
+
+
+> **Tgl update:** 2026-06-30 (sesi 7, GLM/ZCode)
 > **Project Ref:** `bawvxti***` (lihat Supabase Dashboard)
 > **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
-> **Status:** ✅ Pipeline L2→L3→L4 end-to-end proven. HTML clean. Entity match working.
-> Menunggu: IndoBERT ONNX (4b), GitHub Actions (2a), alias fix Prabowo.
+> **Status:** ✅ Pipeline otomatis jalan (GitHub Actions). Fokus: EKSPANSI ENTITAS + HISTORICAL DATA.
+> Dummy model di-Tunda — NLP real (IndoBERT ONNX) setelah data cukup.
 
+---
+
+## 🎯 FOKUS UTAMA SAAT INI (Keputusan User, 2026-06-30)
+
+### Keputusan strategi: Kumpulkan Data Dulu, Proses NLP Nanti
+
+**Alasan:**
+- Dummy model hanya menghasilkan distribusi palsu (confidence semua 0.6-0.65)
+- 88 sentiment_scores dari dummy = sampah data — akan dihapus saat IndoBERT ONNX gantikan
+- Lebih efisien kumpulkan data sebanyak mungkin dulu, baru proses dengan model real
+- Historical data (orde lama-2025) adalah requirement user utama — belum ada satupun
+
+**Prioritas (dari tertinggi ke terendah):**
+```
+1. 🔴 EKSPANSI ENTITAS — 50+ tokoh (seed 03), auto-discovery, alias fix
+2. 🔴 HISTORICAL DATA — backfill arsip berita 2019-2025 per tokoh
+3. 🟡 PARSING FIX — perbaiki 5 feed yang 0 item, body kosong
+4. 🟢 INDOBERT ONNX — GANTI DUMMY (setelah data cukup, target >5000 raw_texts)
+5. 🟢 PRODUCTION NLP WORKER — auto-dequeue (setelah ONNX ready)
+6. ⚪ FRONTEND — Next.js dashboard (paling akhir)
+```
+
+### Yang TIDAK diprioritaskan saat ini:
+- ❌ IndoBERT ONNX — **ditunda** sampai data cukup
+- ❌ Production NLP worker — **ditunda** sampai ONNX ready
+- ❌ Frontend — **ditunda** sampai ada data sentimen real
+- ❌ YouTube comments (Lapis 3) — **belum diputuskan** (bertentangan dengan Keputusan 1)
+
+---
+
+## 📋 SESI 7 REPORT — 2026-06-30 (GLM/ZCode)
+
+### Yang dikerjakan
+- ✅ **Full codebase review** — baca & analisis seluruh kode
+- ✅ **Analisis keamanan secrets** — verdict: **AMAN**, nilai asli tidak ada di file
+- ✅ **Analisis ZCode error** — 1305 (overloaded) + context window exceeded, bukan bug project
+- ✅ **Pertama kali lihat distribusi data real** via `cli_test.py batch 100`:
+  - 17% entity match, 83% skip (masuk akal, hanya 18 tokoh aktif)
+  - Distribusi dummy: positive 16%, neutral 56%, negative 28%
+  - Confidence semua 0.5-0.7 (hardcoded dummy, tidak bermakna)
+- ✅ **Verifikasi GitHub Actions otomatis** — run #20-#26 semua sukses, 19-67 detik/run
+- ✅ **Data pipeline status** — 1000 raw_texts, 88 sentiment_scores (dummy)
+
+### Data pipeline saat ini
+```
+raw_texts:          1.000 (981 pending, 19 queued) — terus bertambah otomatis
+sentiment_scores:      88 (dummy model, distribusi tidak bermakna)
+Entity coverage:      22% (hanya 4 dari 18 tokoh muncul)
+Top entities:          Prabowo 36, Gibran 16, Anies 4, Muhaimin 2, ?(NULL) 30
+GitHub Actions:        ✅ berjalan otomatis, ~3-4 jam sekali
+```
+
+### Temuan dari code review (bug yang masih ada)
+| # | Bug | Lokasi | Severity | Prioritas |
+|---|-----|--------|----------|-----------|
+| B1 | Text kosong lolos guard `text.length < 20` | `index.ts:118` | KRITIS | 🟡 Fix saat parsing fix |
+| B2 | `cmd_sample` insert NULL, `cmd_batch` skip — inkonsisten | `cli_test.py` | Low | ⚪ Tidak urgent |
+| B3 | `cmd_batch` statistik mencampur item yang tidak masuk DB | `cli_test.py` | Low | ⚪ Tidak urgent |
+| B4 | `cmd_single` tidak pakai title+text combined | `cli_test.py` | Low | ⚪ Tidak urgent |
+| B5 | `--no-insert` flag dead code | `cli_test.py` | Low | ⚪ Tidak urgent |
+| B6 | `last_run_at` tidak update untuk 0-item feed | `index.ts:283` | Medium | 🟡 Fix saat parsing fix |
+
+> **Catatan:** Bug B2-B5 terkait dummy model/CLI testing — tidak perlu fix sekarang
+> karena dummy model akan diganti IndoBERT ONNX nanti. Fokus ke B1 dan B6.
+
+---
+
+## 📋 SESI 6 REPORT — 2026-06-29
+
+### Yang dikerjakan
+- ✅ **Migration 007** dibuat: ekspansi schema `political_entities`
+  - `entity_type` CHECK constraint diperluas: tambah `commentator`, `influencer`,
+    `academic`, `journalist`, `former_minister`, `former_official`, `party_official`,
+    `governor`, `mayor`
+  - Kolom baru: `era[]`, `birth_year`, `active_since_year`, `last_relevant_year`,
+    `mention_count_7d`, `mention_count_30d`, `last_mentioned_at`,
+    `auto_discovered`, `discovery_source`, `discovery_confidence`,
+    `wikipedia_id_url`, `wikipedia_en_url`
+  - Tabel baru: `entity_candidates` (staging auto-discovery)
+  - Function baru: `auto_promote_candidates()`, `refresh_entity_hotness()`
+  - View baru: `hotline_tokoh` (siapa yang sedang ramai, realtime)
+  - pg_cron: `refresh-entity-hotness` tiap malam jam 02:00 UTC
+
+- ✅ **Seed 03** dibuat: 50+ entitas komprehensif
+  - Presiden & Wapres semua era yang masih relevan (Gus Dur, SBY, Jokowi, dll)
+  - Full kabinet Prabowo aktif
+  - Ketua & tokoh partai semua partai parlemen
+  - Gubernur strategis (Bobby, Dedi Mulyadi, Pramono, dll)
+  - Pengamat politik: Rocky Gerung, Refly Harun, Ferry Irwandi, dll
+  - Jurnalis/presenter: Najwa Shihab, Karni Ilyas
+  - Ekonom/komentator: Rizal Ramli, Faisal Basri (alm), Chatib Basri
+  - Mantan pejabat yang masih hot: Mahfud MD, Tom Lembong, Wiranto, dll
+
+- ✅ **Seed 04** dibuat: Google News RSS untuk semua entitas baru (47 configs)
+
+- ✅ **auto_discover.py** dibuat: sistem auto-discovery 3 sumber
+  - Source 1: Wikipedia API (id.wikipedia.org) — daftar politisi dari 8 kategori
+  - Source 2: Title scan — nama yang sering muncul di `raw_texts` tapi belum di DB
+  - Source 3: Google News validation — validasi relevansi politik
+  - Auto-promote: confidence >= 0.8 + mention >= 3 + gnews >= 2
+
+### Belum dikerjakan (lanjutkan sesi berikutnya)
+- ⏳ Jalankan migration 007 di Supabase SQL Editor
+- ⏳ Jalankan seed 03 + 04 di Supabase SQL Editor
+- ⏳ Run auto_discover.py pertama kali (Wikipedia + title scan)
+- ⏳ Fix alias Prabowo (false positive Listyo Sigit) — SQL 1 baris
+- ⏳ GitHub Actions 3 secrets — cron otomatis tiap 30 menit
+- ⏳ IndoBERT ONNX (setelah data cukup)
+
+### Prioritas sesi berikutnya (urutan)
+```
+1. Jalankan 007 → 03 → 04 di SQL Editor (urutan wajib)
+2. Verifikasi: SELECT COUNT(*) FROM political_entities; → harus ~50+
+3. python entity_discovery/auto_discover.py --source all
+4. Fix alias Prabowo + setup GitHub Actions
+5. Monitor data masuk (total_inserted dari curl)
+6. Baru lanjut IndoBERT ONNX setelah >500 artikel masuk
+```
+
+### File baru di sesi ini
+```
+packages/db/migrations/007_entity_expansion_schema.sql  ← WAJIB run dulu
+packages/db/seeds/03_entities_comprehensive.sql          ← 50+ tokoh
+packages/db/seeds/04_scraping_configs_expanded.sql       ← 47 RSS configs baru
+packages/nlp-worker/entity_discovery/auto_discover.py    ← auto-discovery script
+packages/nlp-worker/entity_discovery/requirements.txt
+packages/nlp-worker/entity_discovery/README.md
+```
+
+### Konteks untuk GLM / AI lain
+- Sistem auto-discovery menggunakan `entity_candidates` sebagai staging.
+  JANGAN langsung insert ke `political_entities` tanpa validasi.
+- `hotline_tokoh` VIEW sudah bisa di-query untuk tahu siapa yang sedang ramai.
+- Migration 007 WAJIB dijalankan sebelum seed 03/04 — ada kolom baru yang dipakai.
+- `auto_promote_candidates()` RPC aman dipanggil berulang kali — idempotent.
+
+---
+> **NOTE:** Section "Belum dikerjakan" dan "Prioritas" versi sesi 5 sudah diarsipkan.
+> Lihat versi terbaru di SESI 6 REPORT di atas.
+---
 Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten AI
 (GLM/ZCode ↔ Claude). Setiap perubahan production DB atau code WAJIB update dokumen ini.
 
@@ -14,7 +437,9 @@ Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten A
 > **Tgl update:** 2026-06-26 (sesi 4)
 > **Project Ref:** `bawvxti***` (lihat Supabase Dashboard)
 > **Repo:** `raynzz455/ID-Political-Sentiment-Tracker.git`
-> **Status:** ✅ Arsitektur 3-lapis didesain. Lapis 2 (2-stage scraping) terimplementasi. Repo di-restructure ke monorepo.
+> **Status:** ✅ Arsitektur 3-lapis didesain. Lapis 2 (2-stage scraping) terimplementasi.
+> Repo di-restructure ke monorepo.
+> ⚠️ Status ini sudah usang — lihat FOKUS UTAMA di atas untuk state terkini.
 
 Dokumen ini adalah **single source of truth** untuk sinkronisasi antar asisten AI
 (GLM/ZCode ↔ Claude). Setiap perubahan production DB atau code WAJIB update dokumen ini.
@@ -258,14 +683,16 @@ Beberapa RSS feed (CNN, dll) hanya kirim title, body/text kosong.
 
 ## 📋 KEPUTUSAN ARSITEKTURAL
 
-| # | Keputusan | Status |
-|---|---|---|
-| 1 | Free-tier only (Supabase + HF Spaces + Vercel + GitHub Actions) | ✅ Final |
-| 2 | RSS-only Lapis 1 (23 feed aktif) | ✅ Active |
-| 3 | Evaluasi distribusi SEBELUM commit ke ONNX | ✅ — distribusi belum bisa dievaluasi (dummy model) |
-| 4 | Historical: archive scraper / GDELT, bukan Kaggle/Wayback | ✅ Final, belum diimplementasi |
-| 5 | Hotline tokoh: dynamic priority scraping | ✅ Desain done, belum diimplementasi |
-| 6 | CLI dulu sebelum production worker | ✅ CLI proven, siap ke ONNX |
+| # | Keputusan | Status | Note |
+|---|---|---|---|
+| 1 | Free-tier only (Supabase + HF Spaces + Vercel + GitHub Actions) | ✅ Final | |
+| 2 | RSS-only Lapis 1 (23 feed aktif → target 70+ setelah seed 04) | ✅ Active | |
+| 3 | ~~Evaluasi distribusi SEBELUM commit ke ONNX~~ | 🔄 **DIUBAH** | Fokus kumpulkan data dulu, ONXX nanti |
+| 4 | Historical: archive scraper / GDELT, bukan Kaggle/Wayback | ✅ Final | **PRIORITY #2 sekarang** |
+| 5 | Hotline tokoh: dynamic priority scraping | ✅ Desain done | Implementasi di seed 03 |
+| 6 | CLI dulu sebelum production worker | 🔄 **DIUBAH** | CLI untuk debug saja, production worker nanti setelah ONNX |
+| 7 | **BARU:** Dummy model diabaikan, fokus ekspansi entitas + historical data | ✅ Final (sesi 7) | ONNX setelah >5000 raw_texts |
+| 8 | **BARU:** GitHub Actions sudah berjalan otomatis | ✅ Aktif | Run #20-#26 sukses, ~3-4 jam sekali |
 
 ---
 ## 🗺️ Urutan eksekusi yang disarankan (DIUPDATE)

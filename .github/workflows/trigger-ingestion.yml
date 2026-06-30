@@ -1,53 +1,42 @@
 # ──────────────────────────────────────────────────────────────────
-# ID-Political-Sentiment-Tracker — Ingestion Scheduler
-# Trigger: GitHub Actions cron (gratis untuk public repo, unlimited minutes)
+# ID-Political-Sentiment-Tracker — Ingestion Scheduler (BACKUP)
 #
-# Yang dilakukan workflow ini BUKAN menjalankan Python/NLP di sini.
-# Ini hanya memanggil Supabase Edge Function via HTTP POST.
-# Semua logika RSS fetch + insert ada di Edge Function (Deno).
+# UPDATE: Primary scheduler sekarang pg_cron + pg_net di dalam Supabase
+# (lihat packages/db/migrations/008_pgcron_trigger_ingestion.sql) --
+# presisi ~1 menit, vs GitHub Actions yang documented "best effort"
+# dan diobservasi delay 2-3 jam di project ini.
 #
-# Setup secrets (Settings → Secrets → Actions):
-#   SUPABASE_EDGE_FUNCTION_URL  → https://<project>.supabase.co/functions/v1/rss-ingestion
-#   SUPABASE_ANON_KEY           → eyJ... (anon key, untuk invoke Edge Function)
-#   CRON_SECRET                 → string acak (mis. `openssl rand -hex 32`)
-#                                 WAJIB sama dengan secret di Edge Function env.
-#                                 Tanpa ini, Edge Function akan tolak 401.
+# Workflow ini tetap ada sebagai BACKUP (1x/hari, jaga-jaga kalau
+# pg_cron di Supabase down) + manual trigger untuk debugging.
 # ──────────────────────────────────────────────────────────────────
 
-name: RSS Ingestion Trigger
+name: RSS Ingestion Trigger (Backup)
 
 on:
   schedule:
-    # Setiap 30 menit (cron expression dalam UTC)
-    # Jadwal ini optimal untuk news RSS; Google News RSS lebih jarang update
-    - cron: '*/30 * * * *'
+    # Backup SAJA -- 1x/hari, bukan primary scheduler lagi.
+    # Primary ada di pg_cron (tiap 30 menit, presisi tinggi)
+    - cron: '17 4 * * *'   # offset dari :00 -- hindari jam beban tinggi GitHub
 
-  # Manual trigger dari GitHub UI (Actions → Run workflow)
-  # Berguna untuk test pertama kali tanpa nunggu cron
   workflow_dispatch:
     inputs:
       reason:
         description: 'Reason for manual trigger'
         required: false
-        default: 'manual test'
+        default: 'manual test / debug'
 
 jobs:
   trigger-ingestion:
-    name: Trigger RSS Ingestion
+    name: Trigger RSS Ingestion (Backup/Manual)
     runs-on: ubuntu-latest
-    timeout-minutes: 5        # Edge Function harus selesai < 5 menit total
+    timeout-minutes: 5
 
     steps:
       - name: Trigger Supabase Edge Function
         id: invoke
         run: |
           echo "Triggering RSS ingestion at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-
-          # Jitter 0-59s agar tidak selalu tepat :00/:30 — mengurangi pola bot
-          # yang gampang dideteksi publisher (Detik/Kompas/Google News).
-          SLEEP=$((RANDOM % 60))
-          echo "Jitter sleep: ${SLEEP}s"
-          sleep $SLEEP
+          echo "NOTE: ini backup trigger. Primary scheduler ada di pg_cron Supabase."
 
           HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
             --request POST \
@@ -58,7 +47,6 @@ jobs:
             "${{ secrets.SUPABASE_EDGE_FUNCTION_URL }}")
 
           echo "HTTP Status: $HTTP_STATUS"
-          echo "Response:"
           cat /tmp/response.json | python3 -m json.tool 2>/dev/null || cat /tmp/response.json
 
           if [ "$HTTP_STATUS" -ne 200 ]; then
@@ -66,20 +54,10 @@ jobs:
             exit 1
           fi
 
-          # Extract total_inserted from response for logging
-          INSERTED=$(cat /tmp/response.json | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          print(d.get('total_inserted', 'N/A'))
-          " 2>/dev/null || echo "N/A")
-
-          echo "total_inserted=$INSERTED" >> $GITHUB_OUTPUT
-          echo "Total inserted: $INSERTED new items"
-
       - name: Log summary
         if: always()
         run: |
-          echo "=== Ingestion Summary ==="
-          echo "Time     : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          echo "Inserted : ${{ steps.invoke.outputs.total_inserted }}"
-          echo "Status   : ${{ job.status }}"
+          echo "=== Backup Ingestion Trigger ==="
+          echo "Time   : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "Status : ${{ job.status }}"
+          echo "Reminder: cek juga cron.job_run_details di Supabase untuk primary scheduler"
