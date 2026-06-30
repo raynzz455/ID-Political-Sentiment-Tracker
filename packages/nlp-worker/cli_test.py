@@ -25,6 +25,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
+from sentiment_model import get_pipeline
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
@@ -248,6 +249,9 @@ def cmd_sample(sb: Client, args):
     entities = load_entities(sb)
     print(f"Entities loaded: {len(entities)} tokoh aktif\n")
 
+    # Inisialisasi pipeline model asli
+    pipeline = get_pipeline()
+
     processed = 0
     no_entity = 0
 
@@ -262,9 +266,6 @@ def cmd_sample(sb: Client, args):
         combined = enrich_if_needed(item)
         fetched = len(combined) > len(f"{title} {text}".strip()) + 20
 
-        # Predict (pakai combined yang sudah di-enrich)
-        label, conf, scores = predict_sentiment(combined)
-
         # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
         if item_entity_id:
             matched = [e for e in entities if e["id"] == item_entity_id]
@@ -277,11 +278,12 @@ def cmd_sample(sb: Client, args):
         fetch_tag = " [fetched]" if fetched else ""
         print(f"[{i}/{len(items)}] {title_preview}{fetch_tag}")
         print(f"       text: {text_preview}{'...' if len(combined) > 100 else ''} ({len(combined)} chars)")
-        print(f"       label: {label} (conf={conf:.3f})")
         print(f"       matched: {len(matched)} tokoh — {[m['canonical_name'] for m in matched][:3]}")
 
         if not matched:
-            # Insert dengan entity_id = NULL untuk pipeline testing
+            # Gunakan dummy/placeholder model default jika tidak ada entitas yang match
+            # Tetap dimasukkan dengan entity_id = NULL untuk pipeline testing
+            label, conf, scores = predict_sentiment(combined)
             res_ins = sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": None,
@@ -299,18 +301,27 @@ def cmd_sample(sb: Client, args):
             print()
             continue
 
-        # Insert score untuk tiap matched entity
+        # Loop per-entitas menggunakan model pipeline asli dengan gating relevansi
         for e in matched:
-            res_ins = sb.rpc("insert_sentiment_score", {
+            result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
+            
+            if not result.is_relevant:
+                print(f"       -> SKIP {e['canonical_name']}: tidak relevan "
+                      f"(confidence={result.relevancy_confidence:.3f})")
+                continue   # JANGAN insert_sentiment_score untuk entity ini
+
+            # Hanya insert kalau relevan
+            sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": e["id"],
-                "p_label": label,
-                "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]),
-                "p_pos": float(scores[2]),
-                "p_confidence": float(conf),
+                "p_label": result.label,
+                "p_neg": float(result.scores[0]),
+                "p_neu": float(result.scores[1]),
+                "p_pos": float(result.scores[2]),
+                "p_confidence": float(result.sentiment_confidence),
             }).execute()
-            print(f"       → inserted score for {e['canonical_name']}")
+            print(f"       -> inserted score for {e['canonical_name']} "
+                  f"(relevancy={result.relevancy_confidence:.3f})")
 
         # Ack message
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
@@ -338,12 +349,17 @@ def cmd_batch(sb: Client, args):
         return
 
     entities = load_entities(sb)
+    
+    # Inisialisasi pipeline model asli
+    pipeline = get_pipeline()
+
     label_counts = Counter()
     entity_counts = Counter()
     conf_buckets = Counter()
     processed = 0
     no_entity = 0
     conf_sum = 0.0
+    total_predictions = 0
 
     for item in items:
         text = item.get("text", "")
@@ -355,8 +371,6 @@ def cmd_batch(sb: Client, args):
         # LAPIS 2: enrich body kalau RSS kosong/pendek (follow source_url → scrape)
         combined = enrich_if_needed(item)
 
-        label, conf, scores = predict_sentiment(combined)
-
         # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
         if item_entity_id:
             matched = [e for e in entities if e["id"] == item_entity_id]
@@ -364,35 +378,45 @@ def cmd_batch(sb: Client, args):
             # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
             matched = match_entities(combined, title, entities)
 
-        label_counts[label] += 1
-        conf_sum += conf
-
-        # Bucket confidence
-        if conf < 0.5:
-            conf_buckets["<0.5"] += 1
-        elif conf < 0.7:
-            conf_buckets["0.5-0.7"] += 1
-        elif conf < 0.85:
-            conf_buckets["0.7-0.85"] += 1
-        else:
-            conf_buckets[">=0.85"] += 1
-
         if not matched:
             no_entity += 1
             sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
             continue
 
         for e in matched:
+            result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
+            
+            if not result.is_relevant:
+                continue   # Skip insert dan metrik statistik distribusi jika tidak relevan
+
+            label = result.label
+            conf = result.sentiment_confidence
+            
+            label_counts[label] += 1
+            conf_sum += conf
+            total_predictions += 1
+
+            # Bucket confidence
+            if conf < 0.5:
+                conf_buckets["<0.5"] += 1
+            elif conf < 0.7:
+                conf_buckets["0.5-0.7"] += 1
+            elif conf < 0.85:
+                conf_buckets["0.7-0.85"] += 1
+            else:
+                conf_buckets[">=0.85"] += 1
+
             entity_counts[e["canonical_name"]] += 1
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": e["id"],
                 "p_label": label,
-                "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]),
-                "p_pos": float(scores[2]),
+                "p_neg": float(result.scores[0]),
+                "p_neu": float(result.scores[1]),
+                "p_pos": float(result.scores[2]),
                 "p_confidence": float(conf),
             }).execute()
+
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
         processed += 1
 
@@ -400,22 +424,24 @@ def cmd_batch(sb: Client, args):
     print(f"\nTotal items: {total}")
     print(f"Processed (entity matched + inserted): {processed}")
     print(f"Skipped (no entity match, acked only): {no_entity}")
-    print(f"Avg confidence: {conf_sum/total:.3f}")
+    
+    avg_conf = (conf_sum / total_predictions) if total_predictions > 0 else 0.0
+    print(f"Avg confidence (relevant only): {avg_conf:.3f}")
     print()
-    print("Sentiment distribution:")
+    print("Sentiment distribution (relevant only):")
     for label in ["positive", "neutral", "negative"]:
         c = label_counts.get(label, 0)
-        bar = "█" * int((c / total) * 40)
-        pct = (c / total) * 100
+        bar = "█" * int((c / total_predictions) * 40) if total_predictions > 0 else ""
+        pct = (c / total_predictions) * 100 if total_predictions > 0 else 0.0
         print(f"  {label:10s} {c:3d} ({pct:5.1f}%) {bar}")
     print()
-    print("Confidence buckets:")
+    print("Confidence buckets (relevant only):")
     for bucket in ["<0.5", "0.5-0.7", "0.7-0.85", ">=0.85"]:
         c = conf_buckets.get(bucket, 0)
-        pct = (c / total) * 100
+        pct = (c / total_predictions) * 100 if total_predictions > 0 else 0.0
         print(f"  {bucket:10s} {c:3d} ({pct:5.1f}%)")
     print()
-    print("Top mentioned entities:")
+    print("Top mentioned entities (relevant only):")
     for name, c in entity_counts.most_common(10):
         print(f"  {name:30s} {c:3d} mentions")
     print(f"\n{'='*60}\n")
@@ -492,7 +518,7 @@ def main():
     p_sample.add_argument("count", type=int, help="jumlah item")
     p_sample.set_defaults(func=cmd_sample)
 
-    p_batch = visual = sub.add_parser("batch", help="Proses N item, tampilkan distribusi")
+    p_batch = sub.add_parser("batch", help="Proses N item, tampilkan distribusi")
     p_batch.add_argument("count", type=int, help="jumlah item")
     p_batch.set_defaults(func=cmd_batch)
 
