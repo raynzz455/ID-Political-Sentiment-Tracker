@@ -35,7 +35,12 @@ import re
 import sys
 import time
 import argparse
+from pathlib import Path
+from dotenv import load_dotenv
 from collections import Counter
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 
 try:
     from supabase import create_client, Client
