@@ -284,7 +284,7 @@ def cmd_sample(sb: Client, args):
             # Gunakan dummy/placeholder model default jika tidak ada entitas yang match
             # Tetap dimasukkan dengan entity_id = NULL untuk pipeline testing
             label, conf, scores = predict_sentiment(combined)
-            res_ins = sb.rpc("insert_sentiment_score", {
+            sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": None,
                 "p_label": label,
