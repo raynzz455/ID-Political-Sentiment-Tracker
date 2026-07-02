@@ -28,6 +28,11 @@ import csv
 import argparse
 import random
 from collections import defaultdict
+from dotenv import load_dotenv
+from  pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT_DIR / ".env")
 
 try:
     from supabase import create_client, Client

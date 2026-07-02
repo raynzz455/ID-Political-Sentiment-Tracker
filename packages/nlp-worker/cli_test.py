@@ -18,11 +18,9 @@ Env vars (bisa lewat .env atau environment):
 
 import os
 import sys
-import json
 import argparse
 import re
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from sentiment_model import get_pipeline
