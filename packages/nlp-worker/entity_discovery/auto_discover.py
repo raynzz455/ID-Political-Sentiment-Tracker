@@ -29,8 +29,12 @@ import time
 import json
 import argparse
 import unicodedata
+from pathlib import Path
+from dotenv import load_dotenv
 from datetime import datetime, timezone
 
+ROOT_DIR = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT_DIR / ".env")
 try:
     import httpx
 except ImportError:

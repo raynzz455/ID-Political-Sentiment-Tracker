@@ -79,6 +79,51 @@
 - `GROUND_TRUTH_EVAL_GUIDE.md` — urutan kerja lengkap end-to-end
 
 ### Belum dikerjakan (lanjutkan sesi berikutnya)
+- ⏳ Jalankan migration 007 di Supabase SQL Editor
+- ⏳ Jalankan seed 03 + 04 di Supabase SQL Editor
+- ⏳ Run `auto_discover.py --source all` (Wikipedia + title scan)
+- ⏳ Fix alias Prabowo (false positive "Listyo Sigit") — SQL 1 baris
+- ⏳ Run SQL diagnostic kontaminasi dummy data (confidence = 0.65/0.60)
+- ⏳ Jalankan ground truth evaluation (`export_sentiment_ground_truth.py`)
+- ⏳ Jalankan relevancy review (`export_relevancy_review.py`)
+- ⏳ Historical data backfill (archive scraper per tokoh per tahun)
+
+### File baru di sesi ini
+```
+packages/nlp-worker/sentiment_model.py              ← 2-stage gated pipeline (v2)
+packages/nlp-worker/test_sentiment_model.py         ← test relevancy gate v2
+packages/nlp-worker/export_sentiment_ground_truth.py ← stratified sample export
+packages/nlp-worker/export_relevancy_review.py       ← kandidat relevancy review
+packages/nlp-worker/eval_metrics.py                 ← precision/recall/F1 evaluator
+packages/nlp-worker/GROUND_TRUTH_EVAL_GUIDE.md      ← panduan evaluasi end-to-end
+```
+
+### Model NLP yang dipilih (sesi 8)
+| Stage | Model | F1 | Fungsi |
+|-------|-------|-----|--------|
+| 1 (Relevancy) | `apriandito/indobert-relevancy-classifier` | 0.948 | Filter artikel relevan vs non-relevan |
+| 2 (Sentiment) | `apriandito/indobert-sentiment-classifier` | 0.856 | Predict positive/negative/neutral |
+
+**Catatan:** Model sudah ditest (test_sentiment_model.py v2) dan bisa handle false-positive
+alias (Prabowo/Listyo Sigit). Tapi **belum production-ready** — perlu ground truth evaluation dulu.
+
+### model_version tagging (sesi 8)
+| Tag | Kapan dipakai | Arti |
+|-----|--------------|------|
+| `indobert-fallback-v1` | Semua artikel (document-level) | Sentimen tanpa entity, untuk national mood index |
+| `indobert-ctx-relevancy-gated-v1` | Hanya artikel yang lolos relevancy gate | Sentimen entity-specific, akurat |
+
+### Temuan kritis: kontaminasi data dummy
+- 88 baris sentiment_scores dari dummy model (sesi 3-7) **mungkin masih ada di DB**
+- Total sekarang 111 baris = kemungkinan campuran dummy + real (tidak bisa dibedakan)
+- **Solusi:** Jalankan SQL diagnostic sebelum test lebih lanjut:
+  ```sql
+  SELECT COUNT(*) FROM sentiment_scores
+  WHERE confidence IN (0.65, 0.60)  -- nilai hardcoded dummy
+  ```
+- Jika ditemukan → hapus sebelum lanjut evaluasi model real
+
+---
 
 ## 📐 Architectural Notes (AI Recommendation — 2026-06-30)
 
@@ -637,47 +682,11 @@ Beberapa RSS feed (CNN, dll) hanya kirim title, body/text kosong.
 
 ---
 
-## 📋 APA YANG MASIH HARUS DILAKUKAN
-
-### URGENT (sebelum apapun)
-| # | Tugas | Status |
-|---|---|---|
-| U1 | ~~Bersihkan queue orphan~~ | ✅ Done (sesi 3) |
-| U2 | ~~Re-ingest data via curl~~ | ✅ Done (sesi 3) |
-| U3 | ~~Debug `dequeue_nlp_batch` RPC error~~ | ✅ Fixed (sesi 3, queue orphan cause) |
-| U4 | Verifikasi entity match rate setelah title+text fix | ⏳ **lanjutkan** |
-
-### Layer 4 — NLP Worker
-| # | Tugas | Status |
-|---|---|---|
-| 4a | ~~Fix CLI tool error~~ | ✅ Done (sesi 3 — queue drain + match fix) |
-| 4b | Ganti `predict_sentiment()` ke IndoBERT ONNX | ⏳ |
-| 4c | Validasi akurasi (target 85-90% di domain news) | ⏳ |
-| 4d | Build production worker (poll queue, not CLI) | ⏳ |
-
-### Layer 2 — Ingestion improvement
-| # | Tugas | Status |
-|---|---|---|
-| 2a | Setup GitHub Actions scheduler (cron 30 min) | ⏳ |
-| 2b | Fix Issue A: gnews concurrency limit | ⏳ |
-| 2c | Fix Issue B: parser mismatch 5 feed | ⏳ |
-| 2d | Fix Issue D: `last_run_at` always update | ⏳ |
-
-### Historical data (Layer baru — belum dimulai)
-| # | Tugas | Status |
-|---|---|---|
-| H1 | Desain archive scraper (Detik/Kompas/Tempo per-tanggal) | ⏳ |
-| H2 | Tambah RPC `get_yearly_sentiment` (breakdown per-tahun) | ⏳ |
-| H3 | Implementasi hotline tokoh (dynamic priority) | ⏳ |
-| H4 | Backfill data 2019-2025 via archive scraper | ⏳ |
-
-### Layer 6 — Frontend (teman user)
-| # | Tugas | Status |
-|---|---|---|
-| 6a | Inisialisasi Next.js + Supabase client | ⏳ |
-| 6b | Dashboard ranking tokoh + foto | ⏳ |
-| 6c | Time-series per tokoh (per-tahun) | ⏳ |
-| 6d | Highlight berita positif/negatif per tokoh | ⏳ |
+> **NOTE:** Section "APA YANG MASIH HARUS DILAKUKAN" versi lama (berbasis layer L1-L6) sudah
+> diarsipkan. Semua tugas sudah dikonsolidasikan ke:
+> - **FOKUS UTAMA SAAT INI** (bagian atas file) — 4 fase
+> - **Urutan Eksekusi FINAL** (di bawah Keputusan Arsitektural)
+> - **SESI 8 REPORT** — Belum dikerjakan
 
 ---
 
@@ -687,60 +696,53 @@ Beberapa RSS feed (CNN, dll) hanya kirim title, body/text kosong.
 |---|---|---|---|
 | 1 | Free-tier only (Supabase + HF Spaces + Vercel + GitHub Actions) | ✅ Final | |
 | 2 | RSS-only Lapis 1 (23 feed aktif → target 70+ setelah seed 04) | ✅ Active | |
-| 3 | ~~Evaluasi distribusi SEBELUM commit ke ONNX~~ | 🔄 **DIUBAH** | Fokus kumpulkan data dulu, ONXX nanti |
+| 3 | ~~Evaluasi distribusi SEBELUM commit ke ONNX~~ | 🔄 **DIUBAH (sesi 7)** | Fokus kumpulkan data dulu, ONNX nanti |
 | 4 | Historical: archive scraper / GDELT, bukan Kaggle/Wayback | ✅ Final | **PRIORITY #2 sekarang** |
 | 5 | Hotline tokoh: dynamic priority scraping | ✅ Desain done | Implementasi di seed 03 |
-| 6 | CLI dulu sebelum production worker | 🔄 **DIUBAH** | CLI untuk debug saja, production worker nanti setelah ONNX |
-| 7 | **BARU:** Dummy model diabaikan, fokus ekspansi entitas + historical data | ✅ Final (sesi 7) | ONNX setelah >5000 raw_texts |
-| 8 | **BARU:** GitHub Actions sudah berjalan otomatis | ✅ Aktif | Run #20-#26 sukses, ~3-4 jam sekali |
+| 6 | CLI dulu sebelum production worker | 🔄 **DIUBAH (sesi 7)** | CLI untuk debug saja, production worker nanti |
+| 7 | Dummy model diabaikan, fokus ekspansi entitas + historical data | ✅ Final (sesi 7) | ONNX setelah data cukup |
+| 8 | GitHub Actions sudah berjalan otomatis | ✅ Aktif (sesi 7) | Run #20-#26 sukses |
+| 9 | **BARU:** Model NLP = 2-stage gated pipeline (relevancy → sentiment) | ✅ Final (sesi 8) | `indobert-relevancy-classifier` + `indobert-sentiment-classifier` |
+| 10 | **BARU:** NULL entity score penting untuk national mood index | ✅ Final (sesi 8) | JANGAN hapus logic insert NULL — pakai `model_version` tag untuk bedakan |
+| 11 | **BARU:** IndoBERT monolingual > ModernBERT multilingual untuk Indonesia | ✅ Final (sesi 8) | F1 0.9353 IndoBERT vs lower untuk mBERT/multilingual generik |
+| 12 | **BARU:** Data Quality > Model Quality > Latency Optimization | ✅ Final (sesi 8) | Bottleneck = network, bukan inference |
+| 13 | **BARU:** Ground truth evaluation WAJIB sebelum production | ✅ Final (sesi 8) | Toolkit sudah dibuat (export + eval_metrics) |
+| 14 | **BARU:** Clean dummy data (confidence 0.65/0.60) sebelum eval model real | ✅ Final (sesi 8) | SQL diagnostic + delete contaminated rows |
 
 ---
-## 🗺️ Urutan eksekusi yang disarankan (DIUPDATE)
+## 🗺️ Urutan Eksekusi (FINAL — konsolidasi sesi 1-8)
 
 ```
-SEKARANG (URGENT)
-  → U1: Bersihkan queue orphan
-  → U2: Re-ingest data (curl)
-  → U3: Debug RPC dequeue error
-  → U4: CLI tool jalan + lihat distribusi real
+SEKARANG (FASE 1: EKSPANSI DATA)
+  → E1: Migration 007 di SQL Editor (WAJIB sebelum seed 03)
+  → E2: Seed 03 (50+ tokoh) di SQL Editor
+  → E3: Seed 04 (47 RSS configs) di SQL Editor
+  → E4: Fix alias Prabowo (SQL 1 baris)
+  → E5: Verifikasi entity count → harus 50+
+  → Diagnostic: hapus sentiment_scores dari dummy (confidence 0.65/0.60)
       ↓
-  EVALUASI DISTRIBUSI
-  → Kalau >80% neutral → tambah sumber opini (Issue Keputusan 3)
-  → Kalau reasonable → lanjut ONNX model
+  → E6: Run auto_discover.py --source all
+  → H1: Desain + implementasi archive scraper (historical 2019-2025)
+  → H2: Backfill data per tokoh per tahun
+  → H3: RPC get_yearly_sentiment
       ↓
-  NLP MODEL
-  → 4b: IndoBERT ONNX replace dummy
-  → 4c: Validasi 85-90% target
-  → 4d: Production worker
+PARALEL (bisa sambil historical berjalan)
+  → 2c: Fix 5 feed parser mismatch
+  → 2b: Fix gnews concurrency (503)
+  → 2d: Fix last_run_at
       ↓
-  OTOMASI + HISTORIS
-  → 2a: GitHub Actions cron
-  → H1-H2: Archive scraper + yearly RPC
-  → H3: Hotline tokoh
+FASE 2: NLP MODEL (setelah data cukup)
+  → Ground truth evaluation (export + eval_metrics)
+  → IndoBERT ONNX production (2-stage gated)
+  → Production NLP worker (auto-dequeue, batch inference)
       ↓
-  FRONTEND
-  → 6a-6d: Dashboard (teman user kerjakan)
+FASE 3: FRONTEND (paling akhir)
+  → 6a-6d: Next.js dashboard
 ```
-## 🗺️ Urutan eksekusi recommended (By Claude)
 
-```
-SEKARANG (< 5 menit total)
-  → FIX-1: SQL fix alias Prabowo (30 detik)
-  → 2a: GitHub Actions 3 secrets (2 menit)
-      ↓
-SESI BERIKUTNYA
-  → 4b: IndoBERT ONNX (ganti dummy predict_sentiment)
-  → 4c: Validasi distribusi real
-  → 4d: Production worker di HF Spaces
-      ↓
-PARALEL (bisa dikerjakan sambil ONNX running)
-  → 2c: Fix parser mismatch 5 feed
-  → H1-H4: Archive scraper + backfill
-  → L3: YouTube comments
-      ↓
-SETELAH DATA CUKUP
-  → 6a-6d: Frontend Next.js
-```
+> **Catatan:** Prioritas Fase 1 adalah keputusan user (sesi 7).
+> Sesi 8 menambahkan: clean dummy data, ground truth evaluation, 2-stage pipeline.
+> Urutan ini mengkonsolidasi semua rekomendasi dari sesi 1-8.
 
 ---
 
@@ -751,13 +753,13 @@ SETELAH DATA CUKUP
 | `CRON_SECRET` | Supabase Dashboard → Edge Functions → Secrets | ✅ Set |
 | `SUPABASE_SERVICE_ROLE_KEY` | Auto-injected ke Edge Function | ✅ |
 | `SUPABASE_URL` | Auto-injected | ✅ |
-| `SUPABASE_EDGE_FUNCTION_URL` | GitHub Actions Secrets | ⏳ BELUM |
-| `SUPABASE_ANON_KEY` | GitHub Actions Secrets | ⏳ BELUM |
-| `CRON_SECRET` | GitHub Actions Secrets | ⏳ BELUM |
+| `SUPABASE_EDGE_FUNCTION_URL` | GitHub Actions Secrets | ✅ **Sudah set (run #20-#26 sukses)** |
+| `SUPABASE_ANON_KEY` | GitHub Actions Secrets | ✅ **Sudah set** |
+| `CRON_SECRET` | GitHub Actions Secrets | ✅ **Sudah set** |
 
 ---
 
-## 📁 Struktur repo (current)
+## 📁 Struktur repo (current — konsolidasi sesi 1-8)
 
 ```
 ID-Political-Sentiment-Tracker/
@@ -772,22 +774,35 @@ ID-Political-Sentiment-Tracker/
 │   │   │   ├── 003_allow_null_entity.sql  ✅ applied
 │   │   │   ├── 004_purge_empty_text.sql   ✅ applied
 │   │   │   ├── 005_dequeue_add_source_url.sql ✅ applied
-│   │   │   └── 006_fix_dequeue_html.sql   ✅ applied (sesi 5)
+│   │   │   ├── 006_fix_dequeue_html.sql   ✅ applied (sesi 5)
+│   │   │   └── 007_entity_expansion_schema.sql ⏳ dibuat, belum run
 │   │   └── seeds/
-│   │       ├── 01_political_entities.sql  ✅ 18 tokoh
-│   │       └── 02_scraping_configs.sql    ✅ 23 configs
+│   │       ├── 01_political_entities.sql  ✅ 18 tokoh (production)
+│   │       ├── 02_scraping_configs.sql    ✅ 23 configs (production)
+│   │       ├── 03_entities_comprehensive.sql  ⏳ 50+ tokoh (belum run)
+│   │       └── 04_scraping_configs_expanded.sql ⏳ 47 configs (belum run)
 │   └── nlp-worker/
 │       ├── cli_test.py                    ✅ working (dummy model)
-│       ├── requirements.txt              ← requests, trafilatura, supabase
+│       ├── sentiment_model.py             ✅ 2-stage gated pipeline v2 (sesi 8)
+│       ├── test_sentiment_model.py        ✅ test relevancy gate v2 (sesi 8)
+│       ├── export_sentiment_ground_truth.py ✅ stratified export (sesi 8)
+│       ├── export_relevancy_review.py      ✅ kandidat relevancy (sesi 8)
+│       ├── eval_metrics.py                ✅ P/R/F1 evaluator (sesi 8)
+│       ├── GROUND_TRUTH_EVAL_GUIDE.md     ✅ panduan evaluasi (sesi 8)
+│       ├── requirements.txt              ← requests, trafilatura, supabase, transformers
+│       ├── entity_discovery/
+│       │   ├── auto_discover.py           ← auto-discovery 3 sumber (sesi 6)
+│       │   ├── requirements.txt
+│       │   └── README.md
 │       └── README.md
 ├── infra/
 │   └── supabase/
 │       ├── config.toml
 │       └── functions/rss-ingestion/
-│           └── index.ts                  ✅ deployed (cleanText fix)
+│           └── index.ts                  ✅ deployed
 ├── .github/
 │   └── workflows/
-│       └── trigger-ingestion.yml         ✅ ready — secrets belum diset
+│       └── trigger-ingestion.yml         ✅ AKTIF — run #20-#26 sukses
 ├── docs/
 │   ├── architecture.md
 │   ├── workflow.drawio
