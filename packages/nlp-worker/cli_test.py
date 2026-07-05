@@ -155,51 +155,66 @@ except ImportError:
     FETCH_AVAILABLE = False
 
 
-def fetch_full_body(url: str, timeout: int = 10) -> str:
+def fetch_full_body(url: str, timeout: int = 15) -> str:
     """
     Follow source_url (gnews redirect) → scrape main content via trafilatura.
-    Returns: full body text, atau string kosong kalau gagal.
     """
-    if not FETCH_AVAILABLE:
-        return ""
-    if not url:
+    if not FETCH_AVAILABLE or not url:
         return ""
     try:
+        # GANTI User-Agent menjadi Browser Asli agar tidak di-block media
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; ID-Sentiment-Tracker/1.0)"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
         }
         resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         if not resp.ok:
             return ""
+        
         # trafilatura auto-detect bahasa, extract main content, buang menu/ad/footer
         body = traf_extract(resp.text, include_comments=False, include_tables=False)
         return body or ""
     except Exception as e:
-        print(f"       [fetch_full_body error] {type(e).__name__}: {e}")
+        # Jangan print error kecuali memang diperlukan, untuk mengurangi noise log
         return ""
 
-
-def enrich_if_needed(item: dict, min_len: int = 80) -> str:
+def enrich_if_needed(item: dict, min_len: int = 500) -> str:
     """
     Kembalikan text yang siap untuk NLP.
-    Kalau body RSS kosong/pendek (< min_len) & ada source_url → fetch full body.
-    Fallback ke title+text kalau fetch gagal.
+    Kalau body RSS kosong/pendek (< 500 char) & ada source_url → fetch full body.
     """
     text = (item.get("text") or "").strip()
     title = (item.get("title") or "").strip()
     source_url = item.get("source_url") or ""
 
-    # Sudah cukup panjang → pakai langsung
+    # Jika teks sudah lebih dari 500 karakter, langsung pakai
     if len(text) >= min_len:
         return f"{title} {text}".strip()
 
-    # Body pendek/kosong + ada URL → fetch full article
-    if source_url:
+    # Jika kurang dari 500 karakter, WAJIB fetch URL
+    if source_url and FETCH_AVAILABLE:
         full = fetch_full_body(source_url)
         if len(full) >= min_len:
             return f"{title} {full}".strip()
 
-    # Fallback terakhir: title + text apa adanya
+    # Fallback terakhir jika URL mati / di-block
+    return f"{title} {text}".strip()
+
+
+def enrich_if_needed(item: dict, min_len: int = 500) -> str:
+    text = (item.get("text") or "").strip()
+    title = (item.get("title") or "").strip()
+    source_url = item.get("source_url") or ""
+
+    if len(text) >= min_len:
+        return f"{title} {text}".strip()
+
+    if source_url and FETCH_AVAILABLE:
+        full = fetch_full_body(source_url)
+        if len(full) >= min_len:
+            return f"{title} {full}".strip()
+
     return f"{title} {text}".strip()
 
 
@@ -231,7 +246,6 @@ def cmd_inspect(sb: Client, args):
 
 
 def cmd_sample(sb: Client, args):
-    """Proses N item, tampilkan hasil, AKAN ack + insert score."""
     n = args.count
     res = sb.rpc("dequeue_nlp_batch", {"p_vt": 120, "p_qty": n}).execute()
     items = res.data or []
@@ -241,74 +255,63 @@ def cmd_sample(sb: Client, args):
     print(f"{'='*60}")
 
     if not items:
-        print("Queue kosong. Jalankan ingestion dulu (curl edge function).")
+        print("Queue kosong.")
         return
 
     entities = load_entities(sb)
-    print(f"Entities loaded: {len(entities)} tokoh aktif\n")
-
-    # Inisialisasi pipeline model asli
     pipeline = get_pipeline()
 
     processed = 0
     no_entity = 0
 
     for i, item in enumerate(items, 1):
-        text = item.get("text", "")
         title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
-        item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
+        item_entity_id = item.get("entity_id")
 
-        # LAPIS 2: enrich body kalau RSS kosong/pendek (follow source_url → scrape)
         combined = enrich_if_needed(item)
-        fetched = len(combined) > len(f"{title} {text}".strip()) + 20
+        fetched = len(combined) > len(f"{title} {item.get('text', '')}".strip()) + 20
 
-        # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
         if item_entity_id:
             matched = [e for e in entities if e["id"] == item_entity_id]
         else:
-            # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
             matched = match_entities(combined, title, entities)
 
-        title_preview = (item.get("title") or "")[:70]
-        text_preview = combined[:100]
-        fetch_tag = " [fetched]" if fetched else ""
-        print(f"[{i}/{len(items)}] {title_preview}{fetch_tag}")
-        print(f"       text: {text_preview}{'...' if len(combined) > 100 else ''} ({len(combined)} chars)")
-        print(f"       matched: {len(matched)} tokoh — {[m['canonical_name'] for m in matched][:3]}")
+        title_preview = title[:70]
+        print(f"[{i}/{len(items)}] {title_preview}{' [fetched]' if fetched else ''}")
+        print(f"       text_len: {len(combined)} chars")
+        print(f"       matched: {len(matched)} tokoh")
 
         if not matched:
-            # Gunakan dummy/placeholder model default jika tidak ada entitas yang match
-            # Tetap dimasukkan dengan entity_id = NULL untuk pipeline testing
-            label, conf, scores = predict_sentiment(combined)
+            # 1. FALLBACK (No entity match) -> Gunakan model ASLI (context=None)
+            fb = pipeline.predict_gated(text=combined, context=None)
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": None,
-                "p_label": label,
-                "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]),
-                "p_pos": float(scores[2]),
-                "p_confidence": float(conf),
+                "p_label": fb.label,
+                "p_neg": float(fb.scores[0]),
+                "p_neu": float(fb.scores[1]),
+                "p_pos": float(fb.scores[2]),
+                "p_confidence": float(fb.sentiment_confidence),
+                "p_model_version": "indobert-fallback-v1"  # TAG PENTING
             }).execute()
-            print(f"       → inserted score (no entity, entity_id=NULL)")
+            print(f"       → inserted fallback score (entity_id=NULL, label={fb.label})")
             no_entity += 1
             sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
-            print(f"       ✓ acked msg_id={msg_id}")
             processed += 1
             print()
             continue
 
-        # Loop per-entitas menggunakan model pipeline asli dengan gating relevansi
+        # 2. MATCHED (2-Stage Gate per entity)
         for e in matched:
             result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
             
             if not result.is_relevant:
                 print(f"       -> SKIP {e['canonical_name']}: tidak relevan "
-                      f"(confidence={result.relevancy_confidence:.3f})")
-                continue   # JANGAN insert_sentiment_score untuk entity ini
+                      f"(conf={result.relevancy_confidence:.3f})")
+                continue
 
-            # Hanya insert kalau relevan
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": e["id"],
@@ -317,13 +320,12 @@ def cmd_sample(sb: Client, args):
                 "p_neu": float(result.scores[1]),
                 "p_pos": float(result.scores[2]),
                 "p_confidence": float(result.sentiment_confidence),
+                "p_model_version": "indobert-ctx-relevancy-gated-v1"  # TAG PENTING
             }).execute()
             print(f"       -> inserted score for {e['canonical_name']} "
-                  f"(relevancy={result.relevancy_confidence:.3f})")
+                  f"(label={result.label}, conf={result.sentiment_confidence:.3f})")
 
-        # Ack message
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
-        print(f"       ✓ acked msg_id={msg_id}")
         processed += 1
         print()
 
@@ -333,7 +335,6 @@ def cmd_sample(sb: Client, args):
 
 
 def cmd_batch(sb: Client, args):
-    """Proses N item, tampilkan distribusi sentiment. Akan commit."""
     n = args.count
     res = sb.rpc("dequeue_nlp_batch", {"p_vt": 300, "p_qty": n}).execute()
     items = res.data or []
@@ -347,36 +348,39 @@ def cmd_batch(sb: Client, args):
         return
 
     entities = load_entities(sb)
-    
-    # Inisialisasi pipeline model asli
     pipeline = get_pipeline()
 
     label_counts = Counter()
     entity_counts = Counter()
-    conf_buckets = Counter()
     processed = 0
     no_entity = 0
-    conf_sum = 0.0
-    total_predictions = 0
 
     for item in items:
-        text = item.get("text", "")
         title = item.get("title", "")
         raw_id = item.get("raw_text_id")
         msg_id = item.get("msg_id")
-        item_entity_id = item.get("entity_id")  # sudah di-set dari gnews feeds
+        item_entity_id = item.get("entity_id")
 
-        # LAPIS 2: enrich body kalau RSS kosong/pendek (follow source_url → scrape)
         combined = enrich_if_needed(item)
 
-        # PRIORITAS 1: pakai entity_id dari queue (per-tokoh feeds sudah attribute)
         if item_entity_id:
             matched = [e for e in entities if e["id"] == item_entity_id]
         else:
-            # PRIORITAS 2: general feed (entity_id NULL) → fallback text matching
             matched = match_entities(combined, title, entities)
 
         if not matched:
+            # Fallback model asli
+            fb = pipeline.predict_gated(text=combined, context=None)
+            sb.rpc("insert_sentiment_score", {
+                "p_raw_text_id": raw_id,
+                "p_entity_id": None,
+                "p_label": fb.label,
+                "p_neg": float(fb.scores[0]),
+                "p_neu": float(fb.scores[1]),
+                "p_pos": float(fb.scores[2]),
+                "p_confidence": float(fb.sentiment_confidence),
+                "p_model_version": "indobert-fallback-v1"
+            }).execute()
             no_entity += 1
             sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
             continue
@@ -385,26 +389,12 @@ def cmd_batch(sb: Client, args):
             result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
             
             if not result.is_relevant:
-                continue   # Skip insert dan metrik statistik distribusi jika tidak relevan
+                continue
 
             label = result.label
-            conf = result.sentiment_confidence
-            
             label_counts[label] += 1
-            conf_sum += conf
-            total_predictions += 1
-
-            # Bucket confidence
-            if conf < 0.5:
-                conf_buckets["<0.5"] += 1
-            elif conf < 0.7:
-                conf_buckets["0.5-0.7"] += 1
-            elif conf < 0.85:
-                conf_buckets["0.7-0.85"] += 1
-            else:
-                conf_buckets[">=0.85"] += 1
-
             entity_counts[e["canonical_name"]] += 1
+
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id,
                 "p_entity_id": e["id"],
@@ -412,36 +402,23 @@ def cmd_batch(sb: Client, args):
                 "p_neg": float(result.scores[0]),
                 "p_neu": float(result.scores[1]),
                 "p_pos": float(result.scores[2]),
-                "p_confidence": float(conf),
+                "p_confidence": float(result.sentiment_confidence),
+                "p_model_version": "indobert-ctx-relevancy-gated-v1"
             }).execute()
 
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
         processed += 1
 
     total = len(items)
+    total_pred = sum(label_counts.values())
     print(f"\nTotal items: {total}")
     print(f"Processed (entity matched + inserted): {processed}")
-    print(f"Skipped (no entity match, acked only): {no_entity}")
-    
-    avg_conf = (conf_sum / total_predictions) if total_predictions > 0 else 0.0
-    print(f"Avg confidence (relevant only): {avg_conf:.3f}")
-    print()
-    print("Sentiment distribution (relevant only):")
+    print(f"Skipped (no entity match, fallback inserted): {no_entity}")
+    print("\nSentiment distribution (relevant only):")
     for label in ["positive", "neutral", "negative"]:
         c = label_counts.get(label, 0)
-        bar = "█" * int((c / total_predictions) * 40) if total_predictions > 0 else ""
-        pct = (c / total_predictions) * 100 if total_predictions > 0 else 0.0
-        print(f"  {label:10s} {c:3d} ({pct:5.1f}%) {bar}")
-    print()
-    print("Confidence buckets (relevant only):")
-    for bucket in ["<0.5", "0.5-0.7", "0.7-0.85", ">=0.85"]:
-        c = conf_buckets.get(bucket, 0)
-        pct = (c / total_predictions) * 100 if total_predictions > 0 else 0.0
-        print(f"  {bucket:10s} {c:3d} ({pct:5.1f}%)")
-    print()
-    print("Top mentioned entities (relevant only):")
-    for name, c in entity_counts.most_common(10):
-        print(f"  {name:30s} {c:3d} mentions")
+        pct = (c / total_pred) * 100 if total_pred > 0 else 0.0
+        print(f"  {label:10s} {c:3d} ({pct:5.1f}%)")
     print(f"\n{'='*60}\n")
 
 
