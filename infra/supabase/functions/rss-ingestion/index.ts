@@ -264,10 +264,11 @@ Deno.serve(async (req: Request) => {
   )
 
   // ── 1. Load active configs ──
-  const { data: configs, error: cfgErr } = await supabase
+ const { data: configs, error: cfgErr } = await supabase
     .from('scraping_configs')
     .select('id, entity_id, source_type, config_name, url')
     .eq('is_active', true)
+    .eq('source_type', 'rss_news') 
 
   if (cfgErr) {
     console.error('[CONFIG_ERROR]', cfgErr.message)

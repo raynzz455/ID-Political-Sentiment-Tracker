@@ -69,3 +69,19 @@ jobs:
           echo "Time   : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "Status : ${{ job.status }}"
           echo "Reminder: cek juga cron.job_run_details di Supabase untuk primary scheduler"
+
+  fetch-gnews:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install Deps
+        run: pip install httpx supabase python-dotenv
+      - name: Run GNews Fetcher
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python packages/nlp-worker/gnews_fetcher.py
