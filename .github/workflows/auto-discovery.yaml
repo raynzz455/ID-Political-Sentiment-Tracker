@@ -1,0 +1,17 @@
+name: Weekly Entity Auto-Discovery
+on:
+  schedule:
+    - cron: '0 2 * * 0' # Tiap Minggu jam 02:00 UTC
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.12' }
+      - run: pip install httpx supabase python-dotenv
+      - run: python packages/nlp-worker/entity_discovery/auto_discover.py
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
