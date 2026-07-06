@@ -93,7 +93,7 @@ function cleanText(html: string): string {
  */
 function parseItems(xml: string, configName: string): BatchItem[] {
   const items: BatchItem[] = []
-  const itemRe = /<item[^>]*>([\s\S]*?)<\/item>/gi
+  const itemRe = /<(?:item|entry)[^>]*>([\s\S]*?)<\/(?:item|entry)>/gi  
   let match: RegExpExecArray | null
 
   while ((match = itemRe.exec(xml)) !== null) {
@@ -157,8 +157,8 @@ async function fetchAndParse(cfg: RSSConfig): Promise<BatchItem[]> {
   try {
     const res = await fetch(cfg.url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; ID-Sentiment-Tracker/1.0; +https://github.com/raynzz455/ID-Political-Sentiment-Tracker)',
-        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',        
+      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
       },
       signal: AbortSignal.timeout(12_000),   // 12s network timeout
     })
