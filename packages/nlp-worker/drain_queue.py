@@ -1,33 +1,12 @@
 """
-drain_queue.py
-================
-Drain pgmq queue dalam SATU process Python -- model di-load sekali,
-dipakai berulang (beda dengan loop PowerShell yang spawn process baru
-tiap kali, reload model 670MB berkali-kali).
+drain_queue.py v2 — Layer 4 (NLP Worker)
+==========================================
+Mengosongkan antrian pgmq dan memproses sentimen.
 
-INI BUKAN production daemon 24/7. Ini untuk fase pengumpulan data
-ground truth -- berhenti sendiri begitu target tercapai atau queue habis.
-Production worker (HF Spaces, polling otomatis) masih ditunda sampai
-ground truth evaluation selesai.
-
-Logic per artikel:
-  1. SELALU hitung sentimen document-level (entity_id=NULL, untuk
-     mv_national_monthly_summary / mv_national_yearly_summary)
-  2. Cari entity candidate via alias matching (word-boundary)
-  3. Untuk tiap candidate: cek relevancy gate
-     - GAGAL relevancy -> skip, TIDAK insert apa pun untuk entity ini
-     - LULUS relevancy  -> hitung sentimen context-conditioned, insert
-  4. Ack message dari queue
-  5. model_version di-tag eksplisit beda untuk tiap jenis insert
-
-Usage:
-    python drain_queue.py --target 300
-    python drain_queue.py --target 500 --batch-size 30
-    python drain_queue.py --all              # drain sampai queue benar2 habis
-
-Env vars:
-    SUPABASE_URL
-    SUPABASE_SERVICE_ROLE_KEY
+FIX v2:
+  1. Pre-Attribution: Baca configured_entity_id dari metadata (Skip blind regex jika ada).
+  2. Binary Mapping: Netral dipaksa jadi Positif/Negatif berdasarkan skor.
+  3. Guard Teks Pendek: Skip artikel < 200 char agar model tidak halusinasi.
 """
 
 import os
@@ -45,8 +24,7 @@ load_dotenv(ROOT_DIR / ".env")
 try:
     from supabase import create_client, Client
 except ImportError:
-    print("[ERROR] pip install supabase")
-    sys.exit(1)
+    print("[ERROR] pip install supabase"); sys.exit(1)
 
 from sentiment_model import get_pipeline
 
@@ -57,13 +35,10 @@ MIN_ALIAS_LEN = 4
 MODEL_VERSION_FALLBACK = "indobert-fallback-v1"
 MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v1"
 
-
 def get_client() -> Client:
     if not SUPABASE_URL or not SERVICE_KEY:
-        print("[ERROR] Set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY")
-        sys.exit(1)
+        print("[ERROR] Set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"); sys.exit(1)
     return create_client(SUPABASE_URL, SERVICE_KEY)
-
 
 def load_entities(sb: Client) -> list[dict]:
     res = sb.table("political_entities") \
@@ -72,126 +47,121 @@ def load_entities(sb: Client) -> list[dict]:
             .execute()
     return res.data or []
 
-
 def find_alias_candidates(title: str, text: str, entities: list[dict]) -> list[dict]:
     combined = f"{title or ''} {text or ''}".lower()
     matched, seen = [], set()
     for e in entities:
-        if e["id"] in seen:
-            continue
+        if e["id"] in seen: continue
         for name in [e["canonical_name"]] + list(e.get("aliases") or []):
-            if len(name) < MIN_ALIAS_LEN:
-                continue
+            if len(name) < MIN_ALIAS_LEN: continue
             if re.search(r'\b' + re.escape(name.lower()) + r'\b', combined):
                 matched.append(e)
                 seen.add(e["id"])
                 break
     return matched
 
-
 def process_one(sb, pipeline, entities, item: dict, stats: Counter) -> None:
     raw_id = item["raw_text_id"]
     title  = item.get("title") or ""
     text   = item.get("text") or ""
+    combined_text = f"{title} {text}".strip()
 
-    # 1. SELALU: fallback document-level (national index)
+    # GUARD TEKS PENDEK
+    if len(combined_text) < 200:
+        stats["skipped_short"] += 1
+        sb.rpc("ack_nlp_message", {"p_msg_id": item["msg_id"]}).execute()
+        return
+
+    # 1. Fallback document-level (national index)
     try:
-        fb = pipeline.predict_gated(text=f"{title} {text}".strip(), context=None)
+        fb = pipeline.predict_gated(text=combined_text, context=None)
         sb.rpc("insert_sentiment_score", {
-            "p_raw_text_id": raw_id,
-            "p_entity_id": None,
-            "p_label": fb.label,
-            "p_neg": float(fb.scores[0]),
-            "p_neu": float(fb.scores[1]),
-            "p_pos": float(fb.scores[2]),
+            "p_raw_text_id": raw_id, "p_entity_id": None,
+            "p_label": fb.label, "p_neg": float(fb.scores[0]),
+            "p_neu": float(fb.scores[1]), "p_pos": float(fb.scores[2]),
             "p_confidence": float(fb.sentiment_confidence),
             "p_model_version": MODEL_VERSION_FALLBACK,
         }).execute()
         stats["fallback_inserted"] += 1
     except Exception as e:
         stats["fallback_error"] += 1
-        print(f"    [FALLBACK_ERROR] raw_id={raw_id}: {e}")
 
-    # 2. Cari kandidat entity via alias
-    candidates = find_alias_candidates(title, text, entities)
-    stats["alias_candidates_total"] += len(candidates)
+    # 2. Pre-Attribution / Blind Matching
+    metadata = item.get("metadata") or {}
+    item_entity_id = metadata.get("configured_entity_id")
 
-    # 3. Gate + sentiment per kandidat
-    combined_text = f"{title} {text}".strip()
-    for e in candidates:
+    if item_entity_id:
+        matched = [e for e in entities if e["id"] == item_entity_id]
+    else:
+        matched = find_alias_candidates(title, text, entities)
+
+    stats["alias_candidates_total"] += len(matched)
+
+    # 3. Gate + Sentiment per kandidat
+    for e in matched:
         try:
             result = pipeline.predict_gated(text=combined_text, context=e["canonical_name"])
-        except Exception as ex:
+        except Exception:
             stats["gate_error"] += 1
-            print(f"    [GATE_ERROR] raw_id={raw_id} entity={e['canonical_name']}: {ex}")
             continue
 
         if not result.is_relevant:
             stats["gate_rejected"] += 1
             continue
 
+        # BINARY MAPPING (Hapus Netral)
+        label = result.label
+        scores = result.scores
+        if label == "neutral":
+            if scores[2] >= scores[0]: # pos >= neg
+                label = "positive"
+            else:
+                label = "negative"
+
         try:
             sb.rpc("insert_sentiment_score", {
-                "p_raw_text_id": raw_id,
-                "p_entity_id": e["id"],
-                "p_label": result.label,
-                "p_neg": float(result.scores[0]),
-                "p_neu": float(result.scores[1]),
-                "p_pos": float(result.scores[2]),
+                "p_raw_text_id": raw_id, "p_entity_id": e["id"],
+                "p_label": label, "p_neg": float(scores[0]),
+                "p_neu": float(scores[1]), "p_pos": float(scores[2]),
                 "p_confidence": float(result.sentiment_confidence),
                 "p_model_version": MODEL_VERSION_GATED,
             }).execute()
             stats["entity_inserted"] += 1
-            stats[f"label_{result.label}"] += 1
-        except Exception as ex:
+            stats[f"label_{label}"] += 1
+        except Exception:
             stats["insert_error"] += 1
-            print(f"    [INSERT_ERROR] raw_id={raw_id} entity={e['canonical_name']}: {ex}")
 
     # 4. Ack
     try:
         sb.rpc("ack_nlp_message", {"p_msg_id": item["msg_id"]}).execute()
         stats["acked"] += 1
-    except Exception as e:
+    except Exception:
         stats["ack_error"] += 1
-        print(f"    [ACK_ERROR] msg_id={item['msg_id']}: {e}")
-
 
 def main():
-    parser = argparse.ArgumentParser(description="Drain pgmq queue dalam satu process")
-    parser.add_argument("--target", type=int, default=300,
-                         help="Berhenti setelah memproses N artikel (default 300)")
-    parser.add_argument("--batch-size", type=int, default=30,
-                         help="Jumlah item per dequeue call (default 30)")
-    parser.add_argument("--all", action="store_true",
-                         help="Abaikan --target, drain sampai queue benar-benar habis")
-    parser.add_argument("--progress-every", type=int, default=20,
-                         help="Print progress tiap N artikel (default 20)")
+    parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker)")
+    parser.add_argument("--target", type=int, default=300, help="Berhenti setelah N artikel")
+    parser.add_argument("--batch-size", type=int, default=30, help="Jumlah item per dequeue")
+    parser.add_argument("--all", action="store_true", help="Drain sampai habis")
     args = parser.parse_args()
 
     sb = get_client()
     entities = load_entities(sb)
     print(f"Loaded {len(entities)} entitas aktif")
 
-    print("Loading model (relevancy + sentiment + fallback) -- sekali saja untuk seluruh drain ...")
+    print("Loading model (relevancy + sentiment + fallback)...")
     pipeline = get_pipeline()
-    # Trigger load eksplisit sekarang (bukan nunggu lazy-load di tengah loop)
-    _ = pipeline.relevancy
-    _ = pipeline.sentiment
-    _ = pipeline.fallback
+    _ = pipeline.relevancy; _ = pipeline.sentiment; _ = pipeline.fallback
     print("Model siap.\n")
 
     stats = Counter()
     processed = 0
     start = time.time()
 
-    print(f"{'='*70}")
-    print(f"DRAIN START — target={'ALL (sampai habis)' if args.all else args.target}")
-    print(f"{'='*70}")
+    print(f"{'='*70}\nDRAIN START — target={'ALL' if args.all else args.target}\n{'='*70}")
 
     while True:
-        if not args.all and processed >= args.target:
-            print(f"\nTarget {args.target} tercapai. Berhenti.")
-            break
+        if not args.all and processed >= args.target: break
 
         remaining = (args.target - processed) if not args.all else args.batch_size
         qty = min(args.batch_size, remaining) if not args.all else args.batch_size
@@ -201,45 +171,28 @@ def main():
         items = res.data or []
 
         if not items:
-            print("\nQueue kosong. Drain selesai (tidak ada lagi yang bisa diproses).")
+            print("\nQueue kosong. Drain selesai.")
             break
 
         for item in items:
             process_one(sb, pipeline, entities, item, stats)
             processed += 1
 
-            if processed % args.progress_every == 0:
+            if processed % 20 == 0:
                 elapsed = time.time() - start
                 rate = processed / elapsed if elapsed > 0 else 0
-                print(
-                    f"  [{processed} diproses] "
-                    f"fallback={stats['fallback_inserted']} "
-                    f"entity_match={stats['entity_inserted']} "
-                    f"gate_reject={stats['gate_rejected']} "
-                    f"| {rate:.2f} artikel/detik, {elapsed:.0f}s berlalu"
-                )
-
-            if not args.all and processed >= args.target:
-                break
+                print(f"  [{processed} diproses] entity={stats['entity_inserted']} reject={stats['gate_rejected']} | {rate:.2f} art/detik")
 
     elapsed = time.time() - start
-    print(f"\n{'='*70}")
-    print("RINGKASAN DRAIN")
-    print(f"{'='*70}")
+    print(f"\n{'='*70}\nRINGKASAN DRAIN")
     print(f"Total diproses          : {processed}")
     print(f"Waktu                   : {elapsed:.0f}s ({elapsed/60:.1f} menit)")
-    print(f"Fallback inserted       : {stats['fallback_inserted']} (national index, entity_id=NULL)")
-    print(f"Alias candidates total  : {stats['alias_candidates_total']}")
-    print(f"  -> Lulus gate, inserted : {stats['entity_inserted']}")
-    print(f"  -> Ditolak gate         : {stats['gate_rejected']}")
-    print(f"Distribusi label (yang lulus gate):")
-    for label in ["negative", "neutral", "positive"]:
-        print(f"  {label:10s}: {stats[f'label_{label}']}")
-    print(f"Errors: fallback={stats['fallback_error']} gate={stats['gate_error']} "
-          f"insert={stats['insert_error']} ack={stats['ack_error']}")
+    print(f"Fallback inserted       : {stats['fallback_inserted']}")
+    print(f"Entity Match (Lolos)    : {stats['entity_inserted']}")
+    print(f"Gate Rejected           : {stats['gate_rejected']}")
+    print(f"Skipped (Teks Pendek)   : {stats['skipped_short']}")
+    print(f"Distribusi (Binary)     : Pos={stats['label_positive']} | Neg={stats['label_negative']}")
     print(f"{'='*70}")
-    print("\nLangkah selanjutnya: export_sentiment_ground_truth.py + export_relevancy_review.py")
-
 
 if __name__ == "__main__":
     main()
