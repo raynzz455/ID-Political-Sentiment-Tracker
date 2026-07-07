@@ -306,24 +306,8 @@ Deno.serve(async (req: Request) => {
   const totalInserted = Object.values(summary).reduce((a, s) => a + s.inserted, 0)
   console.log(`[DONE] total_inserted=${totalInserted}`, JSON.stringify(summary))
 
-  // ── 4. Enqueue newly-inserted rows to PGMQ (Layer 3 buffer) ──
-  // NLP worker dequeues from pgmq instead of polling raw_texts directly.
-  // This RPC atomically flips status 'pending'→'queued' AND enqueues.
-  // Failure here is non-fatal: rows stay 'pending' and the next run
-  // (or the enqueue RPC's own retry) will pick them up.
-  let enqueued = 0
-  if (totalInserted > 0) {
-    const { data: enqData, error: enqErr } = await supabase.rpc('enqueue_pending_raw_texts')
-    if (enqErr) {
-      console.error('[ENQUEUE_ERROR]', enqErr.message)
-    } else {
-      enqueued = (enqData as { enqueued_count: number }[])?.[0]?.enqueued_count ?? 0
-      console.log(`[ENQUEUE] ${enqueued} rows pushed to nlp_processing_queue`)
-    }
-  }
-
-  return new Response(
-    JSON.stringify({ ok: true, total_inserted: totalInserted, enqueued, summary }),
+    return new Response(
+    JSON.stringify({ ok: true, total_inserted: totalInserted, summary }),
     { headers: { 'Content-Type': 'application/json' } },
   )
 })
