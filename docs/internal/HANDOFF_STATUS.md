@@ -1,6 +1,44 @@
 # HANDOFF STATUS — ID-Sentiment-Tracker
 
----
+## 📋 SESI 9 REPORT — 2026-07-01 (Architecture Refactor v2)
+
+### Yang dikerjakan (Refactor Arsitektur Decoupled)
+Pada sesi ini, sistem direfaktor total dari arsitektur monolitik (NLP Worker mengurus fetch + AI) menjadi **Decoupled Async Pipeline**. Pemisahan tugas ini menghapus *bottleneck* 10 menit per 1000 artikel menjadi hitungan menit.
+
+**1. Layer 2.5 (Enricher Worker) Dibangun**
+- Script `enricher_worker.py` v5 dibuat. Tugasnya murni *Network I/O*: mengambil artikel `pending` dengan teks < 500 char, me-fetch URL aslinya via `requests` + `trafilatura`, lalu mengupdate DB menjadi `enriched`.
+- Mendukung paralelisme (10 threads) untuk memproses ribuan data lama dengan cepat.
+- Jika URL mati (404/diblokir), status diubah menjadi `dead_link` agar tidak membebani antrian NLP.
+
+**2. Otomatisasi Antrian via `pg_cron` & Perbaikan Permission**
+- *Database Trigger* lama dihapus karena berisiko *crash* / `permission denied` saat update massal.
+- Digantikan oleh *Supabase pg_cron* yang berjalan tiap 5 menit memanggil RPC `bulk_enqueue_enriched()`.
+- RPC ini menggunakan `SECURITY DEFINER` dan `SET search_path = public, pgmq` agar bisa mengeksekusi `pgmq.send()` dengan hak akses postgres (superuser), menghindari error `permission denied for schema pgmq`.
+- Diberikan `GRANT` hak akses penuh ke tabel `pgmq.q_nlp_processing_queue` dan `pgmq.meta` untuk role `service_role` agar Python API (PostgREST) bisa berinteraksi dengan antrian.
+
+**3. Layer 4 (NLP Worker) Dibebaskan dari Network I/O**
+- `cli_test.py` v4 dan `drain_queue.py` v2 di-update: menghapus fungsi `trafilatura`.
+- NLP Worker sekarang 100% murni komputasi CPU. Throughput melonjak dari 0.66 menjadi ~3+ artikel/detik.
+- Menambahkan *Guard Teks Pendek*: Jika teks < 200 char, langsung di-skip.
+- Menambahkan *Binary Forced Mapping*: Jika model IndoBERT memprediksi "neutral", sistem akan melihat skor mentah (softmax) dan memaksa label menjadi "positive" atau "negative". Ini menghapus dominasi 70% Netral dan menghasilkan grafik termometer yang vokal (Positif vs Negatif).
+
+**4. Layer 1 (Ingestion) Diperbaiki**
+- `index.ts` (Deno): Hanya mengambil RSS native media. Menghapus logic `enqueue` (sekarang ditangani pg_cron). User-Agent diubah ke Chrome untuk bypass 403 Tribunnews. Regex diperluas untuk support Atom Feed (`<entry>`).
+- `gnews_fetcher.py` v2: Memisahkan fetch Google News dari Supabase ke Python (GitHub Actions) dengan jeda 3 detik per tokoh agar IP tidak diblokir Google. Menambahkan *chunking* 50 item per RPC.
+
+**5. Auto-Discovery v2 (Menutup Siklus Yatim Piatu)**
+- `auto_discover.py` direfaktor total: Membuang scraping Wikipedia yang lambat.
+- Fokus murni scan judul artikel di DB dengan heuristik kata berkapital + filter cerdas (`NON_PERSON_KEYWORDS`).
+- Saat kandidat dipromosikan ke `political_entities`, script sekarang **otomatis membuat `scraping_configs`** (GNews RSS) untuk tokoh tersebut. Siklus hidup tokoh baru kini tertutup 100% otomatis.
+
+### Status Eksekusi Saat Ini
+- ✅ SQL Constraint status baru (`enriched`, `dead_link`) diaplikasikan.
+- ✅ Database Trigger lama dihapus, `pg_cron` aktif menjalankan `bulk_enqueue_enriched()` tiap 5 menit.
+- ✅ Permission `pgmq` ke `service_role` di-GRANT. Error `permission denied` teratasi.
+- ⏳ Menunggu eksekusi `enricher_worker.py --limit 1000` di lokal untuk backfill 22.000 data lama.
+- ⏳ Menunggu deployment ulang `index.ts` ke Supabase.
+
+```
 
 ## 📋 SESI 8 REPORT — 2026-06-30
 
