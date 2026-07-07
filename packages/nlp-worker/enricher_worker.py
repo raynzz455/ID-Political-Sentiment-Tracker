@@ -9,22 +9,22 @@ Cara Kerja:
   3. Ekstrak full body menggunakan trafilatura.
   4. UPDATE raw_texts: Isi teks utuh & ubah status='enriched'.
   5. Jika URL mati (404) / gagal extract, ubah status='dead_link' agar tidak membebani antrian.
-
-Cara Jalankan (Lokal / GitHub Actions):
-  python enricher_worker.py --limit 100
 """
 """
-enricher_worker.py v4 — Parallel & Safe
+enricher_worker.py v6 — Pure Network I/O
 ========================================
-Mencegah pemborosan network I/O dengan fetch paralel.
-Tidak ada pre-filtering title (biarkan NLP Worker yang menilai relevansi).
+Tugas: Mengubah teks pendek menjadi full body article.
+TIDAK ADA pre-filtering relevansi (biarkan NLP Worker yang menilai).
 Aman dari Unique Constraint (tidak update text_hash).
 
 Cara Jalankan:
-  python enricher_worker.py --limit 10
+  python enricher_worker.py (Mode backfill lokal)
+  python enricher_worker.py --max-total 500 (Mode cloud/cron)
 """
+
 import os
 import sys
+import time
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
@@ -110,45 +110,53 @@ def process_batch(sb: Client, rows: list):
             
     return enriched_count, dead_count
 
-def main(limit: int = 1000):
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=200, help="Jumlah row per batch API (maks 500)")
+    parser.add_argument("--max-total", type=int, default=0, help="Batasi total proses per run (0=unlimited)")
+    args = parser.parse_args()
+
     sb = get_client()
     
-    print(f"[ENRICHER] Mencari {limit} artikel pending...")
-    # TAMBAHAN: Ambil kolom 'text' juga
-    res = sb.table("raw_texts") \
-            .select("id, source_url, text") \
-            .eq("status", "pending") \
-            .limit(limit) \
-            .execute()
-            
-    rows = res.data or []
-    if not rows:
-        print("[ENRICHER] Semua artikel sudah diproses!")
-        return
-
-    total_rows = len(rows)
-    print(f"[ENRICHER] Memproses {total_rows} artikel...\n")
-    
-    chunk_size = 500
     total_enriched = 0
     total_dead = 0
+    batch_num = 1
+
+    print(f"[ENRICHER] Limit per batch: {args.limit} | Max Total: {'Unlimited' if args.max_total == 0 else args.max_total}")
     
-    for i in range(0, total_rows, chunk_size):
-        chunk = rows[i:i + chunk_size]
-        print(f"\n--- Proses Chunk {i//chunk_size + 1} ---")
+    while True:
+        if args.max_total > 0 and (total_enriched + total_dead) >= args.max_total:
+            print(f"\n[STOP] Mencapai batas --max-total ({args.max_total} artikel). Berhenti.")
+            break
+
+        print(f"\n--- Batch {batch_num} ---")
+        res = sb.table("raw_texts") \
+                .select("id, source_url, text") \
+                .eq("status", "pending") \
+                .limit(args.limit) \
+                .execute()
+                
+        rows = res.data or []
         
-        enr, dead = process_batch(sb, chunk)
+        if not rows:
+            print("[ENRICHER] Semua artikel pending sudah habis diproses!")
+            break
+
+        print(f"[ENRICHER] Memproses {len(rows)} artikel...")
+        
+        enr, dead = process_batch(sb, rows)
         total_enriched += enr
         total_dead += dead
         
-        print(f"  -> Sementara: Enriched={total_enriched} | Dead={total_dead}")
+        print(f"  -> Total Sementara: Enriched={total_enriched} | Dead={total_dead}")
+        
+        print("  [PAUSE] Jeda 5 detik untuk amankan API rate-limit...")
+        time.sleep(5) # BUG FIXED: time module standar
+        batch_num += 1
 
     print(f"\n{'='*50}")
-    print(f"SELESAI TOTAL. Enriched: {total_enriched} | Dead: {total_dead}")
+    print(f"SELESAI TOTAL KESELURUHAN. Enriched: {total_enriched} | Dead: {total_dead}")
     print(f"{'='*50}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=1000)
-    args = parser.parse_args()
-    main(args.limit)
+    main()
