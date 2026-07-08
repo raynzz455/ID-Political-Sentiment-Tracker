@@ -81,47 +81,6 @@ def match_entities(text: str, title: str, entities: list) -> list:
     return matched
 
 # ============================================================
-# Content enrichment (Lapis 2)
-# ============================================================
-try:
-    import requests
-    from trafilatura import extract as traf_extract
-    FETCH_AVAILABLE = True
-except ImportError:
-    FETCH_AVAILABLE = False
-
-def fetch_full_body(url: str, timeout: int = 15) -> str:
-    if not FETCH_AVAILABLE or not url:
-        return ""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
-        }
-        resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
-        if not resp.ok:
-            return ""
-        return traf_extract(resp.text, include_comments=False, include_tables=False) or ""
-    except Exception:
-        return ""
-
-def enrich_if_needed(item: dict, min_len: int = 500) -> str:
-    text = (item.get("text") or "").strip()
-    title = (item.get("title") or "").strip()
-    source_url = item.get("source_url") or ""
-
-    if len(text) >= min_len:
-        return f"{title} {text}".strip()
-
-    if source_url and FETCH_AVAILABLE:
-        full = fetch_full_body(source_url)
-        if len(full) >= min_len:
-            return f"{title} {full}".strip()
-
-    return f"{title} {text}".strip()
-
-# ============================================================
 # Commands
 # ============================================================
 def cmd_inspect(sb: Client, args):
@@ -139,13 +98,13 @@ def cmd_inspect(sb: Client, args):
         print()
 
 def cmd_sample(sb: Client, args):
-    start_time = time.perf_counter() # TIMER MULAI
+    start_time = time.perf_counter()
     
     n = args.count
     res = sb.rpc("dequeue_nlp_batch", {"p_vt": 120, "p_qty": n}).execute()
     items = res.data or []
 
-    print(f"\n{'='*60}\nSAMPLE PROCESS — {n} items\n{'='*60}")
+    print(f"\n{'='*60}\nSAMPLE PROCESS (Two-Tier) — {n} items\n{'='*60}")
 
     if not items:
         print("Queue kosong.")
@@ -166,27 +125,20 @@ def cmd_sample(sb: Client, args):
         metadata = item.get("metadata") or {}
         item_entity_id = metadata.get("configured_entity_id")
 
-        combined = enrich_if_needed(item)
-        fetched = len(combined) > len(f"{title} {item.get('text', '')}".strip()) + 20
+        # NLP Worker TIDAK melakukan Enrichment. Teks diambil apa adanya dari DB.
+        combined_text = f"{title} {item.get('text', '')}".strip()
 
-        if len(combined) < 200:
+        # GUARD TEKS SANGAT PENDEK
+        if len(combined_text) < 50:
             print(f"[{i}/{len(items)}] {title[:70]}")
-            print(f"SKIP: Teks terlalu pendek ({len(combined)} chars). Gagal enrich.")
+            print(f"       ❌ SKIP: Teks terlalu pendek ({len(combined_text)} chars).")
             skipped_short += 1
             sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
             continue
 
-        if item_entity_id:
-            matched = [e for e in entities if e["id"] == item_entity_id]
-        else:
-            matched = match_entities(combined, title, entities)
-
-        print(f"[{i}/{len(items)}] {title[:70]}{' [fetched]' if fetched else ''}")
-        print(f"       text_len: {len(combined)} chars")
-        print(f"       matched: {len(matched)} tokoh")
-
-        if not matched:
-            fb = pipeline.predict_gated(text=combined, context=None)
+        # 1. SELALU HITUNG FALLBACK (National Index)
+        fb = pipeline.predict_gated(text=combined_text, context=None)
+        try:
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id, "p_entity_id": None,
                 "p_label": fb.label, "p_neg": float(fb.scores[0]),
@@ -194,44 +146,65 @@ def cmd_sample(sb: Client, args):
                 "p_confidence": float(fb.sentiment_confidence),
                 "p_model_version": "indobert-fallback-v1"
             }).execute()
-            print(f"       → inserted fallback score (entity_id=NULL, label={fb.label})")
-            no_entity += 1
-            sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
-            processed += 1
-            print()
-            continue
+        except Exception:
+            pass
 
-        for e in matched:
-            result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
-            if not result.is_relevant:
-                print(f"       -> SKIP {e['canonical_name']}: tidak relevan (conf={result.relevancy_confidence:.3f})")
-                continue
+        print(f"[{i}/{len(items)}] {title[:70]}")
+        print(f"       text_len: {len(combined_text)} chars")
 
-            # --- BINARY FORCED MAPPING ---
-            label = result.label
-            scores = result.scores
-            
-            if label == "neutral":
-                if scores[2] >= scores[0]:
-                    label = "positive"
-                else:
-                    label = "negative"
-            # -----------------------------
+        # 2. CEK PANJANG TEKS UNTUK MENENTUKAN JALUR (TIER)
+        if len(combined_text) >= 500:
+            # TIER 1: FULL ARTICLE
+            print(f"       [TIER 1] Processing Full Article...")
+            if item_entity_id:
+                matched = [e for e in entities if e["id"] == item_entity_id]
+            else:
+                matched = match_entities(combined_text, title, entities)
 
-            sb.rpc("insert_sentiment_score", {
-                "p_raw_text_id": raw_id, "p_entity_id": e["id"],
-                "p_label": label, "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]), "p_pos": float(scores[2]),
-                "p_confidence": float(result.sentiment_confidence),
-                "p_model_version": "indobert-ctx-relevancy-gated-v1"
-            }).execute()
-            print(f"       -> inserted score for {e['canonical_name']} (label={label}, conf={result.sentiment_confidence:.3f})")
+            if not matched:
+                print(f"       → inserted fallback only (no entity match)")
+                no_entity += 1
+            else:
+                for e in matched:
+                    result = pipeline.predict_gated(text=combined_text, context=e["canonical_name"])
+                    if not result.is_relevant:
+                        print(f"       -> SKIP {e['canonical_name']}: tidak relevan (conf={result.relevancy_confidence:.3f})")
+                        continue
+
+                    # BINARY MAPPING (Pos vs Neg)
+                    label = result.label
+                    scores = result.scores
+                    if label == "neutral":
+                        label = "positive" if scores[2] >= scores[0] else "negative"
+
+                    sb.rpc("insert_sentiment_score", {
+                        "p_raw_text_id": raw_id, "p_entity_id": e["id"],
+                        "p_label": label, "p_neg": float(scores[0]),
+                        "p_neu": float(scores[1]), "p_pos": float(scores[2]),
+                        "p_confidence": float(result.sentiment_confidence),
+                        "p_model_version": "indobert-ctx-relevancy-gated-v1"
+                    }).execute()
+                    print(f"       -> inserted score for {e['canonical_name']} (label={label}, conf={result.sentiment_confidence:.3f})")
+        else:
+            # TIER 2: SNIPPET ONLY
+            print(f"       [TIER 2] Processing Snippet (No Binary Mapping)...")
+            if item_entity_id:
+                sb.rpc("insert_sentiment_score", {
+                    "p_raw_text_id": raw_id, "p_entity_id": item_entity_id,
+                    "p_label": fb.label, # Bisa Positif, Netral, atau Negatif
+                    "p_neg": float(fb.scores[0]), "p_neu": float(fb.scores[1]), "p_pos": float(fb.scores[2]),
+                    "p_confidence": float(fb.sentiment_confidence),
+                    "p_model_version": "indobert-fallback-v1"
+                }).execute()
+                print(f"       -> inserted snippet score for entity (label={fb.label})")
+            else:
+                no_entity += 1
 
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
         processed += 1
         print()
 
-    elapsed = time.perf_counter() - start_time # TIMER BERHENTI
+    elapsed = time.perf_counter() - start_time
     
     print(f"{'='*60}")
     print(f"SUMMARY: processed={processed}, no-entity={no_entity}, skipped_short={skipped_short}")
@@ -241,13 +214,13 @@ def cmd_sample(sb: Client, args):
     print(f"{'='*60}\n")
 
 def cmd_batch(sb: Client, args):
-    start_time = time.perf_counter() # TIMER MULAI
+    start_time = time.perf_counter()
     
     n = args.count
     res = sb.rpc("dequeue_nlp_batch", {"p_vt": 300, "p_qty": n}).execute()
     items = res.data or []
 
-    print(f"\n{'='*60}\nBATCH PROCESS — {n} items (distribusi)\n{'='*60}")
+    print(f"\n{'='*60}\nBATCH PROCESS (Two-Tier) — {n} items\n{'='*60}")
 
     if not items:
         print("Queue kosong.")
@@ -256,8 +229,9 @@ def cmd_batch(sb: Client, args):
     entities = load_entities(sb)
     pipeline = get_pipeline()
 
-    label_counts = Counter()
-    entity_counts = Counter()
+    # Stat terpisah untuk Tier 1 dan Tier 2
+    tier1_labels = Counter()
+    tier2_labels = Counter()
     processed = 0
     no_entity = 0
     skipped_short = 0
@@ -270,20 +244,16 @@ def cmd_batch(sb: Client, args):
         metadata = item.get("metadata") or {}
         item_entity_id = metadata.get("configured_entity_id")
 
-        combined = enrich_if_needed(item)
+        combined_text = f"{title} {item.get('text', '')}".strip()
 
-        if len(combined) < 200:
+        if len(combined_text) < 50:
             skipped_short += 1
             sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
             continue
 
-        if item_entity_id:
-            matched = [e for e in entities if e["id"] == item_entity_id]
-        else:
-            matched = match_entities(combined, title, entities)
-
-        if not matched:
-            fb = pipeline.predict_gated(text=combined, context=None)
+        # 1. FALLBACK (National Index)
+        fb = pipeline.predict_gated(text=combined_text, context=None)
+        try:
             sb.rpc("insert_sentiment_score", {
                 "p_raw_text_id": raw_id, "p_entity_id": None,
                 "p_label": fb.label, "p_neg": float(fb.scores[0]),
@@ -291,57 +261,80 @@ def cmd_batch(sb: Client, args):
                 "p_confidence": float(fb.sentiment_confidence),
                 "p_model_version": "indobert-fallback-v1"
             }).execute()
-            no_entity += 1
-            sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
-            continue
+        except Exception:
+            pass
 
-        for e in matched:
-            result = pipeline.predict_gated(text=combined, context=e["canonical_name"])
-            if not result.is_relevant:
-                continue
+        # 2. TIER PROCESSING
+        if len(combined_text) >= 500:
+            # TIER 1
+            if item_entity_id:
+                matched = [e for e in entities if e["id"] == item_entity_id]
+            else:
+                matched = match_entities(combined_text, title, entities)
 
-            # --- BINARY FORCED MAPPING ---
-            label = result.label
-            scores = result.scores
-            
-            if label == "neutral":
-                if scores[2] >= scores[0]:
-                    label = "positive"
-                else:
-                    label = "negative"
-            # -----------------------------
+            if not matched:
+                no_entity += 1
+            else:
+                for e in matched:
+                    result = pipeline.predict_gated(text=combined_text, context=e["canonical_name"])
+                    if not result.is_relevant: continue
 
-            label_counts[label] += 1
-            entity_counts[e["canonical_name"]] += 1
+                    label = result.label
+                    scores = result.scores
+                    if label == "neutral":
+                        label = "positive" if scores[2] >= scores[0] else "negative"
 
-            sb.rpc("insert_sentiment_score", {
-                "p_raw_text_id": raw_id, "p_entity_id": e["id"],
-                "p_label": label, "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]), "p_pos": float(scores[2]),
-                "p_confidence": float(result.sentiment_confidence),
-                "p_model_version": "indobert-ctx-relevancy-gated-v1"
-            }).execute()
+                    tier1_labels[label] += 1
+
+                    sb.rpc("insert_sentiment_score", {
+                        "p_raw_text_id": raw_id, "p_entity_id": e["id"],
+                        "p_label": label, "p_neg": float(scores[0]),
+                        "p_neu": float(scores[1]), "p_pos": float(scores[2]),
+                        "p_confidence": float(result.sentiment_confidence),
+                        "p_model_version": "indobert-ctx-relevancy-gated-v1"
+                    }).execute()
+        else:
+            # TIER 2
+            if item_entity_id:
+                tier2_labels[fb.label] += 1
+                sb.rpc("insert_sentiment_score", {
+                    "p_raw_text_id": raw_id, "p_entity_id": item_entity_id,
+                    "p_label": fb.label, "p_neg": float(fb.scores[0]),
+                    "p_neu": float(fb.scores[1]), "p_pos": float(fb.scores[2]),
+                    "p_confidence": float(fb.sentiment_confidence),
+                    "p_model_version": "indobert-fallback-v1"
+                }).execute()
+            else:
+                no_entity += 1
 
         sb.rpc("ack_nlp_message", {"p_msg_id": msg_id}).execute()
         processed += 1
 
-    elapsed = time.perf_counter() - start_time # TIMER BERHENTI
+    elapsed = time.perf_counter() - start_time
     
-    total = len(items)
-    total_pred = sum(label_counts.values())
-    print(f"\nTotal items: {total}")
-    print(f"Processed (entity matched + inserted): {processed}")
-    print(f"Skipped (no entity match, fallback inserted): {no_entity}")
-    print(f"Skipped (text too short <200 chars): {skipped_short}")
-    print("\nSentiment distribution (Binary Forced):")
-    for label in ["positive", "negative"]: # Netral dihapus dari display
-        c = label_counts.get(label, 0)
-        pct = (c / total_pred) * 100 if total_pred > 0 else 0.0
+    print(f"\nTotal items: {n}")
+    print(f"Processed: {processed}")
+    print(f"Skipped (Text < 50 char): {skipped_short}")
+    
+    print("\n--- TIER 1 (Full Article > 500 char) ---")
+    print("Distribusi (Binary Forced):")
+    total_t1 = sum(tier1_labels.values())
+    for label in ["positive", "negative"]:
+        c = tier1_labels.get(label, 0)
+        pct = (c / total_t1) * 100 if total_t1 > 0 else 0.0
         print(f"  {label:10s} {c:4d} ({pct:5.1f}%)")
         
-    print(f"\n Waktu Eksekusi: {elapsed:.2f} detik ({elapsed/60:.2f} menit)")
+    print("\n--- TIER 2 (Snippet < 500 char) ---")
+    print("Distribusi (Original Labels):")
+    total_t2 = sum(tier2_labels.values())
+    for label in ["positive", "neutral", "negative"]:
+        c = tier2_labels.get(label, 0)
+        pct = (c / total_t2) * 100 if total_t2 > 0 else 0.0
+        print(f"  {label:10s} {c:4d} ({pct:5.1f}%)")
+        
+    print(f"\n⏱️ Waktu Eksekusi: {elapsed:.2f} detik ({elapsed/60:.2f} menit)")
     if processed > 0 and elapsed > 0:
-        print(f" Throughput: {processed/elapsed:.2f} artikel/detik")
+        print(f"🚀 Throughput: {processed/elapsed:.2f} artikel/detik")
     print(f"{'='*60}\n")
 
 def cmd_single(sb: Client, args):
@@ -388,11 +381,8 @@ def cmd_stats(sb: Client, args):
 
     print(f"\n{'='*60}\n")
 
-# ============================================================
-# Main
-# ============================================================
 def main():
-    parser = argparse.ArgumentParser(description="ID-Sentiment CLI — NLP testing tool")
+    parser = argparse.ArgumentParser(description="ID-Sentiment CLI — NLP testing tool v5")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_inspect = sub.add_parser("inspect", help="Lihat isi queue tanpa proses")

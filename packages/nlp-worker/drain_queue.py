@@ -1,12 +1,13 @@
 """
-drain_queue.py v2 — Layer 4 (NLP Worker)
-==========================================
-Mengosongkan antrian pgmq dan memproses sentimen.
+drain_queue.py v3 — Layer 4 (NLP Worker Two-Tier Edition)
+==========================================================
+Memproses antrian pgmq dengan memisahkan jalur inferensi (Two-Tier Processing) 
+untuk mencegah bias antara artikel utuh (RSS/DDG) dan snippet pendek (GNews).
 
-FIX v2:
-  1. Pre-Attribution: Baca configured_entity_id dari metadata (Skip blind regex jika ada).
-  2. Binary Mapping: Netral dipaksa jadi Positif/Negatif berdasarkan skor.
-  3. Guard Teks Pendek: Skip artikel < 200 char agar model tidak halusinasi.
+FIX v3:
+  1. TIER 1 (Full Article > 500 char): 2-Stage Gate + Binary Mapping (Pos/Neg).
+  2. TIER 2 (Snippet < 500 char): Fallback Model only, NO Binary Mapping (Pos/Neu/Neg).
+  3. Guard Teks Sangat Pendek: Skip total jika < 50 char.
 """
 
 import os
@@ -66,13 +67,13 @@ def process_one(sb, pipeline, entities, item: dict, stats: Counter) -> None:
     text   = item.get("text") or ""
     combined_text = f"{title} {text}".strip()
 
-    # GUARD TEKS PENDEK
-    if len(combined_text) < 200:
+    # GUARD TEKS SANGAT PENDEK (Skip total)
+    if len(combined_text) < 50:
         stats["skipped_short"] += 1
         sb.rpc("ack_nlp_message", {"p_msg_id": item["msg_id"]}).execute()
         return
 
-    # 1. Fallback document-level (national index)
+    # 1. SELALU HITUNG FALLBACK (Untuk National Mood Index)
     try:
         fb = pipeline.predict_gated(text=combined_text, context=None)
         sb.rpc("insert_sentiment_score", {
@@ -83,53 +84,75 @@ def process_one(sb, pipeline, entities, item: dict, stats: Counter) -> None:
             "p_model_version": MODEL_VERSION_FALLBACK,
         }).execute()
         stats["fallback_inserted"] += 1
-    except Exception as e:
+    except Exception:
         stats["fallback_error"] += 1
+        sb.rpc("ack_nlp_message", {"p_msg_id": item["msg_id"]}).execute()
+        return
 
-    # 2. Pre-Attribution / Blind Matching
+    # 2. CEK PANJANG TEKS UNTUK MENENTUKAN JALUR (TIER)
     metadata = item.get("metadata") or {}
     item_entity_id = metadata.get("configured_entity_id")
 
-    if item_entity_id:
-        matched = [e for e in entities if e["id"] == item_entity_id]
+    if len(combined_text) >= 500:
+        # TIER 1: FULL ARTICLE (DDG / RSS Native)
+        stats["tier1_full_article"] += 1
+        
+        if item_entity_id:
+            matched = [e for e in entities if e["id"] == item_entity_id]
+        else:
+            matched = find_alias_candidates(title, text, entities)
+
+        stats["alias_candidates_total"] += len(matched)
+
+        for e in matched:
+            try:
+                result = pipeline.predict_gated(text=combined_text, context=e["canonical_name"])
+            except Exception:
+                stats["gate_error"] += 1
+                continue
+
+            if not result.is_relevant:
+                stats["gate_rejected"] += 1
+                continue
+
+            # BINARY MAPPING (Hapus Netral untuk Termometer Digital)
+            label = result.label
+            scores = result.scores
+            if label == "neutral":
+                label = "positive" if scores[2] >= scores[0] else "negative"
+
+            try:
+                sb.rpc("insert_sentiment_score", {
+                    "p_raw_text_id": raw_id, "p_entity_id": e["id"],
+                    "p_label": label, "p_neg": float(scores[0]),
+                    "p_neu": float(scores[1]), "p_pos": float(scores[2]),
+                    "p_confidence": float(result.sentiment_confidence),
+                    "p_model_version": MODEL_VERSION_GATED,
+                }).execute()
+                stats["entity_inserted"] += 1
+                stats[f"gated_label_{label}"] += 1
+            except Exception:
+                stats["insert_error"] += 1
+
     else:
-        matched = find_alias_candidates(title, text, entities)
-
-    stats["alias_candidates_total"] += len(matched)
-
-    # 3. Gate + Sentiment per kandidat
-    for e in matched:
-        try:
-            result = pipeline.predict_gated(text=combined_text, context=e["canonical_name"])
-        except Exception:
-            stats["gate_error"] += 1
-            continue
-
-        if not result.is_relevant:
-            stats["gate_rejected"] += 1
-            continue
-
-        # BINARY MAPPING (Hapus Netral)
-        label = result.label
-        scores = result.scores
-        if label == "neutral":
-            if scores[2] >= scores[0]: # pos >= neg
-                label = "positive"
-            else:
-                label = "negative"
-
-        try:
-            sb.rpc("insert_sentiment_score", {
-                "p_raw_text_id": raw_id, "p_entity_id": e["id"],
-                "p_label": label, "p_neg": float(scores[0]),
-                "p_neu": float(scores[1]), "p_pos": float(scores[2]),
-                "p_confidence": float(result.sentiment_confidence),
-                "p_model_version": MODEL_VERSION_GATED,
-            }).execute()
-            stats["entity_inserted"] += 1
-            stats[f"label_{label}"] += 1
-        except Exception:
-            stats["insert_error"] += 1
+        # TIER 2: SNIPPET ONLY (GNews)
+        stats["tier2_snippet"] += 1
+        
+        # TIDAK ADA Binary Mapping & TIDAK ADA Relevancy Gate.
+        # Simpan apa adanya (Pos/Neu/Neg) menggunakan Fallback score.
+        if item_entity_id:
+            try:
+                sb.rpc("insert_sentiment_score", {
+                    "p_raw_text_id": raw_id, "p_entity_id": item_entity_id,
+                    "p_label": fb.label, # Bisa Positif, Netral, atau Negatif
+                    "p_neg": float(fb.scores[0]), "p_neu": float(fb.scores[1]), "p_pos": float(fb.scores[2]),
+                    "p_confidence": float(fb.sentiment_confidence),
+                    "p_model_version": MODEL_VERSION_FALLBACK, # Tag sebagai fallback
+                }).execute()
+                stats["snippet_entity_inserted"] += 1
+                stats[f"snippet_label_{fb.label}"] += 1
+            except Exception:
+                stats["insert_error"] += 1
 
     # 4. Ack
     try:
@@ -139,7 +162,7 @@ def process_one(sb, pipeline, entities, item: dict, stats: Counter) -> None:
         stats["ack_error"] += 1
 
 def main():
-    parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker)")
+    parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker v3)")
     parser.add_argument("--target", type=int, default=300, help="Berhenti setelah N artikel")
     parser.add_argument("--batch-size", type=int, default=30, help="Jumlah item per dequeue")
     parser.add_argument("--all", action="store_true", help="Drain sampai habis")
@@ -158,7 +181,7 @@ def main():
     processed = 0
     start = time.time()
 
-    print(f"{'='*70}\nDRAIN START — target={'ALL' if args.all else args.target}\n{'='*70}")
+    print(f"{'='*70}\nDRAIN START (Two-Tier Mode) — target={'ALL' if args.all else args.target}\n{'='*70}")
 
     while True:
         if not args.all and processed >= args.target: break
@@ -181,17 +204,20 @@ def main():
             if processed % 20 == 0:
                 elapsed = time.time() - start
                 rate = processed / elapsed if elapsed > 0 else 0
-                print(f"  [{processed} diproses] entity={stats['entity_inserted']} reject={stats['gate_rejected']} | {rate:.2f} art/detik")
+                print(f"  [{processed} diproses] T1={stats['tier1_full_article']} T2={stats['tier2_snippet']} | {rate:.2f} art/detik")
 
     elapsed = time.time() - start
-    print(f"\n{'='*70}\nRINGKASAN DRAIN")
+    print(f"\n{'='*70}\nRINGKASAN DRAIN (Two-Tier)")
     print(f"Total diproses          : {processed}")
     print(f"Waktu                   : {elapsed:.0f}s ({elapsed/60:.1f} menit)")
-    print(f"Fallback inserted       : {stats['fallback_inserted']}")
-    print(f"Entity Match (Lolos)    : {stats['entity_inserted']}")
-    print(f"Gate Rejected           : {stats['gate_rejected']}")
-    print(f"Skipped (Teks Pendek)   : {stats['skipped_short']}")
-    print(f"Distribusi (Binary)     : Pos={stats['label_positive']} | Neg={stats['label_negative']}")
+    print(f"Tier 1 (Full Article)   : {stats['tier1_full_article']}")
+    print(f"  -> Entity Match (Lolos): {stats['entity_inserted']}")
+    print(f"  -> Gate Rejected       : {stats['gate_rejected']}")
+    print(f"  -> Distribusi (Binary) : Pos={stats['gated_label_positive']} | Neg={stats['gated_label_negative']}")
+    print(f"Tier 2 (Snippet GNews)  : {stats['tier2_snippet']}")
+    print(f"  -> Snippet Inserted    : {stats['snippet_entity_inserted']}")
+    print(f"  -> Distribusi (Asli)   : Pos={stats['snippet_label_positive']} | Neu={stats['snippet_label_neutral']} | Neg={stats['snippet_label_negative']}")
+    print(f"Fallback (National Index): {stats['fallback_inserted']}")
     print(f"{'='*70}")
 
 if __name__ == "__main__":
