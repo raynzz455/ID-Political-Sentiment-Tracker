@@ -107,14 +107,14 @@ def pipeline_worker(row):
 
 def print_batch_report(batch_num: int, stats: Counter):
     """Mencetak laporan observabilitas yang ringkas dan informatif."""
-    print(f"\n  📊 === BATCH {batch_num} REPORT ===")
-    print(f"  ✅ Enriched (Full Art) : {stats.get('enriched', 0)}")
-    print(f"  📝 GNews (Snippet Only): {stats.get('gnews_snippet_validated', 0)}")
-    print(f"  ❌ Extract Empty       : {stats.get('extract_empty', 0)}")
-    print(f"  ⏳ Timeout             : {stats.get('media_request_timeout', 0) + stats.get('gnews_request_timeout', 0)}")
-    print(f"  🛑 Blocked (WAF/403)   : {stats.get('waf_cloudflare', 0) + stats.get('http_403', 0) + stats.get('http_429', 0)}")
-    print(f"  💀 Dead Link (404)     : {stats.get('http_404', 0) + stats.get('gnews_resolve_failed', 0)}")
-    print(f"  🌐 Network Error       : {stats.get('media_connection_error', 0)}")
+    print(f"\n=== BATCH {batch_num} REPORT ===")
+    print(f"  Enriched (Full Art) : {stats.get('enriched', 0)}")
+    print(f"  GNews (Snippet Only): {stats.get('gnews_snippet_validated', 0)}")
+    print(f"  Extract Empty       : {stats.get('extract_empty', 0)}")
+    print(f"  Timeout             : {stats.get('media_request_timeout', 0) + stats.get('gnews_request_timeout', 0)}")
+    print(f"  Blocked (WAF/403)   : {stats.get('waf_cloudflare', 0) + stats.get('http_403', 0) + stats.get('http_429', 0)}")
+    print(f"  Dead Link (404)     : {stats.get('http_404', 0) + stats.get('gnews_resolve_failed', 0)}")
+    print(f"  Network Error       : {stats.get('media_connection_error', 0)}")
     print(f"  ============================\n")
 
 def process_batch(sb: Client, rows: list) -> Counter:
@@ -178,7 +178,7 @@ def main():
         batch_num += 1
 
     print(f"\n{'='*55}")
-    print(f"🏆 FINAL SUMMARY")
+    print(f"FINAL SUMMARY")
     print(f"{'='*55}")
     print(f"Total Enriched : {total_stats.get('enriched', 0)}")
     print(f"Total Failed   : {sum(v for k, v in total_stats.items() if k != 'enriched')}")
