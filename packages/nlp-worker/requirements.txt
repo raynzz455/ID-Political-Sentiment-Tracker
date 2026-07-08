@@ -1,6 +1,9 @@
 supabase>=2.0.0
 requests>=2.31.0
 trafilatura>=1.12.0
+httpx
+python-dotenv
+beautifulsoup4
 # NLP (akan dipakai setelah CLI testing selesai):
 # onnxruntime>=1.16.0
 # transformers>=4.35.0

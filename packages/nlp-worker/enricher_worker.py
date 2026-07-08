@@ -9,23 +9,23 @@ Cara Kerja:
   3. Ekstrak full body menggunakan trafilatura.
   4. UPDATE raw_texts: Isi teks utuh & ubah status='enriched'.
   5. Jika URL mati (404) / gagal extract, ubah status='dead_link' agar tidak membebani antrian.
-"""
-"""
-enricher_worker.py v6 — Pure Network I/O
-========================================
-Tugas: Mengubah teks pendek menjadi full body article.
-TIDAK ADA pre-filtering relevansi (biarkan NLP Worker yang menilai).
-Aman dari Unique Constraint (tidak update text_hash).
 
-Cara Jalankan:
-  python enricher_worker.py (Mode backfill lokal)
-  python enricher_worker.py --max-total 500 (Mode cloud/cron)
+================================================
+enricher_worker.py v13 — Pure Extraction with Detailed Observability
+====================================================================
+Menyediakan laporan distribusi kegagalan di akhir setiap batch.
+
+Cara Jalankan (Lokal / GitHub Actions):
+  python enricher_worker.py
+  python enricher_worker.py --limit 100 --max-total 500
 """
 
 import os
 import sys
 import time
+import random
 import argparse
+from collections import Counter
 from pathlib import Path
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,129 +34,155 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
 try:
-    import requests
     from trafilatura import extract as traf_extract
     from supabase import create_client, Client
-except ImportError:
-    print("[ERROR] pip install requests trafilatura supabase python-dotenv")
+    from universal_resolver import fetch_article, FetchResult
+except ImportError as e:
+    print(f"[ERROR] Dependency missing: {e}")
     sys.exit(1)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SERVICE_KEY  = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+MAX_WORKERS = 7
 
 def get_client() -> Client:
     return create_client(SUPABASE_URL, SERVICE_KEY)
 
-def fetch_full_body(url: str) -> str:
-    if not url: return ""
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-        if resp.ok:
-            return traf_extract(resp.text, include_comments=False, include_tables=False) or ""
-    except Exception:
-        return ""
-    return ""
+def extract_text(html: str) -> str:
+    if not html: return ""
+    return traf_extract(html, include_comments=False, include_tables=False) or ""
 
-def process_batch(sb: Client, rows: list):
-    enriched_count = 0
-    dead_count = 0
+def bulk_store(sb: Client, results: list) -> Counter:
+    stats = Counter()
+    updates = []
+
+    for rt_id, text, fetch_result in results:
+        status = fetch_result.status
+        reason = fetch_result.reason
+        
+        if status == "ok":
+            if reason == "gnews_snippet_only":
+                # Khusus GNews: Teks tidak di-update (tetap pakai snippet RSS di DB).
+                # Tapi status diubah jadi 'validated' agar langsung masuk antrian NLP (Tier 2).
+                updates.append({"id": rt_id, "text": "", "status": "validated"})
+                stats["gnews_snippet_validated"] += 1
+            elif len(text) > 0:
+                # URL media asli berhasil di-fetch dan diekstrak.
+                updates.append({"id": rt_id, "text": text, "status": "enriched"})
+                stats["enriched"] += 1
+            else:
+                # URL media asli berhasil di-fetch tapi trafilatura gagal ekstrak.
+                updates.append({"id": rt_id, "text": "", "status": "extraction_failed"})
+                stats["extract_empty"] += 1
+        elif status in ["blocked", "timeout", "network_error"]:
+            updates.append({"id": rt_id, "text": "", "status": status})
+            stats[reason] += 1
+        else:
+            updates.append({"id": rt_id, "text": "", "status": "dead_link"})
+            stats[reason] += 1
+
+    if updates:
+        try:
+            sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
+        except Exception as e:
+            print(f"    [BULK_DB_ERROR] {e}")
+            
+    return stats
+
+def pipeline_worker(row):
+    url = row["source_url"]
     
-    to_fetch = []
+    # --- GNEWS BYPASS ---
+    # Jika ini URL Google News, jangan coba resolve/fetch (karena terenkripsi & pasti gagal)
+    if "news.google.com" in url:
+        return row["id"], "", FetchResult(status="ok", reason="gnews_snippet_only", final_url=url)
+    
+    fetch_result = fetch_article(url)
+    
+    text = ""
+    if fetch_result.status == "ok" and fetch_result.html:
+        text = extract_text(fetch_result.html)
+        
+    return row["id"], text, fetch_result
 
-    # 1. CEK TEKS DI DB DULU
+def print_batch_report(batch_num: int, stats: Counter):
+    """Mencetak laporan observabilitas yang ringkas dan informatif."""
+    print(f"\n  📊 === BATCH {batch_num} REPORT ===")
+    print(f"  ✅ Enriched (Full Art) : {stats.get('enriched', 0)}")
+    print(f"  📝 GNews (Snippet Only): {stats.get('gnews_snippet_validated', 0)}")
+    print(f"  ❌ Extract Empty       : {stats.get('extract_empty', 0)}")
+    print(f"  ⏳ Timeout             : {stats.get('media_request_timeout', 0) + stats.get('gnews_request_timeout', 0)}")
+    print(f"  🛑 Blocked (WAF/403)   : {stats.get('waf_cloudflare', 0) + stats.get('http_403', 0) + stats.get('http_429', 0)}")
+    print(f"  💀 Dead Link (404)     : {stats.get('http_404', 0) + stats.get('gnews_resolve_failed', 0)}")
+    print(f"  🌐 Network Error       : {stats.get('media_connection_error', 0)}")
+    print(f"  ============================\n")
+
+def process_batch(sb: Client, rows: list) -> Counter:
+    to_fetch = []
+    pipeline_results = []
+    
     for r in rows:
         current_text = r.get("text") or ""
-        
-        # Jika ternyata RSS sudah ngasih teks utuh, langsung enriched tanpa fetch
         if len(current_text) >= 500:
-            sb.table("raw_texts").update({"status": "enriched"}).eq("id", r["id"]).execute()
-            enriched_count += 1
+            pipeline_results.append((r["id"], current_text, FetchResult(status="ok", reason="rss_full_text")))
         else:
-            # Kalau pendek, masukkan antrian untuk di-fetch
             to_fetch.append(r)
 
     if not to_fetch:
-        return enriched_count, dead_count
+        return bulk_store(sb, pipeline_results)
 
-    # 2. PARALLEL FETCH (Hanya yang teksnya pendek)
-    print(f"  [PARALLEL] Fetching {len(to_fetch)} URLs dengan 10 threads...")
-    results = {}
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(fetch_full_body, r["source_url"]): r for r in to_fetch}
+    print(f"  [FETCH] {len(to_fetch)} URLs dengan {MAX_WORKERS} threads paralel...")
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(pipeline_worker, r): r for r in to_fetch}
         for future in as_completed(futures):
-            row = futures[future]
             try:
-                results[row["id"]] = future.result()
+                pipeline_results.append(future.result())
             except Exception:
-                results[row["id"]] = ""
+                row = futures[future]
+                pipeline_results.append((row["id"], "", FetchResult(status="network_error", reason="thread_crash")))
 
-    # 3. DB UPDATE
-    print(f"  [DB] Updating database...")
-    for r in to_fetch:
-        rt_id = r["id"]
-        full_text = results.get(rt_id, "")
-        
-        if len(full_text) > 500:
-            sb.table("raw_texts").update({
-                "text": full_text,
-                "status": "enriched"
-            }).eq("id", rt_id).execute()
-            enriched_count += 1
-        else:
-            # URL mati / gagal extract
-            sb.table("raw_texts").update({"status": "dead_link"}).eq("id", rt_id).execute()
-            dead_count += 1
-            
-    return enriched_count, dead_count
+    return bulk_store(sb, pipeline_results)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=200, help="Jumlah row per batch API (maks 500)")
-    parser.add_argument("--max-total", type=int, default=0, help="Batasi total proses per run (0=unlimited)")
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--max-total", type=int, default=0)
     args = parser.parse_args()
 
     sb = get_client()
-    
-    total_enriched = 0
-    total_dead = 0
+    total_stats = Counter()
     batch_num = 1
 
-    print(f"[ENRICHER] Limit per batch: {args.limit} | Max Total: {'Unlimited' if args.max_total == 0 else args.max_total}")
-    
+    print(f"[ENRICHER v13] Limit: {args.limit}/batch | Threads: {MAX_WORKERS}")
+
     while True:
-        if args.max_total > 0 and (total_enriched + total_dead) >= args.max_total:
-            print(f"\n[STOP] Mencapai batas --max-total ({args.max_total} artikel). Berhenti.")
+        if args.max_total > 0 and sum(total_stats.values()) >= args.max_total:
             break
 
-        print(f"\n--- Batch {batch_num} ---")
+        print(f"--- Batch {batch_num} ---")
         res = sb.table("raw_texts") \
                 .select("id, source_url, text") \
                 .eq("status", "pending") \
                 .limit(args.limit) \
                 .execute()
-                
-        rows = res.data or []
-        
-        if not rows:
-            print("[ENRICHER] Semua artikel pending sudah habis diproses!")
-            break
 
-        print(f"[ENRICHER] Memproses {len(rows)} artikel...")
+        rows = res.data or []
+        if not rows: break
+
+        batch_stats = process_batch(sb, rows)
+        print_batch_report(batch_num, batch_stats)
         
-        enr, dead = process_batch(sb, rows)
-        total_enriched += enr
-        total_dead += dead
-        
-        print(f"  -> Total Sementara: Enriched={total_enriched} | Dead={total_dead}")
-        
-        print("  [PAUSE] Jeda 5 detik untuk amankan API rate-limit...")
-        time.sleep(5) # BUG FIXED: time module standar
+        total_stats.update(batch_stats)
+        time.sleep(8 + random.uniform(0, 4))
         batch_num += 1
 
-    print(f"\n{'='*50}")
-    print(f"SELESAI TOTAL KESELURUHAN. Enriched: {total_enriched} | Dead: {total_dead}")
-    print(f"{'='*50}")
+    print(f"\n{'='*55}")
+    print(f"🏆 FINAL SUMMARY")
+    print(f"{'='*55}")
+    print(f"Total Enriched : {total_stats.get('enriched', 0)}")
+    print(f"Total Failed   : {sum(v for k, v in total_stats.items() if k != 'enriched')}")
+    print(f"{'='*55}")
 
 if __name__ == "__main__":
     main()
