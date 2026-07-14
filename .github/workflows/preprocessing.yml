@@ -1,0 +1,69 @@
+name: 2. Preprocessing Pipeline (Layer 2 - 3.7)
+
+on:
+  schedule:
+    # Tiap 1 jam di menit ke-15
+    - cron: '15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-prep-pipeline:
+    name: Run Enricher -> Validation -> Entity -> Context -> Readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45 # Batas waktu aman untuk Free Tier
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m spacy download id_core_news_sm
+          
+      # 1. ENRICHER WORKER
+      - name: Run Enricher Worker
+        run: python main.py run-worker enricher --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 2. VALIDATION WORKER
+      - name: Run Validation Worker
+        run: python main.py run-worker validation --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 3. PREPROCESSING WORKER
+      - name: Run Preprocessing Worker
+        run: python main.py run-worker preprocessing --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 4. ENTITY RESOLUTION WORKER
+      - name: Run Entity Resolution Worker
+        run: python main.py run-worker entity --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 5. CONTEXT WORKER
+      - name: Run Context Worker
+        run: python main.py run-worker context --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # 6. NLP READINESS WORKER
+      - name: Run NLP Readiness Worker
+        run: python main.py run-worker readiness --limit 500
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
