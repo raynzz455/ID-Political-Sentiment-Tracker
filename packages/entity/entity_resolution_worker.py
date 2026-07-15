@@ -1,11 +1,11 @@
 """
 entity_resolution_worker.py v4 — Zero-Spacy / Regex Matcher
 =============================================================
-PERUBAHAN v4:
-  1. NO SPACY: Menghapus dependency spaCy yang berat & tidak ada model ID resmi.
+FIX v4:
+  1. NO SPACY: Menghapus dependency spaCy.
   2. REGEX MATCHER: Mencari nama tokoh & alias di teks menggunakan regex word-boundary.
-  3. OFFSET ACCURATE: Offset didapat langsung dari regex match (ent.start(), ent.end()).
-  4. MENTION AGGREGATION: Menggabungkan mention duplikat.
+  3. SCHEMA SYNC: is_main -> is_main_entity, mention_count dihapus dari entity_mentions.
+  4. ANTI-STUCK: entity_resolved_at selalu diisi agar pipeline tidak nyangkut.
 """
 import os
 import re
@@ -24,7 +24,6 @@ try:
 except ImportError as e:
     print(f"[ERROR] {e}"); sys.exit(1)
 
-# IMPORT DARI MONOREPO SHARED
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
@@ -39,26 +38,22 @@ def normalize_name(name: str) -> str:
 def load_caches(sb: Client):
     print("[ENTITY_RESOLVER] Loading caches ke memori...")
     
-    # Load Entities & Alias sekaligus
     pe_res = sb.table("political_entities").select("id, canonical_name, aliases").execute()
-    entity_db_map = {} # {canonical_name_lower: id}
-    alias_map = {}     # {alias_lower: canonical_name}
-    regex_patterns = [] # List of tuple (regex_pattern, canonical_name_lower)
+    entity_db_map = {} 
+    alias_map = {}     
+    regex_patterns = [] 
     
     for r in (pe_res.data or []):
         canon_lower = r["canonical_name"].lower()
         entity_db_map[canon_lower] = r["id"]
         
-        # Tambahkan nama canonical ke daftar pattern regex
         try:
-            # \b untuk word boundary, re.escape agar karakter khusus aman
             regex_patterns.append((re.compile(r'\b' + re.escape(r["canonical_name"]) + r'\b', re.IGNORECASE), canon_lower))
         except re.error:
-            pass # Skip kalau ada karakter aneh
+            pass
             
-        # Tambahkan alias ke daftar pattern regex dan alias_map
         for alias in (r.get("aliases") or []):
-            if len(alias) < 4: continue # Skip alias terlalu pendek
+            if len(alias) < 4: continue
             alias_lower = alias.lower()
             alias_map[alias_lower] = r["canonical_name"]
             try:
@@ -83,39 +78,37 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
             ent_id = metadata["configured_entity_id"]
             ent_name = next((k for k, v in entity_db_map.items() if v == ent_id), None)
             
-            # Cari offset pertama untuk disimpan di mentions
             first_offset = 0
+            end_offset = 0
             if ent_name:
                 match = re.search(re.escape(ent_name), text, re.IGNORECASE)
                 if match:
                     first_offset = match.start()
+                    end_offset = match.end()
             
+            # FIX: is_main -> is_main_entity
             results.append({
                 "raw_text_id": art["id"],
                 "ingested_month": ingested_month,
-                "mappings": [{"entity_id": ent_id, "is_main": True, "conf": 1.0, "src": "pre_attributed"}],
-                "mentions": [{"entity_id": ent_id, "text": ent_name, "count": 1, "start": first_offset, "end": first_offset+len(ent_name) if ent_name else 0}],
+                "mappings": [{"entity_id": ent_id, "is_main_entity": True, "confidence": 1.0, "resolver_source": "pre_attributed"}],
+                "mentions": [{"entity_id": ent_id, "text": ent_name or "Unknown", "count": 1, "start": first_offset, "end": end_offset}],
                 "unknowns": {}
             })
             continue
             
-        # PROSES REGEX MATCHING
-        entity_data = {} # {entity_id: {"count": 0, "in_title": False, "src": "", "conf": 0.0, "first_offset": 0, "last_offset": 0, "sample_mention": ""}}
+        entity_data = {} 
         unknown_entities = Counter()
         
-        # 1. Cari semua match menggunakan regex patterns yang sudah di-compile
-        found_matches = [] # list of (start_idx, end_idx, matched_text, resolved_key)
+        found_matches = [] 
         
         for pattern, key in regex_patterns:
             for match in pattern.finditer(text):
                 found_matches.append((match.start(), match.end(), match.group(), key))
                 
-        # 2. Urutkan berdasarkan offset agar bisa deteksi overlap
         found_matches.sort(key=lambda x: x[0])
         
         last_end = -1
         for start, end, matched_text, key in found_matches:
-            # Skip jika match ini overlap dengan match sebelumnya (ambil yang lebih panjang/awal)
             if start < last_end:
                 continue
                 
@@ -123,13 +116,11 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
             resolver_source = "regex_exact"
             confidence = 1.0
             
-            # Cek apakah key ini adalah alias atau canonical
             if key in alias_map:
                 resolved_name = alias_map[key]
             elif key in entity_db_map:
                 resolved_name = key
             else:
-                # Fuzzy match sebagai fallback jika ada typo ringan (jarang dipakai karena regex sudah exact)
                 norm_name = normalize_name(matched_text)
                 match_fuzz = process.extractOne(norm_name, list(entity_db_map.keys()), scorer=fuzz.WRatio, score_cutoff=90)
                 if match_fuzz:
@@ -158,7 +149,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                 
             last_end = end
                     
-        # RANKING MAIN ENTITY
         ranked_entities = sorted(entity_data.items(), key=lambda item: (item[1]["in_title"], item[1]["count"]), reverse=True)
         
         mappings = []
@@ -166,8 +156,12 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
         for idx, (ent_id, data) in enumerate(ranked_entities):
             is_main = (idx == 0)
+            # FIX: is_main -> is_main_entity
             mappings.append({
-                "entity_id": ent_id, "is_main": is_main, "conf": data["conf"], "src": data["src"]
+                "entity_id": ent_id, 
+                "is_main_entity": is_main, 
+                "confidence": data["conf"], 
+                "resolver_source": data["src"]
             })
             
             mentions.append({
@@ -177,7 +171,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
         unknowns_meta = {}
         for unk_name, unk_count in unknown_entities.items():
-            # Ambil context singkat untuk unknown menggunakan regex sederhana
             unk_match = re.search(re.escape(unk_name), text, re.IGNORECASE)
             unk_sent = text[max(0, unk_match.start()-50):unk_match.end()+50] if unk_match else ""
             unknowns_meta[unk_name] = {"count": unk_count, "context": unk_sent.strip()[:200]}
@@ -234,7 +227,6 @@ def main(limit: int = 50, max_total: int = 0):
         success_count = 0
         
         for result in batch_results:
-            # Selalu tambahkan ke resolved_updates, walau mappings kosong
             resolved_updates.append({
                 "id": result["raw_text_id"],
                 "entity_resolved_at": now_iso,  
@@ -249,19 +241,27 @@ def main(limit: int = 50, max_total: int = 0):
             all_unknowns.update(result["unknowns"])
         
         try:
-            if all_mappings:
-                sb.table("article_entity_map").upsert(all_mappings, on_conflict="raw_text_id,entity_id").execute()
-            if all_mentions:
-                db_mentions = [{
-                    "raw_text_id": m["raw_text_id"], "ingested_month": m["ingested_month"],
-                    "entity_id": m["entity_id"], "mention_text": m["text"],
-                    "mention_count": m["count"], "start_offset": m["start"], "end_offset": m["end"]
-                } for m in all_mentions]
-                sb.table("entity_mentions").upsert(db_mentions, on_conflict="raw_text_id,entity_id").execute()
-                
+            # 1. UPDATE TIMESTAMP DULU agar pipeline tidak stuck walau ada error di bawahnya
             if resolved_updates:
                 sb.rpc("bulk_update_raw_texts", {"p_updates": resolved_updates}).execute()
                 
+            # 2. INSERT MAPPINGS
+            if all_mappings:
+                sb.table("article_entity_map").upsert(all_mappings, on_conflict="raw_text_id,entity_id").execute()
+                
+            # 3. INSERT MENTIONS
+            if all_mentions:
+                db_mentions = [{
+                    "raw_text_id": m["raw_text_id"], 
+                    "ingested_month": m["ingested_month"],
+                    "entity_id": m["entity_id"], 
+                    "mention_text": m["text"],
+                    "start_offset": m["start"], 
+                    "end_offset": m["end"]
+                } for m in all_mentions]
+                sb.table("entity_mentions").upsert(db_mentions, on_conflict="raw_text_id,entity_id").execute()
+                
+            # 4. INSERT UNKNOWN CANDIDATES
             if all_unknowns:
                 unknown_payload = [{
                     "detected_name": name, 

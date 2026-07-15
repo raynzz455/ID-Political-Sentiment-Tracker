@@ -55,3 +55,208 @@ ID-Political-Sentiment-Tracker/
 │               └── index.ts
 ├── docs/
 └── .github/
+
+                  ┌──────────────────────────────┐
+                  │        RSS INGESTION         │
+                  │ (RSS, Media, GNews Feed)     │
+                  └──────────────┬───────────────┘
+                                 │
+                                 ▼
+                     raw_texts (status=PENDING)
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+                 LAYER 2 — ENRICHMENT
+══════════════════════════════════════════════════════════════
+
+Enricher Worker
+    │
+    ├── Fetch halaman asli
+    ├── Trafilatura Extraction
+    ├── Metadata
+    └── Update
+
+status = ENRICHED
+content_type =
+    FULLTEXT
+    atau
+    SNIPPET (GNews)
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+              LAYER 2.5 — QUALITY VALIDATION
+══════════════════════════════════════════════════════════════
+
+Validation Worker
+
+Input:
+status = ENRICHED
+
+Melakukan:
+
+• Quality Score
+• Noise Detection
+• Bahasa
+• Panjang artikel
+• Stopword
+• Title Matching
+
+Output:
+
+VALIDATED
+atau
+
+FAILED
+
+(Tidak melakukan routing lagi.)
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+             LAYER 3 — PREPROCESSING
+══════════════════════════════════════════════════════════════
+
+Preprocessing Worker
+
+Input
+
+status = VALIDATED
+
+Melakukan
+
+• Cleaning
+• Unicode normalize
+• Remove URL
+• Remove emoji
+• Remove HTML
+• Sentence normalize
+• dst
+
+Output
+
+preprocessed_text
+preprocessed_at
+preprocessing_version
+
+status tetap VALIDATED
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+            LAYER 3.2 — ENTITY RESOLUTION
+══════════════════════════════════════════════════════════════
+
+Entity Resolution Worker
+
+Input
+
+status = VALIDATED
+
+Menghasilkan
+
+article_entity_map
+
+entity_mentions
+
+main entity
+
+confidence
+
+resolver source
+
+status tetap VALIDATED
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+              LAYER 3.5 — CONTEXT
+══════════════════════════════════════════════════════════════
+
+Context Worker
+
+Input
+
+artikel VALIDATED
++
+entity
+
+Menghasilkan
+
+entity_contexts
+
+context span
+
+window sentence
+
+normalized context
+
+status tetap VALIDATED
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+            LAYER 3.7 — NLP READINESS
+══════════════════════════════════════════════════════════════
+
+Readiness Worker
+
+Mengecek apakah artikel sudah memiliki
+
+✓ preprocessed text
+
+✓ entity
+
+✓ context
+
+Jika lengkap
+
+↓
+
+masuk queue NLP (pgmq)
+
+status = NLP_READY
+
+                                 │
+                                 ▼
+══════════════════════════════════════════════════════════════
+             LAYER 4 — NLP PIPELINE
+══════════════════════════════════════════════════════════════
+
+Drain Queue
+
+↓
+
+Ambil artikel dari pgmq
+
+↓
+
+Fallback Sentiment
+
+↓
+
+Cari alias entity
+
+↓
+
+Relevancy Classifier
+
+↓
+
+Jika relevan
+
+↓
+
+Context Sentiment Classifier
+
+↓
+
+Insert sentiment_scores
+
+↓
+
+ACK Queue
+
+↓
+
+status = PROCESSED

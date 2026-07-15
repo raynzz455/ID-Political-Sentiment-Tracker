@@ -100,6 +100,20 @@ REASON_CATEGORY = {
     FetchReason.MAX_RETRIES_EXCEEDED: "max_retries_exceeded",
 }
 
+MIN_FULLTEXT_LENGTH = 500
+FETCH_TIMEOUT = 15
+PLAYWRIGHT_TIMEOUT = 15000 # ms
+SLEEP_JITTER_SHORT = 2
+SLEEP_JITTER_LONG = 4
+MAX_RECOVERY_RETRY = 3
+RECOVERY_RESOLVED = "resolved"
+RECOVERY_FAILED = "failed"
+RECOVERY_PENDING = "pending"
+RETRYABLE_FAILURES = [
+    "max_retries_exceeded", "media_timeout", "shortener_timeout", 
+    "http_403", "http_429", "http_500", "http_502", "http_503",
+    "media_error", "shortener_error"
+]
 def categorize_reason(reason: str) -> str:
     if reason in REASON_CATEGORY:
         return REASON_CATEGORY[reason]

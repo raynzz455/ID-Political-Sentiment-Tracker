@@ -28,7 +28,7 @@ def main():
     sb = create_client(url, key)
     
     print("\n" + "="*50)
-    print("📊 ID-SENTIMENT TRACKER: PIPELINE HEALTH DASHBOARD")
+    print("ID-SENTIMENT TRACKER: PIPELINE HEALTH DASHBOARD")
     print("="*50)
     
     # 1. Ambil statistik utama (1x RPC call)

@@ -54,3 +54,5 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+git-commit-scheduler.ps1
