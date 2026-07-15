@@ -1,0 +1,199 @@
+"""
+validation_worker.py v10 — Pure Quality Scoring & Pipeline Logging
+===================================================================
+Tugas: 
+  1. Pure Quality Scoring (0-100). Tidak melakukan routing Headline/NLP.
+  2. Tidak menghapus teks snippet GNews. Data tetap utuh untuk training/reprocessing.
+  3. Menambahkan metadata.content_type (FULLTEXT / SNIPPET) agar Queue Manager yang memutuskan jalurnya.
+  4. Mencatat pipeline_version untuk audit dan observability.
+  5. Mengintegrasikan pipeline_logger untuk mencatat durasi & statistik worker.
+  6. MONOREPO READY: Import dari packages.shared.
+"""
+
+import os
+import re
+import sys
+import time
+import random
+import argparse
+from collections import Counter
+from pathlib import Path
+from typing import NamedTuple
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
+
+try:
+    from langdetect import detect, LangDetectException, DetectorFactory
+except ImportError as e:
+    print(f"[ERROR] {e}. Pastikan pip install langdetect")
+    sys.exit(1)
+
+# IMPORT DARI MONOREPO SHARED
+from packages.shared.db_client import get_client
+from packages.shared.logger import start_run, finish_run
+from packages.shared import constants as pc
+
+DetectorFactory.seed = 0  # Fix langdetect non-determinism
+PIPELINE_VERSION = "v10_validation"
+
+ID_STOPWORDS = {"yang", "dan", "di", "ke", "untuk", "dengan", "ini", "itu", "atau", "dari", "pada", "juga"}
+HARD_REJECT_WINDOW = 200
+HARD_REJECT_PATTERNS = ["access denied", "enable javascript and cookies", "checking your browser", "attention required"]
+SOFT_PENALTY_PATTERNS = ["captcha", "login", "sign in", "subscribe", "berlangganan", "cookie", "privacy policy", "all rights reserved"]
+SOFT_PENALTY_PER_HIT = 8
+QUALITY_THRESHOLD = 80
+
+class QualityResult(NamedTuple):
+    score: int
+    reason: str
+
+def calculate_quality_score(text: str, title: str) -> QualityResult:
+    if not text or not title:
+        return QualityResult(0, "empty_input")
+
+    early_window = text[:HARD_REJECT_WINDOW].lower()
+    if any(p in early_window for p in HARD_REJECT_PATTERNS):
+        return QualityResult(0, "noise_page")
+
+    earned = 0
+    max_possible = 0
+    text_len = len(text)
+    words = text.split()
+    word_count = len(words)
+    has_id_stopword = any(w in ID_STOPWORDS for w in words)
+
+    max_possible += 25
+    if text_len >= 1000: earned += 25
+    elif text_len >= 500: earned += 15
+    elif text_len >= 300: earned += 10
+
+    max_possible += 25
+    if word_count >= 150: earned += 25
+    elif word_count >= 70: earned += 15
+    elif word_count >= 40: earned += 5
+
+    if word_count > 0:
+        max_possible += 25
+        if has_id_stopword: earned += 15
+        try:
+            if detect(text[:500]) == "id": earned += 10
+        except LangDetectException:
+            pass
+
+    title_words = set(re.findall(r"\b\w+\b", title.lower())) - ID_STOPWORDS
+    if title_words:
+        max_possible += 25
+        text_words = set(re.findall(r"\b\w+\b", text.lower()))
+        match_ratio = sum(1 for w in title_words if w in text_words) / len(title_words)
+        earned += int(match_ratio * 25)
+
+    lower_full_text = text.lower()
+    hits = sum(1 for p in SOFT_PENALTY_PATTERNS if p in lower_full_text)
+    earned = max(0, earned - hits * SOFT_PENALTY_PER_HIT)
+
+    score = int((earned / max_possible) * 100) if max_possible > 0 else 0
+    score = min(score, 100)
+
+    if score >= QUALITY_THRESHOLD:
+        return QualityResult(score, "validated")
+    if word_count < 70:
+        return QualityResult(score, "low_quality_too_short")
+    if not has_id_stopword:
+        return QualityResult(score, "low_quality_no_stopword")
+    return QualityResult(score, "low_quality")
+
+def process_batch(sb, rows: list) -> Counter:
+    stats = Counter()
+    updates = []
+
+    for r in rows:
+        result = calculate_quality_score(r.get("text") or "", r.get("title") or "")
+        current_metadata = dict(r.get("metadata") or {})
+
+        if result.reason == "validated":
+            if "content_type" not in current_metadata:
+                current_metadata["content_type"] = "SNIPPET" if current_metadata.get("is_snippet") else "FULLTEXT"
+            
+            updates.append({
+                "id": r["id"], 
+                "status": pc.STATUS_VALIDATED, 
+                "metadata": current_metadata,
+                "pipeline_version": PIPELINE_VERSION 
+            })
+            stats["validated"] += 1
+        else:
+            current_metadata["fail_reason"] = result.reason
+            current_metadata["quality_score"] = result.score
+            updates.append({
+                "id": r["id"], 
+                "status": pc.STATUS_FAILED, 
+                "metadata": current_metadata,
+                "pipeline_version": PIPELINE_VERSION
+            })
+            stats["failed"] += 1
+            stats[f"reason_{result.reason}"] += 1
+
+    if updates:
+        try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
+        except Exception as e: print(f"[BULK_DB_ERROR] {e}")
+
+    return stats
+
+def print_batch_report(stats: Counter):
+    print(f"\n{'=' * 50}")
+    print("QUALITY SCORING REPORT")
+    print(f"{'=' * 50}")
+    print(f"Validated   : {stats.get('validated', 0)}")
+    print(f"Failed      : {stats.get('failed', 0)}")
+    reasons = {k: v for k, v in stats.items() if k.startswith("reason_") and v > 0}
+    if reasons:
+        print(f"{'-' * 50}")
+        print("Alasan Kegagalan:")
+        for key, count in Counter(reasons).most_common():
+            print(f"  - {key.replace('reason_', ''):25s}: {count}")
+    print(f"{'=' * 50}")
+
+def main(limit: int = 500, max_total: int = 0):
+    sb = get_client()
+    run_id = start_run("validation_worker", PIPELINE_VERSION)
+    
+    total_stats = Counter()
+    batch_num = 1
+
+    print(f"[VALIDATOR v10] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+
+    while True:
+        if max_total > 0 and sum(v for k, v in total_stats.items() if not k.startswith("reason_")) >= max_total:
+            break
+
+        res = sb.table("raw_texts") \
+                .select("id, title, text, metadata") \
+                .eq("status", pc.STATUS_ENRICHED) \
+                .limit(limit) \
+                .execute()
+
+        rows = res.data or []
+        if not rows:
+            break
+
+        print(f"\n--- Batch {batch_num}: scoring {len(rows)} artikel ---")
+        batch_stats = process_batch(sb, rows)
+        print_batch_report(batch_stats)
+        total_stats.update(batch_stats)
+        batch_num += 1
+        time.sleep(2 + random.uniform(0, 2))
+
+    total_processed = sum(v for k, v in total_stats.items() if not k.startswith("reason_"))
+    total_succeeded = total_stats.get('validated', 0)
+    total_failed = total_stats.get('failed', 0)
+    
+    finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_failed)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument("--max-total", type=int, default=0)
+    args = parser.parse_args()
+    main(limit=args.limit, max_total=args.max_total)
