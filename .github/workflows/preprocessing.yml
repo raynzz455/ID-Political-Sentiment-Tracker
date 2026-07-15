@@ -24,7 +24,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          python -m spacy download id_core_news_sm
+          # TIDAK PERLU download model spaCy karena kita pakai Regex murni
           
       # 1. ENRICHER WORKER
       - name: Run Enricher Worker
@@ -66,4 +66,4 @@ jobs:
         run: python main.py run-worker readiness --limit 500
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
