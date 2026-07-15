@@ -1,7 +1,8 @@
 """
-cli_test.py — Dev Tool untuk Inspeksi & Testing NLP
-=====================================================
-Tujuan: Peek antrian, cek statistik DB, dan test teks manual.
+cli_test.py — Dev Tool untuk Inspeksi & Testing NLP (v4 Aligned)
+=================================================================
+Tujuan: Peek antrian, cek statistik DB, dan test teks manual 
+        (Fallback & Targeted/Relevancy Gate).
 Untuk memproses antrian secara massal, gunakan: python -m packages.nlp.nlp_worker
 """
 import os
@@ -23,6 +24,7 @@ from packages.shared.db_client import get_client
 from packages.nlp.sentiment_model import get_pipeline
 
 def cmd_inspect(sb: Client, args):
+    # Dequeue dengan VT 60 detik hanya untuk ngintip
     res = sb.rpc("dequeue_nlp_batch", {"p_vt": 60, "p_qty": 5}).execute()
     items = res.data or []
 
@@ -38,15 +40,33 @@ def cmd_inspect(sb: Client, args):
 
 def cmd_single(sb: Client, args):
     text = args.text
+    entity = args.entity  # Bisa None
     pipeline = get_pipeline()
 
-    print(f"\n{'='*60}\nSINGLE TEST (IndoBERT Fallback)\n{'='*60}\nText: {text}\n")
+    mode = "TARGETED (Relevancy Gate)" if entity else "FALLBACK (Document-level)"
+    print(f"\n{'='*60}\nSINGLE TEST ({mode})\n{'='*60}")
+    if entity:
+        print(f"Entity Context : {entity}")
+    print(f"Text           : {text}\n")
 
-    result = pipeline.predict_gated(text=text, context=None)
+    # Panggil pipeline v4
+    result = pipeline.predict_gated(text=text, context=entity)
 
-    print(f"Label: {result.label}")
-    print(f"Confidence: {result.sentiment_confidence:.3f}")
-    print(f"Scores: neg={result.scores[0]:.3f}, neu={result.scores[1]:.3f}, pos={result.scores[2]:.3f}")
+    if entity and not result.is_relevant:
+        print(">>> HASIL: TIDAK RELEVAN (Gate Rejected)")
+        print(f"Relevancy Conf: {result.relevancy_confidence:.3f}")
+    else:
+        print(">>> HASIL: RELEVAN / LOLOS GATE")
+        print(f"Label          : {result.label}")
+        print(f"Confidence     : {result.sentiment_confidence:.3f}")
+        print(f"Scores         : neg={result.scores[0]:.3f}, neu={result.scores[1]:.3f}, pos={result.scores[2]:.3f}")
+        
+        # Metrik baru dari v4
+        if result.polarity_score is not None:
+            print(f"Polarity Score : {result.polarity_score:.3f}  (Pos - Neg)")
+        if result.entropy is not None:
+            print(f"Entropy        : {result.entropy:.3f}  (Uncertainty)")
+            
     print(f"{'='*60}\n")
 
 def cmd_stats(sb: Client, args):
@@ -59,33 +79,40 @@ def cmd_stats(sb: Client, args):
         print(f"  {status:15s} {c:5d}")
     print(f"  {'TOTAL':15s} {len(res.data):5d}")
 
-    res2 = sb.table("sentiment_scores").select("id", count="exact").execute()
-    print(f"\nsentiment_scores total: {len(res2.data)}")
+    # Perbaikan count: gunakan res.count agar akurat tanpa limit
+    res2 = sb.table("sentiment_scores").select("id", count="exact").limit(1).execute()
+    print(f"\nsentiment_scores total: {res2.count}")
 
-    print("\nTop tokoh di sentiment_scores (kalau ada):")
+    print("\nTop tokoh di sentiment_scores (limit 500):")
     res3 = sb.table("sentiment_scores") \
              .select("entity_id, political_entities(canonical_name)") \
              .limit(500) \
              .execute()
+             
     entity_counter = Counter()
     for r in res3.data:
         pe = r.get("political_entities") or {}
         name = pe.get("canonical_name", "?")        
         entity_counter[name] += 1
-    for name, c in entity_counter.most_common(10):
-        print(f"  {name:30s} {c:5d}")
+        
+    if not entity_counter:
+        print("  (Belum ada data entitas)")
+    else:
+        for name, c in entity_counter.most_common(10):
+            print(f"  {name:30s} {c:5d}")
 
     print(f"\n{'='*60}\n")
 
 def main():
-    parser = argparse.ArgumentParser(description="ID-Sentiment Dev CLI")
+    parser = argparse.ArgumentParser(description="ID-Sentiment Dev CLI (v4)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_inspect = sub.add_parser("inspect", help="Lihat isi queue tanpa proses")
     p_inspect.set_defaults(func=cmd_inspect)
 
-    p_single = sub.add_parser("single", help="Test 1 teks manual dengan model fallback")
-    p_single.add_argument("text", type=str, help="teks untuk dianalisis")
+    p_single = sub.add_parser("single", help="Test 1 teks manual (fallback atau targeted)")
+    p_single.add_argument("text", type=str, help="Teks untuk dianalisis")
+    p_single.add_argument("--entity", type=str, default=None, help="Nama entitas (untuk test Relevancy Gate)")
     p_single.set_defaults(func=cmd_single)
 
     p_stats = sub.add_parser("stats", help="Lihat statistik DB")

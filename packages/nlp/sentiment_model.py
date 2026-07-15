@@ -1,44 +1,23 @@
 """
 sentiment_model.py — ID-Sentiment-Tracker
 ===========================================
-v2: Tambah RelevancyModel + 2-stage gated pipeline.
+v4: Pure ML Output & Derived Continuous Metrics.
 
-KOREKSI dari v1: SentimentPredictor SAJA tidak bisa deteksi entity mismatch
-(misal "Prabowo Subianto" vs "Listyo Sigit Prabowo"). Model sentimen hanya
-menjawab "apa sentimennya", tidak menjawab "apakah context ini relevan".
-Untuk itu perlu model TERPISAH: RelevancyModel.
+PERUBAHAN v4:
+  1. PURE LABELS: Mengembalikan label asli model (positive, neutral, negative).
+     Tidak ada lagi pemaksaan label buatan (factual/ambiguous) agar selaras
+     dengan CHECK CONSTRAINT di database.
+  2. METRICS EXTRACTION: Menghitung Polarity Score (pos-neg) dan Entropy
+     sebagai feature kontinu murni tanpa threshold heuristic.
+  3. FAIL-CLOSED: Relevancy gate tetap fail-closed jika error.
 
-ARSITEKTUR 2-STAGE (yang benar):
+ARSITEKTUR 2-STAGE:
   Stage 1 — RelevancyModel:  "apakah teks ini tentang entity X?"
   Stage 2 — SentimentModel:  "apa sentimen teks ini terhadap entity X?"
-  Stage 2 HANYA dipanggil kalau Stage 1 bilang relevan.
-
-MODELS (semua dari riset SocialX + Telkom University + BRIN, April 2026):
-  - apriandito/indobert-relevancy-classifier  (F1 0.948, relevansi)
-  - apriandito/indobert-sentiment-classifier  (F1 0.856, sentimen)
-  - taufiqdp/indonesian-sentiment              (fallback, tanpa context)
-
-Usage:
-    from sentiment_model import get_pipeline
-
-    pipeline = get_pipeline()
-
-    result = pipeline.predict_gated(
-        text="Kapolri Listyo Sigit Prabowo menyerahkan bansos...",
-        context="Prabowo Subianto",
-    )
-    # result.is_relevant -> False (seharusnya, karena beda orang)
-    # result.label -> None (tidak dihitung kalau tidak relevan)
-
-    result2 = pipeline.predict_gated(
-        text="Prabowo resmikan program makan siang gratis...",
-        context="Prabowo Subianto",
-    )
-    # result2.is_relevant -> True
-    # result2.label -> "positive" / dst
 """
 
 import sys
+import math
 import logging
 from dataclasses import dataclass
 from functools import lru_cache
@@ -54,7 +33,6 @@ except ImportError:
     print("[ERROR] pip install torch transformers --break-system-packages")
     sys.exit(1)
 
-
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
@@ -65,27 +43,14 @@ FALLBACK_MODEL_ID   = "taufiqdp/indonesian-sentiment"
 
 MAX_SEQ_LENGTH = 256
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Threshold relevansi — di bawah ini dianggap TIDAK relevan, skip sentiment.
-# Mulai konservatif (0.5 = default decision boundary model). Bisa dituning
-# setelah lihat distribusi score relevansi di data nyata.
 RELEVANCY_THRESHOLD = 0.5
-
-# Kata kunci untuk auto-detect mana label "relevan" di id2label
-# (jaga-jaga kalau urutan/casing label berbeda dari ekspektasi)
 RELEVANT_LABEL_HINTS = {"relevan", "relevant", "yes", "ya", "1", "true"}
-
-
-# ─────────────────────────────────────────────────────────────
-# LABEL NORMALIZATION (sentiment)
-# ─────────────────────────────────────────────────────────────
 
 LABEL_NORMALIZE_MAP = {
     "negatif": "negative", "negative": "negative", "neg": "negative",
     "netral": "neutral", "neutral": "neutral", "neu": "neutral",
     "positif": "positive", "positive": "positive", "pos": "positive",
 }
-
 
 def normalize_label(raw_label: str) -> str:
     key = raw_label.lower().strip()
@@ -96,6 +61,28 @@ def normalize_label(raw_label: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# CONTINUOUS METRICS CALCULATION
+# ─────────────────────────────────────────────────────────────
+
+def calculate_continuous_metrics(scores: tuple) -> tuple:
+    """
+    Menghitung metrik kontinu murni tanpa interpretasi heuristic.
+    scores = (neg, neu, pos)
+    return (polarity_score, entropy)
+    """
+    neg, neu, pos = scores
+    
+    # 1. Continuous Polarity Score (-1.0 to 1.0)
+    polarity = pos - neg
+    
+    # 2. Entropy (Tingkat kebingungan model)
+    # Tambahkan epsilon 1e-9 untuk menghindari log(0)
+    entropy = -sum(p * math.log(p + 1e-9) for p in scores if p > 0)
+    
+    return polarity, entropy
+
+
+# ─────────────────────────────────────────────────────────────
 # RESULT DATACLASS
 # ─────────────────────────────────────────────────────────────
 
@@ -103,9 +90,11 @@ def normalize_label(raw_label: str) -> str:
 class GatedResult:
     is_relevant: bool
     relevancy_confidence: float
-    label: Optional[str]               # None kalau is_relevant=False
+    label: Optional[str]               # Pure label model: positive, neutral, negative
     sentiment_confidence: Optional[float]
-    scores: Optional[tuple]            # (neg, neu, pos), None kalau tidak relevan
+    scores: Optional[tuple]            # (neg, neu, pos)
+    polarity_score: Optional[float] = None
+    entropy: Optional[float] = None
 
 
 # ─────────────────────────────────────────────────────────────
@@ -140,15 +129,9 @@ class _LoadedModel:
         return torch.softmax(logits, dim=-1)[0].cpu().tolist()
 
 
-# ─────────────────────────────────────────────────────────────
-# RELEVANCY MODEL
-# ─────────────────────────────────────────────────────────────
-
 class RelevancyModel(_LoadedModel):
     def __init__(self):
         super().__init__(RELEVANCY_MODEL_ID)
-
-        # Auto-detect index mana yang berarti "relevan"
         self._relevant_idx = None
         for idx, label in self.id2label.items():
             if label.lower().strip() in RELEVANT_LABEL_HINTS:
@@ -156,23 +139,14 @@ class RelevancyModel(_LoadedModel):
                 break
 
         if self._relevant_idx is None:
-            logger.warning(
-                f"Tidak bisa auto-detect label 'relevan' dari {self.id2label}. "
-                f"Default ke index 1. PERIKSA MANUAL dan koreksi RELEVANT_LABEL_HINTS "
-                f"kalau hasil prediksi terbalik."
-            )
+            logger.warning(f"Tidak bisa auto-detect label 'relevan'. Default ke index 1.")
             self._relevant_idx = 1
 
     def check(self, context: str, text: str) -> tuple[bool, float]:
-        """Return (is_relevant, confidence_relevan)."""
         probs = self._forward_pair(context, text)
         relevant_prob = probs[self._relevant_idx]
         return relevant_prob >= RELEVANCY_THRESHOLD, relevant_prob
 
-
-# ─────────────────────────────────────────────────────────────
-# SENTIMENT MODEL (context-conditioned)
-# ─────────────────────────────────────────────────────────────
 
 class SentimentModel(_LoadedModel):
     def __init__(self):
@@ -187,10 +161,6 @@ class SentimentModel(_LoadedModel):
         score_tuple = (scores.get("negative", 0.0), scores.get("neutral", 0.0), scores.get("positive", 0.0))
         return label, conf, score_tuple
 
-
-# ─────────────────────────────────────────────────────────────
-# FALLBACK MODEL (document-level, tanpa context)
-# ─────────────────────────────────────────────────────────────
 
 class FallbackModel(_LoadedModel):
     def __init__(self):
@@ -207,7 +177,7 @@ class FallbackModel(_LoadedModel):
 
 
 # ─────────────────────────────────────────────────────────────
-# PIPELINE — interface utama (lazy load semua sub-model)
+# PIPELINE — interface utama
 # ─────────────────────────────────────────────────────────────
 
 class SentimentPipeline:
@@ -235,33 +205,35 @@ class SentimentPipeline:
         return self._fallback
 
     def predict_gated(self, text: str, context: Optional[str]) -> GatedResult:
-        """
-        Pipeline lengkap 2-stage. Kalau context=None, langsung fallback
-        document-level (tidak ada yang perlu di-gate).
-        """
         if not text or not text.strip():
             return GatedResult(False, 0.0, None, None, None)
 
+        # FALLBACK PATH (Document-level)
         if context is None:
             label, conf, scores = self.fallback.predict(text)
-            return GatedResult(True, 1.0, label, conf, scores)
+            polarity, entropy = calculate_continuous_metrics(scores)
+            return GatedResult(True, 1.0, label, conf, scores, polarity, entropy)
 
+        # GATED PATH (Entity-level)
         try:
             is_relevant, rel_conf = self.relevancy.check(context, text)
         except Exception as e:
-            logger.error(f"Relevancy check gagal: {e} — treat sebagai relevan (fail-open)")
-            is_relevant, rel_conf = True, 0.5
+            # FAIL-CLOSED: Jika gate error, anggap tidak relevan agar tidak lolos ke sentimen
+            logger.error(f"Relevancy check gagal: {e} — treat sebagai TIDAK relevan (fail-closed)")
+            return GatedResult(False, 0.0, None, None, None)
 
         if not is_relevant:
             return GatedResult(False, rel_conf, None, None, None)
 
         try:
             label, conf, scores = self.sentiment.predict(context, text)
+            polarity, entropy = calculate_continuous_metrics(scores)
+            return GatedResult(True, rel_conf, label, conf, scores, polarity, entropy)
         except Exception as e:
             logger.error(f"Sentiment predict gagal: {e}")
-            return GatedResult(True, rel_conf, "neutral", 0.34, (0.33, 0.34, 0.33))
-
-        return GatedResult(True, rel_conf, label, conf, scores)
+            scores = (0.33, 0.34, 0.33)
+            polarity, entropy = calculate_continuous_metrics(scores)
+            return GatedResult(True, rel_conf, "neutral", 0.34, scores, polarity, entropy)
 
 
 @lru_cache(maxsize=1)
