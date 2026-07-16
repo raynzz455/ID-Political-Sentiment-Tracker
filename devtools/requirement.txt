@@ -1,2 +1,0 @@
-playwirght>=1.40.0
-chromium
