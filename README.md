@@ -14,10 +14,11 @@ Pernah nggak ngerasa bingung: "sebenernya orang-orang suka nggak sih sama si X?"
 
 Nah, **itu persis yang project ini lakuin.**
 
-Setiap 30 menit, sistem ini otomatis:
-1. 📰 Ngumpulin ribuan berita dari media Indonesia
-2. 🧠 Baca dan analisis sentimen tiap artikel pakai AI
-3. 📊 Tampilin hasilnya di dashboard publik yang bisa diakses siapa aja
+Sistem ini otomatis:
+1. 📰 Ngumpulin ribuan berita dari media Indonesia (RSS, Google News, DDG)
+2. 🧹 Bersihin "sampah" digital (halaman foto, iklan, salah redirect) secara cerdas
+3. 🧠 Baca dan analisis sentimen tiap artikel pakai AI (IndoBERT) dengan deteksi tokoh spesifik
+4. 📊 Tampilin hasilnya di dashboard publik yang bisa diakses siapa aja
 
 Output-nya simpel: **"Minggu ini, 68% berita tentang si X bernada negatif."**
 
@@ -38,133 +39,99 @@ Berguna buat:
 
 ## 🏗️ Cara Kerjanya — Dijelasin Kayak Ngobrol Sama Temen
 
-Bayangin sistem ini kayak **dapur restoran**, dari bahan mentah sampai makanan nyampe ke meja tamu:
+Bayangin sistem ini kayak **dapur restoran**, dari bahan mentah sampai makanan nyampe ke meja tamu. Tapi dapur ini punya stasiun kerja yang sangat spesifik biar rasa masakannya (data) konsisten dan gak ada sampah yang lolos:
 
-```
+```text
 Berita dari internet
       ↓
-  Dikumpulin          ← L1 + L2
+  Dikumpulin & Dinormalisasi    ← L1 + L2 (Ingestion & Enrichment)
       ↓
-  Diantrekan          ← L3
+  Quality Control & Cleaning    ← L2.5 + L3 (Validation & Preprocessing)
       ↓
-  Dianalisis AI       ← L4
+  Identifikasi Tokoh & Konteks  ← L3.2 + L3.5 (Entity Resolution & Context)
       ↓
-  Disimpan rapi       ← L5
+  Diantrekan                    ← L3.7 (Readiness & Final Gatekeeper)
       ↓
-  Ditampilin ke lu    ← L6
+  Dianalisis AI                 ← L4 (NLP Worker)
+      ↓
+  Disimpan rapi                 ← L5 (Database)
+      ↓
+  Ditampilin ke lu              ← L6 (Dashboard)
 ```
 
 ---
 
 ## ⚙️ Tech Stack — Layer by Layer
 
-### 🌐 Layer 1 — Sumber Data
-**Apa yang terjadi:** Ini titik awal — dari mana beritanya diambil.
+### 🌐 Layer 1-2 — Ingestion & Enrichment (Python & Deno)
+**Apa yang terjadi:** Yang bertugas pergi "belanja" berita tadi dan masukin ke sistem. 
 
-Pakai **RSS Feed** dari berbagai media Indonesia. RSS itu basically format khusus yang memang dibuat supaya mesin bisa baca berita otomatis — jadi ini bukan scraping ilegal, ini fitur yang memang disediain media buat agregator.
+Dibangun memakai **Deno/TypeScript** (untuk RSS cepat) dan **Python** (untuk Enrichment berat). Di-deploy ke **Supabase Edge Functions** dan **GitHub Actions** yang gratis.
 
-**Sumber yang dipake:**
-- CNN Indonesia, Tempo, Republika (direct RSS)
-- Detik, Kompas, Tribun, Antara (lewat Google News RSS — karena kalo langsung diblock)
+**Teknisnya:** 
+- Fetch semua RSS feed secara bersamaan.
+- **Expert Gate:** Menggunakan Trafilatura (`favor_precision=True`) dan ekstraksi JSON-LD prioritas.
+- **Anti-Sampah:** Menolak teks >20.000 karakter (section leakage/halaman list) dan *Title Mismatch* (salah redirect ke homepage).
+- **Deduplication:** Cek duplikat judul sebelum HTTP *fetch* agar tidak buang bandwidth mengunduh HTML yang sama dua kali.
 
-**Analogi:** Ini kayak lu subscribe newsletter dari banyak media sekaligus, terus isinya masuk ke satu kotak.
-
----
-
-### ⚡ Layer 2 — Ingestion Worker (Deno / TypeScript)
-**Apa yang terjadi:** Yang bertugas pergi "belanja" berita tadi dan masukin ke sistem.
-
-Dibangun pakai **Deno** (bahasa TypeScript yang jalan di server), di-deploy ke **Supabase Edge Functions** yang gratis.
-
-**Teknisnya:** Tiap 30 menit, GitHub Actions ngirim sinyal "hei, kerja!" ke Edge Function ini. Terus dia langsung:
-- Fetch semua RSS feed secara bersamaan (bukan satu-satu, jadi cepet)
-- Bersihin kontennya dari HTML, iklan, dan sampah digital lainnya
-- Cek duplikat pakai SHA-256 hash (biar artikel yang sama nggak masuk dua kali)
-- Masukin ke database
-
-**Analogi:** Ini kayak kurir yang tiap 30 menit keliling ngumpulin koran dari berbagai kios, terus anter ke gudang — dan dia hafal mana yang udah pernah diantar jadi nggak perlu dobel.
-
-**Kenapa Deno, bukan Python?**  
-Edge Function punya batas CPU 150ms. Kerjaan Layer 2 ini mostly nunggu internet (network I/O) — bukan ngitung berat-berat — jadi Deno/TypeScript yang ringan udah lebih dari cukup. Python disimpen buat Layer 4 yang emang butuh komputasi berat.
+**Analogi:** Ini kayak kurir yang tiap 30 menit keliling ngumpulin koran, terus di-stasiun pertama korannya dibuang iklan-iklan sampahnya. Kalau ada koran yang judulnya udah pernah dibawa, dia langsung skip.
 
 ---
 
-### 📬 Layer 3 — Antrian (pgmq)
-**Apa yang terjadi:** Artikel yang baru masuk dimasukin ke antrian biar diproses tertib.
+### ⚖️ Layer 2.5 & 3 — Validation & Preprocessing
+**Apa yang terjadi:** Quality Control menilai teks (0-100). Teks yang lolos dibersihkan (normalisasi unicode, hapus URL, dst) dan dihitung *hash*-nya untuk mencegah duplikat konten lintas bulanan.
 
-Pakai **pgmq** — ini ekstensi PostgreSQL yang bikin sistem antrian langsung di dalam database. Nggak perlu server Redis atau Kafka yang ribet dan bayar.
+**Analogi:** Kayak *Quality Control* di pabrik. Bahan mentah yang busuk (teks terlalu pendek/campur aduk) langsung dibuang. Yang bagus dicuci dan dipotong rapi.
 
-**Analogi:** Bayangin antrian kasir Indomaret. Artikel-artikel yang baru dateng ngantri dulu. Nanti si kasir (NLP worker) ambil satu-satu, proses, terus lanjut ke artikel berikutnya. Kalau gagal diproses, otomatis masuk antrian lagi — nggak ilang.
+---
 
-**Kenapa ini penting?**  
-Tanpa antrian, kalau tiba-tiba ada 500 artikel masuk sekaligus, sistem bisa crash. Dengan antrian, semuanya diproses pelan-pelan tapi pasti.
+### 🎯 Layer 3.2 & 3.5 — Entity Resolution & Context Extraction
+**Apa yang terjadi:** Mendeteksi tokoh dalam teks (Prabowo, Gibran, dll). Mengambil kalimat di sekitar tokoh (*context span*) agar AI tidak bingung menganalisis artikel utuh yang mungkin membahas banyak tokoh sekaligus.
+
+**Analogi:** Sistem ini tau kalo di artikel ada 3 tokoh, dia pisah-pisah. "Oke, kalimat ini tentang Prabowo, kalimat itu tentang Anies." Dia ngga mencampur aduk.
+
+---
+
+### 📬 Layer 3.7 — Readiness & Antrian (pgmq)
+**Apa yang terjadi:** *Final Gatekeeper*. Mengecek kelengkapan artikel. Jika lolos, dimasukkan ke antrian PGMQ di dalam PostgreSQL. Nggak perlu server Redis atau Kafka yang ribet.
+
+**Analogi:** Bayangin antrian kasir Indomaret. Artikel-artikel yang udah bersih ngantri dulu. Nanti si kasir (NLP worker) ambil satu-satu, proses, terus lanjut ke artikel berikutnya.
 
 ---
 
 ### 🧠 Layer 4 — NLP Worker (Python + IndoBERT)
-**Apa yang terjadi:** Ini bagian paling "otak"-nya — AI yang baca artikel dan mutusin sentimen-nya.
+**Apa yang terjadi:** Ini bagian paling "otak"-nya — AI yang baca artikel dan mutusin sentimen-nya. Memakai model **IndoBERT** dari HuggingFace yang dilatih khusus Bahasa Indonesia.
 
-Ini layer paling keren sekaligus paling berat secara komputasi.
+AI memproses teks menggunakan **2-Stage Pipeline**:
+1. **Relevancy Gate:** "Apakah konteks ini benar-benar membahas tokoh X?" (Mencegah *false positive* seperti "Listyo Sigit Prabowo" vs "Prabowo Subianto").
+2. **Sentiment Classifier:** Menilai positif/netral/negatif. Murni output ML tanpa *heuristic mapping* yang merusak data.
 
-**Tech yang dipake:**
-- **Python** — bahasa standar untuk AI/ML
-- **IndoBERT** — model AI yang dilatih khusus pakai teks Bahasa Indonesia (bukan English AI yang dipaksa baca Indo)
-- **ONNX Runtime** — versi IndoBERT yang udah "dipress" jadi lebih ringan, bisa jalan di CPU biasa tanpa GPU
-- **Hugging Face Spaces** — hosting gratis buat AI worker ini
-
-**Yang dikerjain per artikel:**
-1. Baca teks artikel
-2. Deteksi nama tokoh yang disebut (Prabowo? Sri Mulyani? Anies?)
-3. Analisis tone-nya: positif / netral / negatif
-4. Kasih confidence score (seberapa yakin AI-nya)
-5. Buat "sidik jari" artikel (embedding 768 angka) buat keperluan pencarian semantik nanti
-
-**Analogi:** Ini kayak ada editor politik senior yang udah baca jutaan artikel Indo, terus kerjanya nonstop baca artikel baru dan nulis laporan singkat: "Artikel ini ngomongin Prabowo, tone-nya negatif, confidence 87%."
-
-**Kenapa IndoBERT, bukan ChatGPT/GPT-4?**  
-Dua alasan: pertama, gratis total. Kedua, IndoBERT emang dilatih khusus Bahasa Indonesia termasuk slang dan konteks politik lokal — lebih akurat untuk use case ini dibanding model general yang dilatih dominan pakai teks Inggris.
+**Analogi:** Ini kayak ada editor politik senior yang udah baca jutaan artikel Indo. Dia ngga asal baca. Dia pastiin dulu "ini ngomongin siapa?", baru kasih nilai "berita ini lagi negatif".
 
 ---
 
 ### 🗄️ Layer 5 — Database (Supabase / PostgreSQL)
 **Apa yang terjadi:** Gudang utama tempat semua data disimpan rapi dan terorganisir.
 
-Ini tulang punggung seluruh sistem. Pakai **Supabase** yang di baliknya pakai **PostgreSQL** — database yang udah terbukti battle-tested selama puluhan tahun.
-
 **Yang bikin special di project ini:**
+- **Global Dedup & Auto-Partition:** Tabel dibagi per bulan otomatis agar hemat storage dan querynya cepat.
+- **Row Level Security (RLS):** Teks mentah berita diblokir untuk publik (patuh UU PDP). Hanya *headline*, *link*, dan *skor sentimen* yang dilempar ke *frontend* melalui tabel cache `entity_highlights`.
+- **Materialized View:** Merangkum data sentimen 90 hari terakhir agar *dashboard* load-nya instan tanpa ngitung ulang jutaan baris.
 
-**Partitioning bulanan** — Data artikel dibagi per bulan secara otomatis. Kalau mau query data bulan Januari, database langsung tau cukup buka "laci Januari" — nggak perlu scan jutaan baris dari semua waktu.
-
-**pgvector** — Extension yang bikin PostgreSQL bisa nyimpen dan nyari "sidik jari" artikel (embedding dari Layer 4). Ini yang enable fitur pencarian semantik: "cari semua artikel yang konteksnya mirip kebijakan ekonomi" — tanpa harus exact keyword match.
-
-**Materialized View** — Versi "summary yang udah pre-kalkulasi". Daripada dashboard harus ngitung ulang dari jutaan baris tiap ada user buka, ada tabel ringkasan yang di-refresh tiap jam. Query ke dashboard jadi instan.
-
-**pg_cron** — Penjadwal tugas yang jalan di dalam database. Tiap jam auto-refresh summary, tiap hari auto-bersihin data lama.
-
-**Analogi:** Ini kayak perpustakaan yang punya:
-- Rak per bulan (partitioning)
-- Sistem pencarian yang ngerti sinonim dan konteks, bukan cuma keyword (pgvector)
-- Papan rangkuman yang diupdate tiap hari (materialized view)
-- Penjaga yang otomatis beberes jadwal (pg_cron)
+**Analogi:** Ini kayak perpustakaan yang punya rak per bulan (partitioning), sistem keamanan ketat soal siapa yang boleh baca arsip asli (RLS), dan papan rangkuman yang diupdate tiap hari (Materialized View).
 
 ---
 
 ### 🖥️ Layer 6 — Frontend Dashboard (Next.js + Vercel)
-**Apa yang terjadi:** Tampilan yang user liat — tempat semua data tadi divisualisasikan.
-
-Dibangun pakai **Next.js** (framework React yang dibuat sama tim Vercel), di-hosting gratis di **Vercel**.
+**Apa yang terjadi:** Tampilan yang user liat — tempat semua data tadi divisualisasikan. Dibangun pakai **Next.js**, di-hosting gratis di **Vercel**.
 
 **Yang bisa diliat user:**
 - 📈 Grafik tren sentimen per tokoh (mingguan / bulanan)
 - ⚖️ Head-to-head comparison: sentimen Prabowo vs Anies bulan ini
-- 🔴 Live feed artikel terbaru yang masuk + label sentimen-nya (update otomatis tanpa refresh)
-- 🔍 Pencarian semantik: "cari artikel yang bahas kebijakan BBM" — nemuin meski kata-katanya beda
-- 🚨 Alert kalau sentimen tokoh tertentu anjlok atau naik drastis dalam waktu singkat
+- 🔴 Live feed artikel terbaru yang masuk + label sentimen-nya
+- 🚨 Alert kalau sentimen tokoh tertentu anjlok atau naik drastis
 
 **Analogi:** Ini bagian yang kelihatan sama tamu restoran. Semua masakan dari dapur (Layer 1-5) ditata rapi di piring yang enak dilihat.
-
-**Kenapa Next.js, bukan Streamlit?**  
-Streamlit bagus buat prototipe riset yang tampilannya nggak terlalu penting. Tapi buat dashboard publik yang mau live update tanpa refresh dan tampilannya bisa dikontrol penuh — Next.js jauh lebih proper. Dan karena Layer 5 (Supabase) udah punya PostgREST + Realtime built-in, Next.js bisa langsung ngobrol ke database tanpa perlu API server tambahan.
 
 ---
 
@@ -173,10 +140,9 @@ Streamlit bagus buat prototipe riset yang tampilannya nggak terlalu penting. Tap
 | Layer | Komponen | Platform | Biaya |
 |---|---|---|---|
 | L1 | RSS Sources | — (public) | Gratis |
-| L2 | Edge Function | Supabase | Gratis |
-| L2 | Scheduler | GitHub Actions | Gratis (public repo) |
+| L2 | Edge Function & Scheduler | Supabase & GitHub Actions | Gratis |
 | L3 | Queue (pgmq) | Supabase | Gratis |
-| L4 | NLP Worker | Hugging Face Spaces | Gratis |
+| L4 | NLP Worker | GitHub Actions / HF Spaces | Gratis |
 | L5 | Database | Supabase | Gratis (500MB) |
 | L6 | Dashboard | Vercel | Gratis |
 | **Total** | | | **Rp 0** |
@@ -188,37 +154,58 @@ Streamlit bagus buat prototipe riset yang tampilannya nggak terlalu penting. Tap
 Project ini patuh UU Perlindungan Data Pribadi Indonesia:
 
 - ❌ **Tidak nyimpen username / profil penulis** — yang dianalisis cuma isi artikelnya, bukan siapa yang nulis
-- ❌ **Teks artikel mentah tidak ditampilkan ke publik** — cuma headline + link + skor sentimen yang bisa diakses umum
+- ❌ **Teks artikel mentah tidak ditampilkan ke publik** — dikunci via RLS. Cuma headline + link + skor sentimen yang bisa diakses umum
 - ✅ **Data tokoh politik** masuk kategori data publik — analisis sentimen terhadap figur publik dalam kapasitas jabatan mereka adalah legal dan lazim dilakukan lembaga riset
 
 ---
 
-## 📁 Struktur Repo
+## 📁 Struktur Repo (Monorepo)
 
-```
+```text
 ID-Political-Sentiment-Tracker/
 ├── apps/
-│   └── web/                    # Dashboard publik (Next.js) — L6
+│   └── pipeline/
+│       └── orchestrator.py       # Entry point untuk jalanin semua worker
 ├── packages/
-│   ├── db/                     # Schema, migrations, seeds — L5
-│   │   ├── schema.sql          #   Setup awal (JANGAN run ulang di production)
-│   │   ├── migrations/         #   Perubahan incremental (safe to re-run)
-│   │   └── seeds/              #   Data awal (tokoh + RSS configs)
-│   └── nlp-worker/             # AI sentiment analyzer (Python) — L4
+│   ├── shared/                   # Modul bersama (constants, db_client, logger)
+│   ├── ingestion/                # Fetcher RSS/GNews/DDG
+│   ├── enrichment/               # Trafilatura extraction & Resolver
+│   ├── validation/               # Quality control & Preprocessing
+│   ├── entity/                   # Entity Resolution (NER & Alias)
+│   ├── context/                  # Context Extraction & NLP Readiness
+│   ├── nlp/                      # AI sentiment analyzer (IndoBERT)
+│   └── db/                       # Skema SQL final & Seeds (Single Source of Truth)
+├── devtools/                     # Script testing, evaluasi, & local recovery (Playwright)
 ├── infra/
-│   └── supabase/               # Edge Functions + config — L2
-├── .github/workflows/          # GitHub Actions scheduler
-├── docs/                       # Arsitektur + dokumentasi teknis
-│   └── internal/               #   Dokumen internal (AI handoff)
-└── .env.example
+│   └── supabase/
+│       └── functions/            # Edge Functions (Deno/TS)
+└── .github/
+    └── workflows/                # GitHub Actions scheduler (Event-driven Sequential)
 ```
 
 ---
 
 ## 🚀 Mau Nyoba?
 
-Cek [`docs/architecture.md`](docs/architecture.md) buat penjelasan teknis lengkap, atau langsung ke folder masing-masing layer — tiap folder punya `README.md` sendiri dengan panduan setup-nya.
+Sistem ini dijalankan menggunakan satu file `main.py` sebagai orchestrator.
+
+```bash
+# Jalankan Layer 2 hingga 3.7 (Prep Pipeline)
+python main.py prep --limit 100
+
+# Jalankan Layer 4 (NLP Inference)
+python main.py nlp --target 500
+
+# Jalankan Prep + NLP berurutan
+python main.py all
+
+# Cek status database
+python main.py status
+```
+
+Cek dokumentasi teknis di folder `docs/` atau buka `README.md` di masing-masing folder `packages/` untuk detail implementasi spesifik tiap layer.
 
 ---
 
 *Dibuat dengan serius meski awalnya iseng. Sisanya jangan tangkap saya ya tukang bakso.*
+```
