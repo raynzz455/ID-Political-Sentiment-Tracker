@@ -1,15 +1,23 @@
 """
-enricher_worker.py v17 — Full Lineage & Pipeline Logging
-============================================================
-Tugas: Memisahkan Network I/O (fetch URL) dari NLP Worker.
+enricher_worker.py v19 — Expert Gate, Deduplication & Clean Logging
+====================================================================
+PERUBAAHAN v19:
+  1. EARLY DEDUPLICATION: Cek judul duplikat sebelum fetch HTTP (Hemat bandwidth/CPU).
+  2. EXPERT CONTENT FILTER: Menerapkan JSON-LD priority, Trafilatura favor_precision,
+     Title Relevancy, dan Max/Min Length check (membasmi section leakage & sidebar).
+  3. CLEAN LOGGING: Menghapus emoji dan format dekoratif. Log terstruktur agar mudah dibaca.
 """
-
 import os
+import re
 import sys
+import gc
+import json
 import time
 import random
 import argparse
 import hashlib
+import logging
+from urllib.parse import urlparse
 from collections import Counter
 from pathlib import Path
 from dotenv import load_dotenv
@@ -20,23 +28,143 @@ load_dotenv(ROOT_DIR / ".env")
 
 try:
     from trafilatura import extract as traf_extract
+    from bs4 import BeautifulSoup
 except ImportError as e:
-    print(f"[ERROR] Dependency missing: {e}")
+    print(f"[ERROR] Dependency missing: {e}. Pastikan: pip install trafilatura beautifulsoup4")
     sys.exit(1)
 
-# IMPORT DARI MONOREPO SHARED & ENRICHMENT
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 from packages.enrichment.universal_resolver import fetch_article, FetchResult
 
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 MAX_WORKERS = 7
 RSS_TEXT_MIN_LEN = 500
 
-def extract_text(html: str) -> str:
-    if not html:
-        return ""
-    return traf_extract(html, include_comments=False, include_tables=False) or ""
+# Expert Validation Config
+MAX_HTML_SIZE_BYTES = 1500000  # 1.5 MB
+MAX_ARTICLE_LENGTH = 20000     # Batas maksimal artikel (menerima long-form journalism)
+MIN_ARTICLE_LENGTH = 500
+MIN_PARAGRAPH_COUNT = 5
+TITLE_MATCH_THRESHOLD = 0.15
+
+def normalize_title(title: str) -> str:
+    """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
+    if not title: return ""
+    title = title.lower().strip()
+    title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
+    title = re.sub(r'\s+', ' ', title)
+    return title
+
+def find_duplicate_titles(sb, rows: list) -> set:
+    """
+    Cek apakah ada artikel di DB dengan judul yang sama 
+    yang sudah berstatus enriched/processed/skipped.
+    """
+    titles_to_check = [r.get("title") or "" for r in rows]
+    titles_to_check = [t for t in titles_to_check if t]
+    
+    if not titles_to_check: return set()
+    
+    try:
+        res = sb.table("raw_texts") \
+                .select("title") \
+                .in_("title", titles_to_check) \
+                .in_("status", ["enriched", "processed", "skipped", "validated"]) \
+                .execute()
+                
+        dup_titles = set()
+        for row in (res.data or []):
+            norm = normalize_title(row.get("title") or "")
+            if norm: dup_titles.add(norm)
+            
+        return dup_titles
+    except Exception as e:
+        logger.warning(f"Gagal cek duplikat judul: {e}")
+        return set()
+
+def extract_jsonld_article(html: str) -> str | None:
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        scripts = soup.find_all("script", type="application/ld+json")
+        for script in scripts:
+            if not script.string: continue
+            data = json.loads(script.string)
+            items = data if isinstance(data, list) else [data]
+            if "@graph" in items[0]: items = items[0]["@graph"]
+            for item in items:
+                if isinstance(item, dict) and item.get("@type") in ("NewsArticle", "Article"):
+                    if item.get("articleBody"): return item["articleBody"]
+    except: pass
+    return None
+
+def clean_boilerplate(text: str) -> str:
+    if not text: return ""
+    text = re.sub(r'(Baca Juga|Simak Juga|Berita Terkait)\s*:.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'(Reporter|Editor|Penulis|Pewarta)\s*:\s*.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
+
+def calculate_title_relevancy(title: str, text: str) -> float:
+    if not title or not text: return 0.0
+    title_words = set(re.findall(r'\b\w+\b', title.lower()))
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not title_words: return 0.0
+    return sum(1 for w in title_words if w in text_words) / len(title_words)
+
+def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str | None, str]:
+    """
+    Ekstraksi dan Validasi Terpadu.
+    Return: (full_text, extraction_method_or_fail_reason)
+    """
+    # 1. Jika RSS sudah menyediakan teks panjang, validasi langsung teks tersebut
+    if rss_text and len(rss_text) >= RSS_TEXT_MIN_LEN:
+        full_text = clean_boilerplate(rss_text)
+        extraction_method = "rss_fulltext"
+    elif html:
+        # 2. Cek Ukuran HTML (Anti Homepage Sampah)
+        if len(html) > MAX_HTML_SIZE_BYTES:
+            return None, "rejected_html_too_large"
+            
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # 3. Cek Densitas Paragraf
+        if len(soup.find_all("p")) < MIN_PARAGRAPH_COUNT:
+            return None, "rejected_low_paragraph_density"
+            
+        # 4. Ekstraksi JSON-LD (Prioritas Utama)
+        full_text = extract_jsonld_article(html)
+        extraction_method = "jsonld"
+        
+        # 5. Fallback Trafilatura Precision
+        if not full_text or len(full_text) < MIN_ARTICLE_LENGTH:
+            full_text = traf_extract(html, include_comments=False, include_tables=False, favor_precision=True) or ""
+            extraction_method = "trafilatura"
+            
+        del html, soup
+        gc.collect()
+    else:
+        return None, "fetch_no_html"
+
+    # 6. Boilerplate Cleanup
+    full_text = clean_boilerplate(full_text)
+
+    # 7. Length Validation
+    if len(full_text) < MIN_ARTICLE_LENGTH:
+        return None, "text_too_short"
+    if len(full_text) > MAX_ARTICLE_LENGTH:
+        return None, "section_leakage_too_long"
+
+    # 8. Title Relevancy (Kausalitas)
+    relevancy = calculate_title_relevancy(title, full_text)
+    if relevancy < TITLE_MATCH_THRESHOLD:
+        return None, "title_mismatch"
+
+    return full_text, f"valid_{extraction_method}"
 
 def _apply_transient_result(current_metadata: dict, reason: str) -> tuple[dict, str]:
     attempts = int(current_metadata.get("enrich_attempts", 0)) + 1
@@ -51,7 +179,7 @@ def bulk_store(sb, results: list) -> Counter:
     stats = Counter()
     updates = []
 
-    for rt_id, text, fetch_result, orig_metadata in results:
+    for rt_id, text, fetch_result, orig_metadata, title in results:
         current_metadata = dict(orig_metadata) if orig_metadata else {}
         db_update = {
             "id": rt_id,
@@ -63,29 +191,45 @@ def bulk_store(sb, results: list) -> Counter:
             current_metadata["resolved_url"] = fetch_result.resolved_url
 
         if fetch_result.status == pc.FETCH_OK:
-            if fetch_result.reason == pc.REASON_GNEWS_SNIPPET_ONLY:
+            # Handle Artikel Duplikat (Dari Early Deduplication Gate)
+            if fetch_result.reason == "duplicate_skipped":
+                current_metadata["fail_reason"] = "duplicate_title_at_enricher"
+                db_update["text"] = ""
+                db_update["status"] = pc.STATUS_SKIPPED
+                db_update["content_type"] = "SNIPPET"
+                updates.append(db_update)
+                stats["duplicate_skipped"] += 1
+                logger.info(f"ID: {rt_id[:8]} | Status: SKIPPED | Reason: Duplicate Title")
+                
+            elif fetch_result.reason == pc.REASON_GNEWS_SNIPPET_ONLY:
                 current_metadata["is_snippet"] = True
                 db_update["text"] = ""
                 db_update["status"] = pc.STATUS_ENRICHED
                 db_update["content_type"] = "SNIPPET" 
                 updates.append(db_update)
                 stats["gnews_snippet"] += 1
-            elif len(text) >= 500: 
-                current_metadata["is_snippet"] = False
-                db_update["text"] = text
-                db_update["status"] = pc.STATUS_ENRICHED
-                db_update["content_type"] = "FULLTEXT" 
-                db_update["content_hash"] = hashlib.sha256(text.encode()).hexdigest()
-                updates.append(db_update)
-                stats["enriched"] += 1
             else:
-                current_metadata["fail_reason"] = "extract_too_short"
-                current_metadata["content_type"] = "SNIPPET" 
-                db_update["text"] = text
-                db_update["status"] = pc.STATUS_FAILED
-                db_update["content_type"] = "SNIPPET" 
-                updates.append(db_update)
-                stats["extract_too_short"] += 1
+                # EXPERT VALIDATION GATE
+                full_text, validation_status = process_and_validate_text(fetch_result.html, title, orig_metadata.get("rss_text", ""))
+                
+                if full_text:
+                    current_metadata["is_snippet"] = False
+                    current_metadata["extraction_method"] = validation_status
+                    db_update["text"] = full_text
+                    db_update["status"] = pc.STATUS_ENRICHED
+                    db_update["content_type"] = "FULLTEXT" 
+                    db_update["content_hash"] = hashlib.sha256(full_text.encode()).hexdigest()
+                    updates.append(db_update)
+                    stats["enriched"] += 1
+                    logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: {validation_status} | Len: {len(full_text)}")
+                else:
+                    current_metadata["fail_reason"] = validation_status
+                    db_update["text"] = ""
+                    db_update["status"] = pc.STATUS_FAILED
+                    db_update["content_type"] = "SNIPPET" 
+                    updates.append(db_update)
+                    stats[validation_status] += 1
+                    logger.info(f"ID: {rt_id[:8]} | Status: REJECTED | Reason: {validation_status}")
 
         elif fetch_result.status in pc.RETRYABLE_FETCH_STATUSES:
             new_metadata, effective_reason = _apply_transient_result(current_metadata, fetch_result.reason)
@@ -96,6 +240,7 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = new_metadata
             updates.append(db_update)
             stats[effective_reason] += 1
+            logger.info(f"ID: {rt_id[:8]} | Status: RETRY | Reason: {effective_reason}")
 
         else:
             current_metadata["fail_reason"] = fetch_result.reason
@@ -104,33 +249,59 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = current_metadata
             updates.append(db_update)
             stats[fetch_result.reason] += 1
+            logger.info(f"ID: {rt_id[:8]} | Status: FAILED | Reason: {fetch_result.reason}")
 
     if updates:
         try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-        except Exception as e: print(f"    [BULK_DB_ERROR] {e}")
+        except Exception as e: logger.error(f"DB Bulk Update Error: {e}")
     return stats
 
 def pipeline_worker(row: dict):
     url = row["source_url"]
+    title = row.get("title") or ""
     orig_metadata = row.get("metadata") or {}
+    
+    current_text = row.get("text") or ""
+    if len(current_text) >= RSS_TEXT_MIN_LEN:
+        dummy_result = FetchResult(status=pc.FETCH_OK, reason=pc.REASON_RSS_FULL_TEXT, original_url=url, resolved_url=url)
+        return row["id"], current_text, dummy_result, orig_metadata, title
+
     fetch_result = fetch_article(url)
-    text = extract_text(fetch_result.html) if (fetch_result.status == pc.FETCH_OK and fetch_result.html) else ""
-    return row["id"], text, fetch_result, orig_metadata
+    return row["id"], "", fetch_result, orig_metadata, title
 
 def process_batch(sb, rows: list) -> Counter:
+    # 1. EARLY DEDUPLICATION GATE
+    existing_titles = find_duplicate_titles(sb, rows)
+    
     to_fetch = []
     pipeline_results = []
+    skipped_count = 0
+    
     for r in rows:
-        current_text = r.get("text") or ""
-        if len(current_text) >= RSS_TEXT_MIN_LEN:
-            dummy_result = FetchResult(status=pc.FETCH_OK, reason=pc.REASON_RSS_FULL_TEXT, original_url=r.get("source_url"), resolved_url=r.get("source_url"))
-            pipeline_results.append((r["id"], current_text, dummy_result, r.get("metadata")))
+        norm_title = normalize_title(r.get("title") or "")
+        
+        # Jika judul sudah pernah diproses, buat dummy result untuk skip
+        if norm_title and norm_title in existing_titles:
+            skipped_count += 1
+            dummy_result = FetchResult(status=pc.FETCH_OK, reason="duplicate_skipped", original_url=r.get("source_url"), resolved_url=r.get("source_url"))
+            pipeline_results.append((r["id"], "", dummy_result, r.get("metadata"), r.get("title")))
         else:
-            to_fetch.append(r)
+            # Jika tidak duplikat, cek apakah teks RSS sudah ada
+            current_text = r.get("text") or ""
+            if len(current_text) >= RSS_TEXT_MIN_LEN:
+                dummy_result = FetchResult(status=pc.FETCH_OK, reason=pc.REASON_RSS_FULL_TEXT, original_url=r.get("source_url"), resolved_url=r.get("source_url"))
+                pipeline_results.append((r["id"], current_text, dummy_result, r.get("metadata"), r.get("title")))
+            else:
+                to_fetch.append(r)
 
-    if not to_fetch: return bulk_store(sb, pipeline_results)
+    if skipped_count > 0:
+        logger.info(f"  [DEDUP] {skipped_count} artikel duplikat dilewati tanpa fetch.")
+        
+    if not to_fetch: 
+        return bulk_store(sb, pipeline_results)
 
-    print(f"  [FETCH] {len(to_fetch)} URLs dengan {MAX_WORKERS} threads paralel...")
+    # 2. FETCH ARTIKEL NON-DUPLIKAT
+    logger.info(f"  [FETCH] {len(to_fetch)} URLs dengan {MAX_WORKERS} threads paralel...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(pipeline_worker, r): r for r in to_fetch}
         for future in as_completed(futures):
@@ -139,47 +310,44 @@ def process_batch(sb, rows: list) -> Counter:
             except Exception:
                 row = futures[future]
                 crash_result = FetchResult(status=pc.FETCH_NETWORK_ERROR, reason=pc.REASON_THREAD_CRASH, original_url=row.get("source_url"))
-                pipeline_results.append((row["id"], "", crash_result, row.get("metadata")))
+                pipeline_results.append((row["id"], "", crash_result, row.get("metadata"), row.get("title")))
 
-    print(f"  [STORE] Mengirim {len(pipeline_results)} update ke DB via Bulk RPC...")
+    logger.info(f"  [STORE] Mengirim {len(pipeline_results)} update ke DB via Bulk RPC...")
     return bulk_store(sb, pipeline_results)
 
 def print_batch_report(batch_num: int, stats: Counter):
     enriched = stats.get("enriched", 0)
     gnews_snippet = stats.get("gnews_snippet", 0)
-    other = Counter({k: v for k, v in stats.items() if k not in ("enriched", "gnews_snippet")})
-    not_enriched_total = sum(other.values())
-    by_category = Counter()
-    for reason, count in other.items(): by_category[pc.categorize_reason(reason)] += count
-
-    print(f"\n  === BATCH {batch_num} REPORT ===")
-    print(f"  Enriched (Full Article)  : {enriched}")
-    print(f"  GNews (Snippet Track)    : {gnews_snippet}")
-    print(f"  Belum tuntas (total)     : {not_enriched_total}")
-    print(f"  {'-' * 34}")
-    print("  Breakdown per kategori:")
-    for category, count in by_category.most_common(): print(f"    - {category:20s}: {count}")
-    if other: print(f"  Detail reason mentah: {dict(other.most_common())}")
-    print(f"  {'=' * 34}\n")
+    duplicates = stats.get("duplicate_skipped", 0)
+    rejected = sum(v for k, v in stats.items() if k.startswith("rejected_"))
+    failed = sum(v for k, v in stats.items() if k.startswith("failed_") or k == "text_too_short")
+    
+    logger.info(f"  === BATCH {batch_num} REPORT ===")
+    logger.info(f"  Enriched (Full Article)  : {enriched}")
+    logger.info(f"  GNews (Snippet Track)    : {gnews_snippet}")
+    logger.info(f"  Duplicates (Skipped)     : {duplicates}")
+    logger.info(f"  Rejected (Sampah/Salah)  : {rejected}")
+    logger.info(f"  Failed (Network/Error)   : {failed}")
+    logger.info(f"  {'=' * 34}")
 
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
     try: sb.table("raw_texts").select("id").limit(1).execute()
-    except Exception as e: print(f"[FATAL] DB tidak reachable: {e}"); sys.exit(1)
+    except Exception as e: logger.error(f"[FATAL] DB tidak reachable: {e}"); sys.exit(1)
 
-    run_id = start_run("enricher_worker", "v17")
+    run_id = start_run("enricher_worker", "v19_expert_dedup")
     total_stats = Counter()
     batch_num = 1
-    print(f"[ENRICHER v17] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[ENRICHER v19] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and sum(total_stats.values()) >= max_total: break
-        print(f"\n--- Batch {batch_num} ---")
-        res = sb.table("raw_texts").select("id, source_url, text, metadata").eq("status", pc.STATUS_PENDING).limit(limit).execute()
+        logger.info(f"--- Batch {batch_num} ---")
+        res = sb.table("raw_texts").select("id, source_url, title, text, metadata").eq("status", pc.STATUS_PENDING).limit(limit).execute()
         rows = res.data or []
         if not rows: break
 
-        print(f"[ENRICHER] Memproses {len(rows)} artikel...")
+        logger.info(f"[ENRICHER] Memproses {len(rows)} artikel...")
         batch_stats = process_batch(sb, rows)
         print_batch_report(batch_num, batch_stats)
         total_stats.update(batch_stats)
@@ -189,7 +357,7 @@ def main(limit: int = 100, max_total: int = 0):
     total_processed = sum(total_stats.values())
     total_succeeded = total_stats.get('enriched', 0) + total_stats.get('gnews_snippet', 0)
     finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_processed - total_succeeded)
-    print(f"\n{'=' * 55}\nSELESAI.\n  Enriched: {total_succeeded}\n{'=' * 55}")
+    logger.info(f"SELESAI. Enriched: {total_succeeded}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

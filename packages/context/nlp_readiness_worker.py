@@ -1,15 +1,17 @@
 """
-nlp_readiness_worker.py v4 — Batch Eval & Metadata Aware
-==========================================================
-FIX dari v3:
-  1. NO N+1 QUERY: Ambil semua entity_contexts untuk 100 artikel sekali jalan.
-  2. NO 1-by-1 DELETE: Kumpulkan ID context sampah, hapus sekali pakai IN().
-  3. METADATA AWARE: Cek quality_score di metadata, bukan cuma panjang karakter.
-  4. STRICT GATE: Jika context quality < 20, anggap sampah.
-  5. MONOREPO READY: Import dari packages.shared.
+nlp_readiness_worker.py v5 — Final Gatekeeper & Title Deduplication
+====================================================================
+PERUBAAHAN v5:
+  1. TITLE DEDUPLICATION: Mengecek apakah artikel dengan judul yang sama 
+     sudah pernah masuk antrian NLP (queued/processed) sebelum memasukkannya ke PGMQ.
+  2. NO N+1 QUERY: Ambil semua entity_contexts untuk 100 artikel sekali jalan.
+  3. NO 1-by-1 DELETE: Kumpulkan ID context sampah, hapus sekali pakai IN().
+  4. METADATA AWARE: Cek quality_score di metadata, bukan cuma panjang karakter.
 """
 import os
 import sys
+import re
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -22,15 +24,29 @@ try:
 except ImportError as e:
     print(f"[ERROR] {e}"); sys.exit(1)
 
-# IMPORT DARI MONOREPO SHARED
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-READINESS_VERSION = "v4_batch_meta"
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+READINESS_VERSION = "v5_final_gate"
 MIN_CONTEXT_LEN = 100
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
+
+def normalize_title(title: str) -> str:
+    """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
+    if not title: return ""
+    title = title.lower().strip()
+    # Hapus tanda bata umum di judul berita
+    title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
+    title = re.sub(r'\s+', ' ', title)
+    return title
 
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
@@ -39,17 +55,18 @@ def main(limit: int = 100, max_total: int = 0):
     total_processed = 0
     total_ready = 0
     total_rejected = 0
+    total_duplicates = 0
     batch_num = 1
 
-    print(f"[NLP_READINESS] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[NLP_READINESS v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
             
-        print(f"\n--- Batch {batch_num} ---")
+        logger.info(f"--- Batch {batch_num} ---")
         res = sb.table("raw_texts") \
-                .select("id, text, metadata") \
+                .select("id, title, text, metadata") \
                 .eq("status", pc.STATUS_VALIDATED) \
                 .not_.is_("context_extracted_at", "null") \
                 .is_("nlp_ready_at", "null") \
@@ -61,14 +78,29 @@ def main(limit: int = 100, max_total: int = 0):
             break
             
         art_ids = [a["id"] for a in articles]
+        art_titles = [normalize_title(a.get("title") or "") for a in articles]
         
-        # 1. BATCH QUERY: Ambil semua contexts untuk 100 artikel sekaligus
+        # 1. BATCH QUERY: Cek duplikasi judul di DB (yang sudah queued/processed)
+        existing_titles = set()
+        try:
+            # Cari artikel lain yang punya judul sama, tapi sudah pernah masuk NLP (nlp_ready_at tidak null)
+            dup_res = sb.table("raw_texts") \
+                        .select("title") \
+                        .in_("title", [a.get("title") or "" for a in articles]) \
+                        .not_.is_("nlp_ready_at", "null") \
+                        .neq("id", art_ids[0]) \
+                        .execute()
+            for row in (dup_res.data or []):
+                existing_titles.add(normalize_title(row.get("title") or ""))
+        except Exception as e:
+            logger.warning(f"Gagal cek duplikat judul: {e}")
+
+        # 2. BATCH QUERY: Ambil semua contexts untuk 100 artikel sekaligus
         ctx_res = sb.table("entity_contexts") \
                     .select("id, raw_text_id, context_text, metadata") \
                     .in_("raw_text_id", art_ids) \
                     .execute()
                     
-        # Kelompokkan contexts per artikel di memori
         contexts_by_art = {}
         invalid_ctx_ids = []
         
@@ -78,28 +110,36 @@ def main(limit: int = 100, max_total: int = 0):
             meta = ctx.get("metadata") or {}
             quality_score = meta.get("quality_score", 0)
             
-            # 2. EVALUATE METADATA: Cek panjang & quality score
             if len(ctx_text) < MIN_CONTEXT_LEN or quality_score < MIN_QUALITY_SCORE:
-                invalid_ctx_ids.append(ctx["id"]) # Kumpulkan ID sampah
+                invalid_ctx_ids.append(ctx["id"])
             else:
                 contexts_by_art.setdefault(art_id, []).append(ctx)
                 
-        # 3. BULK DELETE: Hapus context sampah sekali jalan
         if invalid_ctx_ids:
             try: sb.table("entity_contexts").delete().in_("id", invalid_ctx_ids).execute()
-            except Exception as e: print(f"[DELETE_ERROR] {e}")
+            except Exception as e: logger.error(f"Delete Context Error: {e}")
             
-        # 4. KEPUTUSAN AKHIR NLP READINESS
+        # 3. KEPUTUSAN AKHIR NLP READINESS
         updates = []
-        stats = {"ready": 0, "rejected": 0}
+        stats = {"ready": 0, "rejected": 0, "duplicate": 0}
         now_iso = datetime.now(timezone.utc).isoformat()
         
-        for art in articles:
+        for art, norm_title in zip(articles, art_titles):
             art_id = art["id"]
             metadata = art.get("metadata") or {}
             full_text = art.get("text") or ""
             
-            # Cek kelayakan teks utuh (Fallback National Index)
+            # GATE 1: Cek Duplikat Judul
+            if norm_title and norm_title in existing_titles:
+                updates.append({
+                    "id": art_id, "status": pc.STATUS_SKIPPED, 
+                    "metadata": {**metadata, "fail_reason": "duplicate_title_at_gate"}
+                })
+                stats["duplicate"] += 1
+                logger.info(f"  [SKIPPED] ID: {art_id[:8]} | Reason: Duplicate Title")
+                continue
+                
+            # GATE 2: Cek kelayakan teks utuh (Fallback National Index)
             if len(full_text) < MIN_FULLTEXT_LEN:
                 updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 
@@ -110,7 +150,7 @@ def main(limit: int = 100, max_total: int = 0):
                 
             valid_contexts = len(contexts_by_art.get(art_id, []))
             
-            # Lolos jika ada context valid, ATAU teks utuh cukup panjang untuk fallback
+            # GATE 3: Lolos jika ada context valid, ATAU teks utuh cukup panjang untuk fallback
             if valid_contexts > 0 or len(full_text) >= 500:
                 updates.append({
                     "id": art_id, 
@@ -127,16 +167,18 @@ def main(limit: int = 100, max_total: int = 0):
                 
         if updates:
             try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-            except Exception as e: print(f"[DB_ERROR] {e}")
+            except Exception as e: logger.error(f"DB Error: {e}")
                 
-        print(f"[NLP_READINESS] Ready: {stats['ready']} | Rejected: {stats['rejected']} | Junk Deleted: {len(invalid_ctx_ids)}")
+        logger.info(f"Ready: {stats['ready']} | Rejected: {stats['rejected']} | Duplicates: {stats['duplicate']} | Junk Deleted: {len(invalid_ctx_ids)}")
         
         total_processed += len(articles)
         total_ready += stats["ready"]
         total_rejected += stats["rejected"]
+        total_duplicates += stats["duplicate"]
         batch_num += 1
         
     finish_run(run_id, total_processed, total_ready, total_rejected)
+    logger.info(f"Total Duplicates Skipped: {total_duplicates}")
 
 if __name__ == "__main__":
     import argparse

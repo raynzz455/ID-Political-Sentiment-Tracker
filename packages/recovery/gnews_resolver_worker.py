@@ -1,33 +1,39 @@
 """
-gnews_resolver_worker.py v4 — Aggressive Protobuf & Deep Scrape
+gnews_resolver_worker.py v5 — Cloud Smart Filter & Clean Logging
 =================================================================
-PERUBAAHAN v4:
-  1. AGGRESSIVE PROTOBUF: Membuang seluruh prefix non-base64 (CBMi, AU_yqL, dll)
-     dan mendecode payload secara brute-force untuk mencari URL.
-  2. DEEP HTML SCRAPE: Men-scan seluruh tag <script> dan <a> di HTML mentah
-     untuk mencari URL media yang tersembunyi.
-  3. URL PATH TRICK: Mengubah /rss/articles/ menjadi /articles/ agar memicu
-     redirect HTTP 301/302 yang kadang berhasil.
+PERUBAAHAN v5 (Cloud Optimized):
+  1. CLEAN LOGGING: Menghapus emoji, format log terstruktur.
+  2. SMART DB QUERY: Mengambil status 'failed' dan 'snippet' sekaligus.
+  3. CONTENT VALIDATION: Menolak homepage, cek densitas <p>, dan title relevancy.
+     Mencegah section leakage disimpan sebagai FULLTEXT.
+  4. JSON-LD PRIORITY: Ekstraksi ringan sebelum Trafilatura.
 """
+import os
 import re
 import sys
+import json
 import base64
 import random
 import hashlib
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 try:
     import requests
     from trafilatura import extract as traf_extract
-    from supabase import create_client, Client
+    from bs4 import BeautifulSoup
 except ImportError as e:
-    print(f"[ERROR] {e}"); sys.exit(1)
+    logger.error(f"Dependency missing: {e}"); sys.exit(1)
 
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
@@ -37,146 +43,174 @@ GNEWS_DOMAIN = "news.google.com"
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
 ]
-RESOLVER_VERSION = "v4_aggressive"
+RESOLVER_VERSION = "v5_cloud_smart"
 MAX_RETRIES = 3
-MAX_WORKERS = 7
+MAX_WORKERS = 4  # Cloud aman dengan 4 threads
+MAX_ARTICLE_LENGTH = 8000
+MIN_ARTICLE_LENGTH = 500
+MIN_PARAGRAPH_COUNT = 5
+TITLE_MATCH_THRESHOLD = 0.15
 
 def decode_gnews_protobuf(url: str) -> tuple[str | None, str]:
-    """Brute-force decode payload GNews untuk mencari URL."""
     match = re.search(r'/articles/(.*?)(\?|$)', url)
     if not match: return None, "failed_format"
-    token = match.group(1)    
-    token_std = token.replace('-', '+').replace('_', '/')    
-    if len(token_std) > 4 and token_std[4] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/':
-        test_token = token_std[4:]
+    token = match.group(1).replace('-', '+').replace('_', '/')
+    if len(token) > 4 and token[4] in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/':
+        test_token = token[4:]
         padding = 4 - (len(test_token) % 4)
         if padding != 4: test_token += '=' * padding
-        
         try:
-            decoded_bytes = base64.b64decode(test_token)
-            decoded_str = decoded_bytes.decode('utf-8', errors='ignore')            
+            decoded_str = base64.b64decode(test_token).decode('utf-8', errors='ignore')
             url_match = re.search(r'(https?://[^\s\x00-\x1F"\'<>]+)', decoded_str)
-            if url_match:
-                clean_url = url_match.group(1).split('\\')[0] # Buang escape chars
-                return clean_url, "resolved_protobuf_prefix_stripped"
-        except Exception:
-            pass            
-    padding = 4 - (len(token_std) % 4)
-    if padding != 4: token_std += '=' * padding
+            if url_match: return url_match.group(1).split('\\')[0], "resolved_protobuf_prefix"
+        except Exception: pass
+    padding = 4 - (len(token) % 4)
+    if padding != 4: token += '=' * padding
     try:
-        decoded_bytes = base64.b64decode(token_std)
-        decoded_str = decoded_bytes.decode('utf-8', errors='ignore')
+        decoded_str = base64.b64decode(token).decode('utf-8', errors='ignore')
         url_match = re.search(r'(https?://[^\s\x00-\x1F"\'<>]+)', decoded_str)
-        if url_match:
-            return url_match.group(1).split('\\')[0], "resolved_protobuf_raw"
-    except Exception:
-        pass
-        
+        if url_match: return url_match.group(1).split('\\')[0], "resolved_protobuf_raw"
+    except Exception: pass
     return None, "failed_protobuf_decode"
 
 def deep_html_scrape(html_text: str) -> str | None:
-    """Scan mendalam HTML untuk mencari URL media yang tersembunyi."""
-    # Cari di tag <a> biasa
     matches = re.findall(r'href="(https?://[^"]+)"', html_text)
     for m in matches:
         if not any(d in m for d in ['google.com', 'gstatic.com', 'googleapis.com', 'schema.org', 'youtube.com']):
-            return m            
-    matches = re.findall(r'"(https?://[^"]+)"', html_text)
-    for m in matches:
-        if not any(d in m for d in ['google.com', 'gstatic.com', 'googleapis.com', 'schema.org', 'youtube.com']):
-            return m            
-    match = re.search(r'data-n-au="([^"]+)"', html_text)
-    if match and 'google.com' not in match.group(1):
-        return match.group(1).replace('\\u003d', '=').replace('\\u0026', '&')
-        
+            return m
     return None
 
 def resolve_via_http(url: str) -> tuple[str | None, str]:
     try:
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Referer": "https://news.google.com/"
-        }
-        
-        if '/rss/articles/' in url:
-            url = url.replace('/rss/articles/', '/articles/')    
-        r = requests.get(url, headers=headers, timeout=10, allow_redirects=True)        
-        # 1. Cek HTTP Redirect final
+        headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://news.google.com/"}
+        if '/rss/articles/' in url: url = url.replace('/rss/articles/', '/articles/')
+        r = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         if r.ok and GNEWS_DOMAIN not in r.url and 'google.com' not in r.url:
             return r.url, "resolved_http_redirect"
         if r.ok:
-            # 2. Deep HTML Scrape
-            scraped_url = deep_html_scrape(r.text)
-            if scraped_url:
-                return scraped_url, "resolved_deep_scrape"
-                
-        return None, f"failed_http_{r.status_code}"
-    except requests.exceptions.Timeout:
-        return None, "failed_timeout"
-    except Exception:
-        return None, "failed_http_exception"
+            scraped = deep_html_scrape(r.text)
+            if scraped: return scraped, "resolved_deep_scrape"
+        return None, "failed_google_loop"
+    except: return None, "failed_http_exception"
 
-def fetch_and_extract(url: str) -> tuple[str, str]:
+def is_homepage_url(url: str) -> bool:
+    if not url: return True
+    path = urlparse(url).path
+    return path in ("", "/", "/index.html", "/index.php")
+
+def extract_jsonld_article(html: str) -> str | None:
     try:
-        headers = {"User-Agent": random.choice(USER_AGENTS), "Accept-Language": "id-ID,id;q=0.9"}
-        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
-        if resp.ok:
-            text = traf_extract(resp.text, include_comments=False, include_tables=False) or ""
-            return text, "fetch_success" if len(text) >= 500 else "fetch_too_short"
-        return "", f"fetch_http_{resp.status_code}"
-    except Exception:
-        return "", "fetch_exception"
+        soup = BeautifulSoup(html, "html.parser")
+        scripts = soup.find_all("script", type="application/ld+json")
+        for script in scripts:
+            if not script.string: continue
+            data = json.loads(script.string)
+            items = data if isinstance(data, list) else [data]
+            if "@graph" in items[0]: items = items[0]["@graph"]
+            for item in items:
+                if isinstance(item, dict) and item.get("@type") in ("NewsArticle", "Article"):
+                    if item.get("articleBody"): return item["articleBody"]
+    except: pass
+    return None
+
+def clean_boilerplate(text: str) -> str:
+    if not text: return ""
+    text = re.sub(r'(Baca Juga|Simak Juga)\s*:.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'(Reporter|Editor|Penulis)\s*:\s*.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
+    return re.sub(r'\n{3,}', '\n\n', text).strip()
+
+def calculate_title_relevancy(title: str, text: str) -> float:
+    if not title or not text: return 0.0
+    title_words = set(re.findall(r'\b\w+\b', title.lower()))
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    if not title_words: return 0.0
+    return sum(1 for w in title_words if w in text_words) / len(title_words)
 
 def process_article(art: dict) -> dict:
-    """Memproses 1 artikel (dijalankan di thread)."""
+    art_id = art["id"]
     url = art["source_url"]
-    current_attempts = art.get("recovery_attempts", 0) + 1
-    update_payload = {
-        "id": art["id"],
-        "recovery_attempts": current_attempts
-    }
-    # 1. Resolver Chain (Prioritas Protobuf Aggressive)
+    rss_title = art.get("title") or ""
+    update_payload = {"id": art_id, "recovery_attempts": art.get("recovery_attempts", 0) + 1}
+    
     resolved_url, resolve_status = decode_gnews_protobuf(url)
     if not resolved_url:
         resolved_url, resolve_status = resolve_via_http(url)
-    if resolved_url:
-        # 2. Fetch & Extract Content
-        full_text, fetch_status = fetch_and_extract(resolved_url)
         
-        if len(full_text) >= 500:
-            current_meta = dict(art.get("metadata") or {})
-            current_meta["is_snippet"] = False
-            current_meta["resolved_url"] = resolved_url
-            current_meta["resolver_method"] = resolve_status
-            
-            update_payload.update({
-                "text": full_text,
-                "status": pc.STATUS_ENRICHED,
-                "content_type": "FULLTEXT",
-                "metadata": current_meta,
-                "recovery_status": "resolved",
-                "content_hash": hashlib.sha256(full_text.encode()).hexdigest()
-            })
-            print("✅", end="", flush=True)
-        else:
-            update_payload["recovery_status"] = fetch_status
-            print("❌", end="", flush=True)
-    else:
+    if not resolved_url:
         update_payload["recovery_status"] = resolve_status
-        print("❌", end="", flush=True)
-        
-    return update_payload
+        logger.info(f"ID: {art_id[:8]} | Status: FAILED | Reason: {resolve_status}")
+        return update_payload
 
-def main(limit: int = 50, max_total: int = 0):
+    if is_homepage_url(resolved_url):
+        update_payload["recovery_status"] = "rejected_homepage_redirect"
+        # HAPUS: update_payload["status"] = pc.STATUS_FAILED
+        logger.info(f"ID: {art_id[:8]} | Status: REJECTED | Reason: Homepage Redirect")
+        return update_payload
+
+    try:
+        headers = {"User-Agent": random.choice(USER_AGENTS), "Accept-Language": "id-ID,id;q=0.9"}
+        resp = requests.get(resolved_url, headers=headers, timeout=15, allow_redirects=True)
+        if not resp.ok:
+            update_payload["recovery_status"] = f"fetch_http_{resp.status_code}"
+            logger.info(f"ID: {art_id[:8]} | Status: FAILED | Reason: HTTP {resp.status_code}")
+            return update_payload
+            
+        html_text = resp.text
+        soup = BeautifulSoup(html_text, "html.parser")
+        
+        if len(soup.find_all("p")) < MIN_PARAGRAPH_COUNT:
+            update_payload["recovery_status"] = "rejected_low_paragraph_density"
+            logger.info(f"ID: {art_id[:8]} | Status: REJECTED | Reason: Low Paragraph Density")
+            return update_payload
+            
+        full_text = extract_jsonld_article(html_text)
+        if not full_text or len(full_text) < MIN_ARTICLE_LENGTH:
+            full_text = traf_extract(html_text, include_comments=False, include_tables=False, favor_precision=True) or ""
+            
+        full_text = clean_boilerplate(full_text)
+        
+        if len(full_text) < MIN_ARTICLE_LENGTH:
+            update_payload["recovery_status"] = "fetch_too_short"
+            logger.info(f"ID: {art_id[:8]} | Status: FAILED | Reason: Text Too Short")
+            return update_payload
+            
+        if len(full_text) > MAX_ARTICLE_LENGTH:
+            update_payload["recovery_status"] = "rejected_section_page_too_long"
+            logger.info(f"ID: {art_id[:8]} | Status: REJECTED | Reason: Section Page Leakage")
+            return update_payload
+            
+        relevancy = calculate_title_relevancy(rss_title, full_text)
+        if relevancy < TITLE_MATCH_THRESHOLD:
+            update_payload["recovery_status"] = "rejected_title_mismatch"
+            logger.info(f"ID: {art_id[:8]} | Status: REJECTED | Reason: Title Mismatch ({relevancy:.2f})")
+            return update_payload
+            
+        current_meta = dict(art.get("metadata") or {})
+        current_meta["is_snippet"] = False
+        current_meta["resolved_url"] = resolved_url
+        current_meta["resolver_method"] = resolve_status
+        
+        update_payload.update({
+            "text": full_text, "status": pc.STATUS_ENRICHED, "content_type": "FULLTEXT",
+            "metadata": current_meta, "recovery_status": "resolved",
+            "content_hash": hashlib.sha256(full_text.encode()).hexdigest()
+        })
+        logger.info(f"ID: {art_id[:8]} | Status: RESOLVED | Len: {len(full_text)} | Rel: {relevancy:.2f}")
+        return update_payload
+        
+    except Exception as e:
+        update_payload["recovery_status"] = "fetch_exception"
+        logger.error(f"ID: {art_id[:8]} | Status: CRASH | Error: {str(e)[:50]}")
+        return update_payload
+
+def main(limit: int = 50):
     sb = get_client()
     run_id = start_run("gnews_resolver_worker", RESOLVER_VERSION)
+    logger.info(f"Initializing Cloud GNews Resolver | Workers: {MAX_WORKERS}")
     
-    print(f"[GNEWS_RECOVERY] Mencari artikel SNIPPET untuk dipulihkan (Max retries: {MAX_RETRIES})...")
-    
+    # KEMBALI KE QUERY AWAL: Hanya ambil yang ENRICHED dan SNIPPET
     res = sb.table("raw_texts") \
-            .select("id, source_url, text, metadata, recovery_attempts") \
+            .select("id, source_url, title, metadata, recovery_attempts") \
             .eq("status", pc.STATUS_ENRICHED) \
             .eq("content_type", "SNIPPET") \
             .lt("recovery_attempts", MAX_RETRIES) \
@@ -185,43 +219,25 @@ def main(limit: int = 50, max_total: int = 0):
             
     articles = res.data or []
     if not articles:
-        print("[GNEWS_RECOVERY] Tidak ada artikel untuk dipulihkan.")
-        finish_run(run_id, 0, 0, 0)
-        return
+        logger.info("Tidak ada artikel GNews (snippet) untuk dipulihkan.")
+        finish_run(run_id, 0, 0, 0); return
         
-    print(f"[GNEWS_RECOVERY] Memproses {len(articles)} artikel secara paralel ({MAX_WORKERS} threads)...")
-    print("  Progress: ", end="")
-    
+    logger.info(f"Memproses {len(articles)} artikel...")
     updates = []
     resolved_count = 0
     failed_count = 0
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        futures = {pool.submit(process_article, art): art for art in articles}
+        futures = [pool.submit(process_article, art) for art in articles]
         for future in as_completed(futures):
-            try:
-                result = future.result()
-                updates.append(result)
-                if result.get("recovery_status") == "resolved":
-                    resolved_count += 1
-                else:
-                    failed_count += 1
-            except Exception:
-                failed_count += 1
-                print("💥", end="", flush=True)
+            result = future.result()
+            updates.append(result)
+            if result.get("recovery_status") == "resolved": resolved_count += 1
+            else: failed_count += 1
                 
-    print("\n")
-        
     if updates:
         try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-        except Exception as e: print(f"[DB_ERROR] {e}")
+        except Exception as e: logger.error(f"DB Bulk Update Error: {e}")
             
-    print(f"[GNEWS_RECOVERY] Selesai. Resolved: {resolved_count} | Failed: {failed_count}")
+    logger.info(f"Eksekusi Selesai | Resolved: {resolved_count} | Failed/Rejected: {failed_count}")
     finish_run(run_id, len(articles), resolved_count, failed_count)
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=50)
-    args = parser.parse_args()
-    main(limit=args.limit)
