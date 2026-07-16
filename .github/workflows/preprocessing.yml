@@ -2,9 +2,19 @@ name: 2. Preprocessing Pipeline (Layer 2 - 3.7)
 
 on:
   schedule:
-    # Tiap 1 jam di menit ke-15
-    - cron: '15 * * * *'
-  workflow_dispatch:
+    # 1. Setelah Ingestion 00:13 UTC -> Prep mulai 00:45 UTC (07:45 WIB)
+    - cron: '45 0 * * *'
+    
+    # 2. Setelah Ingestion 05:19 UTC -> Prep mulai 05:55 UTC (12:55 WIB)
+    - cron: '55 5 * * *'
+    
+    # 3. Setelah Ingestion 10:23 UTC -> Prep mulai 10:55 UTC (17:55 WIB)
+    - cron: '55 10 * * *'
+    
+    # 4. Setelah Ingestion 15:41 UTC -> Prep mulai 16:15 UTC (23:15 WIB)
+    - cron: '15 16 * * *'
+    
+  workflow_dispatch: # Tetap bisa dijalankan manual untuk debugging
 
 jobs:
   run-prep-pipeline:

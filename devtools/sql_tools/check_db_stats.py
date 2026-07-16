@@ -1,16 +1,17 @@
 """
-check_db_status.py — Pipeline Health Dashboard
-================================================
+check_db_status.py v2 — Detailed Audit & Clean Logging
+========================================================
 Cek kesehatan seluruh layer pipeline langsung dari terminal.
-Usage: python -m devtools.check_db_status
+Usage: python -m devtools.sql_tools.check_db_stats
 """
 import os
 import sys
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from collections import Counter
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
 try:
@@ -18,85 +19,114 @@ try:
 except ImportError:
     print("[ERROR] pip install supabase"); sys.exit(1)
 
+# Setup Clean Logging & Silence HTTPX Noise
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+def get_count(sb, table: str, column: str = None, value: str = None) -> int:
+    """Helper untuk menghitung jumlah baris dengan filter opsional."""
+    try:
+        query = sb.table(table).select("id", count="exact")
+        if column and value is not None:
+            query = query.eq(column, value)
+        res = query.limit(1).execute()
+        return res.count if res.count else 0
+    except Exception:
+        return 0
+
 def main():
     url = os.environ.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
-        print("[ERROR] Set SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY")
+        logger.error("Set SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY di .env")
         sys.exit(1)
         
     sb = create_client(url, key)
     
-    print("\n" + "="*50)
-    print("ID-SENTIMENT TRACKER: PIPELINE HEALTH DASHBOARD")
-    print("="*50)
+    logger.info("=" * 50)
+    logger.info("ID-SENTIMENT TRACKER: PIPELINE HEALTH DASHBOARD")
+    logger.info("=" * 50)
     
-    # 1. Ambil statistik utama (1x RPC call)
-    try:
-        res = sb.rpc("get_db_stats").execute()
-        stats = res.data or {}
-    except Exception as e:
-        print(f"[ERROR] Gagal mengambil stats: {e}")
-        return
+    # 1. VOLUME & STATUS
+    logger.info("\n--- [ VOLUME & STATUS (Layer 1-2) ] ---")
+    total = get_count(sb, "raw_texts")
+    pending = get_count(sb, "raw_texts", "status", "pending")
+    enriched = get_count(sb, "raw_texts", "status", "enriched")
+    validated = get_count(sb, "raw_texts", "status", "validated")
+    processed = get_count(sb, "raw_texts", "status", "processed")
+    failed = get_count(sb, "raw_texts", "status", "failed")
+    skipped = get_count(sb, "raw_texts", "status", "skipped")
+    
+    logger.info(f"  Total Articles : {total:>6}")
+    logger.info(f"  - Pending      : {pending:>6}")
+    logger.info(f"  - Enriched     : {enriched:>6}")
+    logger.info(f"  - Validated    : {validated:>6}")
+    logger.info(f"  - Processed    : {processed:>6}")
+    logger.info(f"  - Failed/Skip  : {failed + skipped:>6}")
 
-    if not stats:
-        print("[!] Tidak ada data ditemukan.")
-        return
-
-    # 2. Ambil distribusi sentimen
-    sent_dist = {}
+    # 2. CONTENT QUALITY & ANOMALIES (Audit Adaptif)
+    logger.info("\n--- [ CONTENT QUALITY & AUDIT ] ---")
+    fulltext = get_count(sb, "raw_texts", "content_type", "FULLTEXT")
+    snippet = get_count(sb, "raw_texts", "content_type", "SNIPPET")
+    logger.info(f"  Fulltext       : {fulltext:>6}")
+    logger.info(f"  Snippet (GNews): {snippet:>6}")
+    
+    # Cek Anomali: Section Leakage (Fulltext > 20000 chars)
     try:
-        sent_res = sb.table("sentiment_scores") \
-                       .select("label") \
-                       .not_.is_("entity_id", "null") \
-                       .execute()
-        sent_dist = Counter(r["label"] for r in (sent_res.data or []))
-    except:
+        leak_res = sb.rpc("get_anomaly_count", {"p_type": "section_leakage"}).execute()
+        leak_count = leak_res.data or 0
+        if leak_count > 0:
+            logger.warning(f"  [WARNING] Section Leakage (>20k chars): {leak_count} artikel (Perlu dibersihkan!)")
+    except Exception:
+        pass # Abaikan jika RPC belum ada
+
+    # Cek Alasan Kegagalan (Ambil 1000 failed terakhir)
+    try:
+        fail_res = sb.table("raw_texts").select("metadata").eq("status", "failed").limit(1000).execute()
+        reasons = Counter()
+        for row in (fail_res.data or []):
+            meta = row.get("metadata") or {}
+            reason = meta.get("fail_reason", "unknown")
+            reasons[reason] += 1
+        
+        if reasons:
+            logger.info("\n--- [ TOP 5 ALASAN KEGAGALAN ] ---")
+            for reason, count in reasons.most_common(5):
+                logger.info(f"  - {reason:25s}: {count}")
+    except Exception:
         pass
 
-    # 3. Format Output
-    print("\n--- [ VOLUME & STATUS ] ---")
-    print(f"  Total Articles : {stats.get('total_articles', 0):>6}")
-    print(f"  - Pending      : {stats.get('status_pending', 0):>6}")
-    print(f"  - Enriched     : {stats.get('status_enriched', 0):>6}")
-    print(f"  - Validated    : {stats.get('status_validated', 0):>6}")
-    print(f"  - Processed    : {stats.get('status_processed', 0):>6}")
-    print(f"  - Failed/Skip  : {stats.get('status_failed', 0) + stats.get('status_skipped', 0):>6}")
+    # 3. ENTITY & CONTEXT (Layer 3)
+    logger.info("\n--- [ ENTITY & CONTEXT (Layer 3) ] ---")
+    mentions = get_count(sb, "entity_mentions")
+    contexts = get_count(sb, "entity_contexts")
+    logger.info(f"  Entity Mentions: {mentions:>6}")
+    logger.info(f"  Contexts Built : {contexts:>6}")
 
-    print("\n--- [ CONTENT TYPE & ENRICHMENT ] ---")
-    print(f"  Fulltext       : {stats.get('type_fulltext', 0):>6}")
-    print(f"  Snippet (GNews): {stats.get('type_snippet', 0):>6}")
-    print(f"  Avg Text Length: {stats.get('avg_fulltext_len', 0):>6} chars")
+    # 4. NLP & SENTIMENT (Layer 4)
+    logger.info("\n--- [ SENTIMENT OUTPUT (Layer 4) ] ---")
+    total_sentiments = get_count(sb, "sentiment_scores")
+    logger.info(f"  Total Scores   : {total_sentiments:>6}")
     
-    bad_snip = stats.get('bad_snippets', 0)
-    if bad_snip > 0:
-        print(f"  ⚠️ Bad Snippets : {bad_snip:>6} (Snippet > 500 chars, perlu cek logic!)")
-    else:
-        print(f"  ✅ Bad Snippets : {bad_snip:>6}")
-
-    print("\n--- [ ENTITY & CONTEXT (Layer 3) ] ---")
-    print(f"  Entity Mentions: {stats.get('total_mentions', 0):>6}")
-    print(f"  Contexts Built : {stats.get('total_contexts', 0):>6}")
-
-    print("\n--- [ NLP READINESS & QUEUE (Layer 3.7) ] ---")
-    print(f"  NLP Ready      : {stats.get('nlp_ready', 0):>6}")
-    print(f"  Queue (pgmq)   : {stats.get('queue_size', 0):>6}")
-
-    print("\n--- [ SENTIMENT OUTPUT (Layer 4) ] ---")
-    print(f"  Entity Scores  : {stats.get('total_entity_sentiments', 0):>6}")
-    print(f"  Fallback Scores: {stats.get('total_fallback_sentiments', 0):>6}")
-    
-    if sent_dist:
-        total_sent = sum(sent_dist.values())
-        pos = sent_dist.get('positive', 0)
-        neg = sent_dist.get('negative', 0)
-        neu = sent_dist.get('neutral', 0)
-        print(f"  - Positive     : {pos} ({(pos/total_sent*100):.1f}%)")
-        print(f"  - Negative     : {neg} ({(neg/total_sent*100):.1f}%)")
-        if neu > 0:
-            print(f"  - Neutral      : {neu} ({(neu/total_sent*100):.1f}%)")
+    if total_sentiments > 0:
+        try:
+            sent_res = sb.table("sentiment_scores").select("label").limit(10000).execute()
+            sent_dist = Counter(r["label"] for r in (sent_res.data or []))
+            total_sample = sum(sent_dist.values())
             
-    print("\n" + "="*50 + "\n")
+            if total_sample > 0:
+                pos = sent_dist.get('positive', 0)
+                neg = sent_dist.get('negative', 0)
+                neu = sent_dist.get('neutral', 0)
+                logger.info(f"  - Positive     : {pos} ({(pos/total_sample*100):.1f}%)")
+                logger.info(f"  - Negative     : {neg} ({(neg/total_sample*100):.1f}%)")
+                logger.info(f"  - Neutral      : {neu} ({(neu/total_sample*100):.1f}%)")
+        except Exception:
+            pass
+
+    logger.info("\n" + "=" * 50 + "\n")
 
 if __name__ == "__main__":
     main()
