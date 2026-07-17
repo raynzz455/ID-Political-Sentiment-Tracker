@@ -95,23 +95,10 @@ def run_nlp_worker(target: int, batch_size: int, run_all: bool):
     logger.info(f"STARTING NLP WORKER (Target: {'ALL' if run_all else target})")
     logger.info("=" * 70)
     
-    args_to_pass = []
-    if run_all:
-        args_to_pass.append("--all")
-    else:
-        args_to_pass.extend(["--target", str(target)])
-        
-    args_to_pass.extend(["--batch-size", str(batch_size)])
-    
-    original_sys_argv = sys.argv
-    sys.argv = ["nlp_worker.py"] + args_to_pass
-    
     try:
-        nlp_worker.main()
+        nlp_worker.main(target=target, batch_size=batch_size, run_all=run_all)
     except Exception as e:
         logger.error(f"NLP Worker crashed: {e}")
-    finally:
-        sys.argv = original_sys_argv
 
 
 def run_specific_worker(worker_name: str, limit: int, max_total: int):

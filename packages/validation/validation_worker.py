@@ -12,14 +12,13 @@ PERUBAAHAN v12:
   7. Mencatat pipeline_version untuk audit dan observability.
 """
 
-import os
 import re
 import sys
 import time
 import random
-import argparse
 import logging
-import datetime  
+import argparse  
+from datetime import datetime, timezone, timedelta  
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -38,7 +37,6 @@ except ImportError as e:
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
-
 # Setup Clean Logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -185,22 +183,31 @@ def main(limit: int = 100, max_total: int = 0):
     run_id = start_run("validation_worker", PIPELINE_VERSION)
     
     total_stats = Counter()
+    total_processed = 0  # <--- LACAK JUMLAH BARIS SECARA EKSPLISIT
     batch_num = 1
 
     logger.info(f"[VALIDATOR v12] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
-        if max_total > 0 and sum(v for k, v in total_stats.items() if not k.startswith("reason_")) >= max_total:
+        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
+        if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
 
+        # 2. HITUNG LIMIT UNTUK BATCH INI
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+
         try:
-            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            # PERBAIKAN PENGGUNAAN DATETIME
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             
             res = sb.table("raw_texts") \
                     .select("id, title, text, metadata") \
                     .eq("status", pc.STATUS_ENRICHED) \
                     .gte("ingested_at", time_filter) \
-                    .limit(limit) \
+                    .limit(current_limit) \
                     .execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
@@ -215,13 +222,22 @@ def main(limit: int = 100, max_total: int = 0):
         logger.info(f"Scoring {len(rows)} artikel...")
         batch_stats = process_batch(sb, rows)
         print_batch_report(batch_num, batch_stats)
+        
         total_stats.update(batch_stats)
+        total_processed += len(rows)  # <--- TAMBAHKAN JUMLAH BARIS YANG DIPROSES
+        
         batch_num += 1
         time.sleep(2 + random.uniform(0, 2))
 
-    total_processed = sum(v for k, v in total_stats.items() if not k.startswith("reason_"))
     total_succeeded = total_stats.get('validated', 0)
     total_failed = total_stats.get('failed', 0)
     
     finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_failed)
     logger.info("Eksekusi Validation Selesai.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--max-total", type=int, default=0)
+    args = parser.parse_args()
+    main(limit=args.limit, max_total=args.max_total)

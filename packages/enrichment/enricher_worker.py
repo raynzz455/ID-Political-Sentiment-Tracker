@@ -7,17 +7,15 @@ PERUBAAHAN v19:
      Title Relevancy, dan Max/Min Length check (membasmi section leakage & sidebar).
   3. CLEAN LOGGING: Menghapus emoji dan format dekoratif. Log terstruktur agar mudah dibaca.
 """
-import os
 import re
 import sys
 import gc
 import json
 import time
 import random
-import argparse
 import hashlib
 import logging
-from urllib.parse import urlparse
+import argparse
 from collections import Counter
 from pathlib import Path
 from dotenv import load_dotenv
@@ -25,7 +23,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
-
 try:
     from trafilatura import extract as traf_extract
     from bs4 import BeautifulSoup
@@ -340,27 +337,42 @@ def main(limit: int = 100, max_total: int = 0):
 
     run_id = start_run("enricher_worker", "v19_expert_dedup")
     total_stats = Counter()
+    total_processed = 0  # Pelacak jumlah artikel (baris) yang diproses
     batch_num = 1
+    
     logger.info(f"[ENRICHER v19] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
-        if max_total > 0 and sum(total_stats.values()) >= max_total: break
+        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
+        if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
+            break
+            
         logger.info(f"--- Batch {batch_num} ---")
-        res = sb.table("raw_texts").select("id, source_url, title, text, metadata").eq("status", pc.STATUS_PENDING).limit(limit).execute()
+        
+        # 2. HITUNG LIMIT UNTUK BATCH INI
+        # Jika max_total=500 dan total_processed=450, sisa=50. Limit diambil yang terkecil.
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+            
+        res = sb.table("raw_texts").select("id, source_url, title, text, metadata").eq("status", pc.STATUS_PENDING).limit(current_limit).execute()
         rows = res.data or []
         if not rows: break
 
         logger.info(f"[ENRICHER] Memproses {len(rows)} artikel...")
         batch_stats = process_batch(sb, rows)
         print_batch_report(batch_num, batch_stats)
+        
         total_stats.update(batch_stats)
+        total_processed += len(rows) # Tambah jumlah baris yang diproses
+        
         time.sleep(8 + random.uniform(0, 4))
         batch_num += 1
 
-    total_processed = sum(total_stats.values())
     total_succeeded = total_stats.get('enriched', 0) + total_stats.get('gnews_snippet', 0)
     finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_processed - total_succeeded)
-    logger.info(f"SELESAI. Enriched: {total_succeeded}")
+    logger.info(f"SELESAI. Total Processed: {total_processed} | Enriched: {total_succeeded}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

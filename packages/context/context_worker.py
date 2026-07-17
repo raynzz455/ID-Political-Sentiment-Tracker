@@ -7,24 +7,15 @@ FIX dari v4:
   3. CLEAN LOGGING: Menggunakan modul logging terstruktur.
   4. PURE OFFSET MATCH: Ambil jendela karakter (misal 800 char) di sekitar offset NER.
 """
-import os
-import sys
+"""
+context_worker.py v5 — Pure Offset Window & Chunked DB
+=========================================================
+"""
 import time
 import logging
-import datetime
-from datetime import timezone
-from pathlib import Path
-from dotenv import load_dotenv
+import argparse
+from datetime import datetime, timezone, timedelta
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(ROOT_DIR / ".env")
-
-try:
-    from supabase import create_client, Client
-except ImportError as e:
-    print(f"[ERROR] {e}"); sys.exit(1)
-
-# IMPORT DARI MONOREPO SHARED
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
@@ -36,8 +27,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 CONTEXT_VERSION = "v5_pure_offset"
-CONTEXT_WINDOW_CHARS = 800 # Ambil 800 karakter di sekitar mention (400 sebelum, 400 sesudah)
-MAX_WORDS = 350 # Batas aman untuk 512 token IndoBERT
+CONTEXT_WINDOW_CHARS = 800 
+MAX_WORDS = 350 
 
 # Expanded Signal Words
 SIGNAL_WORDS = {
@@ -91,21 +82,29 @@ def main(limit: int = 50, max_total: int = 0):
     logger.info(f"[CONTEXT_WORKER v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
+        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
+        # 2. HITUNG LIMIT UNTUK BATCH INI
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+        
         # Filter 30 hari terakhir & try-except agar tidak crash
         try:
-            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            # PERBAIKAN PENGGUNAAN DATETIME
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             res = sb.table("raw_texts") \
                     .select("id, text, ingested_month") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .not_.is_("entity_resolved_at", "null") \
                     .is_("context_extracted_at", "null") \
                     .gte("ingested_at", time_filter) \
-                    .limit(limit) \
+                    .limit(current_limit) \
                     .execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
@@ -136,7 +135,7 @@ def main(limit: int = 50, max_total: int = 0):
             
         context_inserts = []
         updates = []
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
         success_count = 0
         
         for art in articles:
@@ -167,7 +166,7 @@ def main(limit: int = 50, max_total: int = 0):
             
         # --- CHUNKED UPSERT (Cegah 400 Bad Request) ---
         if context_inserts:
-            chunk_size = 50
+            chunk_size = 25
             for i in range(0, len(context_inserts), chunk_size):
                 chunk = context_inserts[i:i + chunk_size]
                 try: 
@@ -177,7 +176,7 @@ def main(limit: int = 50, max_total: int = 0):
                 
         # --- CHUNKED RPC UPDATE ---
         if updates:
-            chunk_size = 50
+            chunk_size = 25
             for i in range(0, len(updates), chunk_size):
                 chunk = updates[i:i + chunk_size]
                 try: 
@@ -195,7 +194,6 @@ def main(limit: int = 50, max_total: int = 0):
     logger.info("Eksekusi Context Worker Selesai.")
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--max-total", type=int, default=0)

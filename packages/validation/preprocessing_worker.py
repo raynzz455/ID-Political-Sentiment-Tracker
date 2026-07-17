@@ -7,14 +7,14 @@ PERUBAAHAN v5:
   3. CHUNKED RPC: Membagi payload bulk_update_raw_texts ke dalam chunk 50 baris.
   4. TYPE CASTING: Memastikan semua nilai di audit_stats adalah int murni.
 """
-import os
 import re
 import sys
 import time  
 import hashlib
 import unicodedata
 import logging
-from datetime import datetime, timezone  
+import argparse
+from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -107,18 +107,24 @@ def main(limit: int = 100, max_total: int = 0):
     
     while True:
         if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+        
         try:
-            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            
             res = sb.table("raw_texts") \
                     .select("id, text, metadata") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .or_(f"preprocessing_version.is.null,preprocessing_version.neq.{PIPELINE_VERSION}") \
                     .gte("ingested_at", time_filter) \
-                    .limit(limit) \
+                    .limit(current_limit) \
                     .execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
@@ -173,7 +179,7 @@ def main(limit: int = 100, max_total: int = 0):
                     "status": pc.STATUS_SKIPPED, 
                     "metadata": {**item["orig_metadata"], "fail_reason": "duplicate_content"},
                     "preprocessed_at": now_iso,
-                    "pipeline_version": PIPELINE_VERSION,
+                    "preprocessing_version": PIPELINE_VERSION,
                     "duplicate_of": db_hash_map[item["hash"]] 
                 })
                 stats["duplicates"] += 1
@@ -185,7 +191,7 @@ def main(limit: int = 100, max_total: int = 0):
                 "content_hash": item["hash"],
                 "preprocessed_at": now_iso,
                 "metadata": item["metadata"],
-                "pipeline_version": PIPELINE_VERSION
+                "preprocessing_version": PIPELINE_VERSION
             })
             stats["normalized"] += 1
             
@@ -217,7 +223,6 @@ def main(limit: int = 100, max_total: int = 0):
     finish_run(run_id, total_processed, total_normalized, total_duplicates)
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-total", type=int, default=0)

@@ -5,25 +5,13 @@ PERUBAAHAN v6:
   1. TIME FILTER & ANTI-CRASH: Filter 30 hari terakhir agar tidak timeout.
   2. FIX DUPLICATE QUERY: Menggunakan not_.in_() dan chunking agar akurat & tidak kena 400.
   3. CHUNKED RPC: Memecah update raw_texts agar tidak kena payload limit.
-  4. CLEAN LOGGING: Menggunakan modul logging terstruktur.
+  4. CLEAN LOGGING: Menggunakan modul logging terstruktur & bersih dari unused imports.
 """
-import os
-import sys
 import re
 import time
 import logging
-import datetime
-from datetime import timezone
-from pathlib import Path
-from dotenv import load_dotenv
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
-load_dotenv(ROOT_DIR / ".env")
-
-try:
-    from supabase import create_client, Client
-except ImportError as e:
-    print(f"[ERROR] {e}"); sys.exit(1)
+import argparse
+from datetime import datetime, timezone, timedelta
 
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
@@ -61,21 +49,28 @@ def main(limit: int = 100, max_total: int = 0):
     logger.info(f"[NLP_READINESS v6] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
+        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
+        # 2. HITUNG LIMIT UNTUK BATCH INI
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+        
         # Filter 30 hari terakhir & try-except agar tidak crash
         try:
-            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             res = sb.table("raw_texts") \
                     .select("id, title, text, metadata") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .not_.is_("context_extracted_at", "null") \
                     .is_("nlp_ready_at", "null") \
                     .gte("ingested_at", time_filter) \
-                    .limit(limit) \
+                    .limit(current_limit) \
                     .execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
@@ -187,7 +182,7 @@ def main(limit: int = 100, max_total: int = 0):
                 
         # --- CHUNKED RPC UPDATE ---
         if updates:
-            chunk_size = 50
+            chunk_size = 25  # Turunkan ke 25 agar pasti aman dari 400 Bad Request
             for i in range(0, len(updates), chunk_size):
                 chunk = updates[i:i + chunk_size]
                 try: 
@@ -207,7 +202,6 @@ def main(limit: int = 100, max_total: int = 0):
     logger.info(f"Total Duplicates Skipped: {total_duplicates}")
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--max-total", type=int, default=0)

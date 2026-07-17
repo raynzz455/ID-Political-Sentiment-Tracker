@@ -7,13 +7,13 @@ FIX v5:
   3. CHUNKED UPSERT: Membagi insert mappings & mentions agar tidak kena payload limit.
   4. CLEAN LOGGING: Menggunakan modul logging terstruktur.
 """
-import os
+
 import re
 import sys
 import time
 import logging
-import datetime
-from datetime import timezone
+import argparse
+from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
@@ -23,7 +23,7 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
 try:
-    from supabase import create_client, Client
+    from supabase import Client  
 except ImportError as e:
     print(f"[ERROR] {e}"); sys.exit(1)
 
@@ -215,21 +215,29 @@ def main(limit: int = 50, max_total: int = 0):
     logger.info(f"[ENTITY_RESOLVER v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
+        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
+            logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
+        # 2. HITUNG LIMIT UNTUK BATCH INI
+        current_limit = limit
+        if max_total > 0:
+            current_limit = min(limit, max_total - total_processed)
+        
         # Filter 30 hari terakhir & try-except agar tidak crash
         try:
-            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            # PERBAIKAN PENGGUNAAN DATETIME
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             res = sb.table("raw_texts") \
                     .select("id, title, text, metadata, ingested_month") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .not_.is_("preprocessed_at", "null") \
                     .is_("entity_resolved_at", "null") \
                     .gte("ingested_at", time_filter) \
-                    .limit(limit) \
+                    .limit(current_limit) \
                     .execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
@@ -266,19 +274,12 @@ def main(limit: int = 50, max_total: int = 0):
             all_unknowns.update(result["unknowns"])
         
         try:
-            # 1. UPDATE TIMESTAMP DULU agar pipeline tidak stuck walau ada error di bawahnya
             if resolved_updates:
-                # Gunakan chunking untuk update raw_texts juga
-                chunked_upsert(sb, "raw_texts", resolved_updates, chunk_size=25) # Note: upsert raw_texts butuh RPC khusus jika pakai bulk_update. 
-                # Karena kita hanya update timestamp, kita bisa pakai update biasa per chunk.
-                # Tapi untuk amannya, kita pakai RPC.
                 for i in range(0, len(resolved_updates), 25):
                     sb.rpc("bulk_update_raw_texts", {"p_updates": resolved_updates[i:i+25]}).execute()
                 
-            # 2. INSERT MAPPINGS (Chunked)
             chunked_upsert(sb, "article_entity_map", all_mappings, chunk_size=50)
                 
-            # 3. INSERT MENTIONS (Chunked)
             if all_mentions:
                 db_mentions = [{
                     "raw_text_id": m["raw_text_id"], 
@@ -290,7 +291,6 @@ def main(limit: int = 50, max_total: int = 0):
                 } for m in all_mentions]
                 chunked_upsert(sb, "entity_mentions", db_mentions, chunk_size=50)
                 
-            # 4. INSERT UNKNOWN CANDIDATES (Fix nama tabel)
             if all_unknowns:
                 unknown_payload = [{
                     "detected_name": name, 
@@ -298,7 +298,6 @@ def main(limit: int = 50, max_total: int = 0):
                     "mention_count": data["count"],
                     "sample_titles": [data["context"]] 
                 } for name, data in all_unknowns.items()]
-                # Nama tabel diperbaksi ke entity_candidates
                 chunked_upsert(sb, "entity_candidates", unknown_payload, chunk_size=50)
                 
         except Exception as e:
@@ -314,7 +313,6 @@ def main(limit: int = 50, max_total: int = 0):
     logger.info("Eksekusi Entity Resolver Selesai.")
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--max-total", type=int, default=0)
