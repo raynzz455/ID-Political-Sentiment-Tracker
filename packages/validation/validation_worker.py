@@ -1,13 +1,15 @@
 """
-validation_worker.py v10 — Pure Quality Scoring & Pipeline Logging
+validation_worker.py v12 — Expert Quality Scoring & Clean Logging
 ===================================================================
-Tugas: 
-  1. Pure Quality Scoring (0-100). Tidak melakukan routing Headline/NLP.
-  2. Tidak menghapus teks snippet GNews. Data tetap utuh untuk training/reprocessing.
-  3. Menambahkan metadata.content_type (FULLTEXT / SNIPPET) agar Queue Manager yang memutuskan jalurnya.
-  4. Mencatat pipeline_version untuk audit dan observability.
-  5. Mengintegrasikan pipeline_logger untuk mencatat durasi & statistik worker.
-  6. MONOREPO READY: Import dari packages.shared.
+PERUBAAHAN v12:
+  1. ADAPTIVE MAX LENGTH: Menaikkan batas MAX_ARTICLE_LENGTH ke 20000 (menerima long-form journalism).
+  2. CLEAN LOGGING: Menghapus format dekoratif, menggunakan modul logging terstruktur.
+  3. ANTI SECTION LEAKAGE: Menolak teks yang > 20000 karakter (halaman kategori/list).
+  4. TITLE MATCH HARD REJECT: Menolak teks jika judul asli tidak cocok sama sekali (< 20% match),
+     yang mengindikasikan salah redirect atau salah ekstraksi.
+  5. Pure Quality Scoring (0-100). Tidak melakukan routing Headline/NLP.
+  6. Tidak menghapus teks snippet GNews. Data tetap utuh untuk training/reprocessing.
+  7. Mencatat pipeline_version untuk audit dan observability.
 """
 
 import os
@@ -16,6 +18,7 @@ import sys
 import time
 import random
 import argparse
+import logging
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -35,8 +38,12 @@ from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
 DetectorFactory.seed = 0  # Fix langdetect non-determinism
-PIPELINE_VERSION = "v10_validation"
+PIPELINE_VERSION = "v12_validation"
 
 ID_STOPWORDS = {"yang", "dan", "di", "ke", "untuk", "dengan", "ini", "itu", "atau", "dari", "pada", "juga"}
 HARD_REJECT_WINDOW = 200
@@ -44,6 +51,9 @@ HARD_REJECT_PATTERNS = ["access denied", "enable javascript and cookies", "check
 SOFT_PENALTY_PATTERNS = ["captcha", "login", "sign in", "subscribe", "berlangganan", "cookie", "privacy policy", "all rights reserved"]
 SOFT_PENALTY_PER_HIT = 8
 QUALITY_THRESHOLD = 80
+
+# Batas maksimal adaptif (menerima long-form, memblokir section leakage)
+MAX_ARTICLE_LENGTH = 20000 
 
 class QualityResult(NamedTuple):
     score: int
@@ -56,6 +66,12 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
     early_window = text[:HARD_REJECT_WINDOW].lower()
     if any(p in early_window for p in HARD_REJECT_PATTERNS):
         return QualityResult(0, "noise_page")
+
+    # 1. CEGAH HALAMAN KATEGORI/TAG (Section Leakage)
+    # Teks berita asli (long-form) bisa mencapai 15.000 karakter. 
+    # Jika lebih dari 20.000, kemungkinan besar itu halaman list.
+    if len(text) > MAX_ARTICLE_LENGTH:
+        return QualityResult(0, "rejected_section_page")
 
     earned = 0
     max_possible = 0
@@ -82,12 +98,18 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
         except LangDetectException:
             pass
 
+    # 2. PERKUAT TITLE MATCH
     title_words = set(re.findall(r"\b\w+\b", title.lower())) - ID_STOPWORDS
     if title_words:
         max_possible += 25
         text_words = set(re.findall(r"\b\w+\b", text.lower()))
         match_ratio = sum(1 for w in title_words if w in text_words) / len(title_words)
         earned += int(match_ratio * 25)
+        
+        # Hard reject jika judul asli nyaris tidak cocok dengan teks (misal < 20% match)
+        # Ini menangkap kasus salah redirect (misal ke halaman utama)
+        if match_ratio < 0.2:
+            return QualityResult(0, "rejected_title_mismatch")
 
     lower_full_text = text.lower()
     hits = sum(1 for p in SOFT_PENALTY_PATTERNS if p in lower_full_text)
@@ -136,24 +158,22 @@ def process_batch(sb, rows: list) -> Counter:
             stats[f"reason_{result.reason}"] += 1
 
     if updates:
-        try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-        except Exception as e: print(f"[BULK_DB_ERROR] {e}")
+        try: 
+            sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
+        except Exception as e: 
+            logger.error(f"DB Bulk Update Error: {e}")
 
     return stats
 
-def print_batch_report(stats: Counter):
-    print(f"\n{'=' * 50}")
-    print("QUALITY SCORING REPORT")
-    print(f"{'=' * 50}")
-    print(f"Validated   : {stats.get('validated', 0)}")
-    print(f"Failed      : {stats.get('failed', 0)}")
+def print_batch_report(batch_num: int, stats: Counter):
+    logger.info(f"--- BATCH {batch_num} REPORT ---")
+    logger.info(f"  Validated : {stats.get('validated', 0)}")
+    logger.info(f"  Failed    : {stats.get('failed', 0)}")
+    
     reasons = {k: v for k, v in stats.items() if k.startswith("reason_") and v > 0}
     if reasons:
-        print(f"{'-' * 50}")
-        print("Alasan Kegagalan:")
         for key, count in Counter(reasons).most_common():
-            print(f"  - {key.replace('reason_', ''):25s}: {count}")
-    print(f"{'=' * 50}")
+            logger.info(f"  - {key.replace('reason_', ''):25s}: {count}")
 
 def main(limit: int = 500, max_total: int = 0):
     sb = get_client()
@@ -162,7 +182,7 @@ def main(limit: int = 500, max_total: int = 0):
     total_stats = Counter()
     batch_num = 1
 
-    print(f"[VALIDATOR v10] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[VALIDATOR v12] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and sum(v for k, v in total_stats.items() if not k.startswith("reason_")) >= max_total:
@@ -176,11 +196,12 @@ def main(limit: int = 500, max_total: int = 0):
 
         rows = res.data or []
         if not rows:
+            logger.info("Tidak ada lagi artikel untuk divalidasi.")
             break
 
-        print(f"\n--- Batch {batch_num}: scoring {len(rows)} artikel ---")
+        logger.info(f"Scoring {len(rows)} artikel...")
         batch_stats = process_batch(sb, rows)
-        print_batch_report(batch_stats)
+        print_batch_report(batch_num, batch_stats)
         total_stats.update(batch_stats)
         batch_num += 1
         time.sleep(2 + random.uniform(0, 2))
@@ -190,6 +211,7 @@ def main(limit: int = 500, max_total: int = 0):
     total_failed = total_stats.get('failed', 0)
     
     finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_failed)
+    logger.info("Eksekusi Validation Selesai.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

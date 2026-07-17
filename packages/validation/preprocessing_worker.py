@@ -1,17 +1,20 @@
 """
-preprocessing_worker.py v4 — Modular Pipeline & Chunked RPC
+preprocessing_worker.py v5 — Modular Pipeline & Clean Logging
 =============================================================
-FIX v4:
-  1. CHUNKED RPC: Membagi payload bulk_update_raw_texts ke dalam chunk 50 baris.
-     Mencegah error "JSON could not be generated" karena request body terlalu besar.
-  2. TYPE CASTING: Memastikan semua nilai di audit_stats adalah int murni.
+PERUBAAHAN v5:
+  1. BUG FIX: Memperbaiki error import time.perf_counter() yang tertimpa oleh datetime.time.
+  2. CLEAN LOGGING: Mengganti print() dengan modul logging terstruktur.
+  3. CHUNKED RPC: Membagi payload bulk_update_raw_texts ke dalam chunk 50 baris.
+  4. TYPE CASTING: Memastikan semua nilai di audit_stats adalah int murni.
 """
 import os
 import re
 import sys
+import time  
 import hashlib
 import unicodedata
-from datetime import datetime, timezone, time
+import logging
+from datetime import datetime, timezone  
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -27,7 +30,11 @@ from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-PIPELINE_VERSION = "v4_chunked"
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+PIPELINE_VERSION = "v5_clean"
 CHUNK_SIZE = 50  # Bagi RPC menjadi 50 baris per request
 
 # ─────────────────────────────────────────────────────────────
@@ -43,7 +50,7 @@ def remove_urls_emails(text: str) -> tuple[str, int]:
     emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', text)
     text = re.sub(r'https?://\S+|www\.\S+', ' ', text)
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
-    return text, int(len(urls) + len(emails))  # Cast to int
+    return text, int(len(urls) + len(emails))
 
 def strip_news_boilerplate(text: str) -> str:
     text = re.sub(r'<[^>]+>', ' ', text)
@@ -68,7 +75,6 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r'[ \t]+', ' ', text).strip()
 
 def normalize_pipeline(text: str) -> tuple[str, dict]:
-    # Pastikan semua nilai adalah int murni (bukan numpy atau tipe lain)
     stats = {
         "original_len": int(len(text)), 
         "urls_emails_removed": 0, 
@@ -95,15 +101,15 @@ def main(limit: int = 100, max_total: int = 0):
     total_normalized = 0
     total_duplicates = 0
     batch_num = 1
-    start_time = time.perf_counter()
+    start_time = time.perf_counter()  # Sekarang time.perf_counter() akan berfungsi normal
 
-    print(f"[PREPROCESSOR] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[PREPROCESSOR v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
     
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
             
-        print(f"\n--- Batch {batch_num} ---")
+        logger.info(f"--- Batch {batch_num} ---")
         res = sb.table("raw_texts") \
                 .select("id, text, metadata") \
                 .eq("status", pc.STATUS_VALIDATED) \
@@ -113,7 +119,7 @@ def main(limit: int = 100, max_total: int = 0):
                 
         articles = res.data or []
         if not articles:
-            print("[PREPROCESSOR] Tidak ada lagi artikel untuk diproses.")
+            logger.info("Tidak ada lagi artikel untuk diproses.")
             break
             
         updates = []
@@ -175,9 +181,9 @@ def main(limit: int = 100, max_total: int = 0):
                     chunk = updates[i:i + CHUNK_SIZE]
                     sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
             except Exception as e: 
-                print(f"[DB_ERROR] {e}")
+                logger.error(f"DB Bulk Update Error: {e}")
                 
-        print(f"[PREPROCESSOR] Normalized: {stats['normalized']} | Duplicates: {stats['duplicates']}")
+        logger.info(f"Normalized: {stats['normalized']} | Duplicates: {stats['duplicates']}")
         
         total_processed += len(articles)
         total_normalized += stats["normalized"]
@@ -185,13 +191,14 @@ def main(limit: int = 100, max_total: int = 0):
         batch_num += 1
         
     elapsed = time.perf_counter() - start_time
-    print(f"\n{'='*50}")
-    print(f"SELESAI (Preprocessing)")
-    print(f"  Total Processed : {total_processed}")
-    print(f"  Total Normalized: {total_normalized}")
-    print(f"  Total Duplicates: {total_duplicates}")
-    print(f"  Waktu Eksekusi  : {elapsed:.2f}s")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("SELESAI (Preprocessing)")
+    logger.info(f"  Total Processed : {total_processed}")
+    logger.info(f"  Total Normalized: {total_normalized}")
+    logger.info(f"  Total Duplicates: {total_duplicates}")
+    logger.info(f"  Waktu Eksekusi  : {elapsed:.2f}s")
+    logger.info("=" * 50)
+    
     finish_run(run_id, total_processed, total_normalized, total_duplicates)
 
 if __name__ == "__main__":
