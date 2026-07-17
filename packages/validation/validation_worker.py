@@ -19,6 +19,7 @@ import time
 import random
 import argparse
 import logging
+import datetime  
 from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
@@ -157,9 +158,13 @@ def process_batch(sb, rows: list) -> Counter:
             stats["failed"] += 1
             stats[f"reason_{result.reason}"] += 1
 
+    # --- PERBAIKAN: CHUNKED RPC CALL ---
     if updates:
-        try: 
-            sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
+        CHUNK_SIZE = 50
+        try:
+            for i in range(0, len(updates), CHUNK_SIZE):
+                chunk = updates[i:i + CHUNK_SIZE]
+                sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
         except Exception as e: 
             logger.error(f"DB Bulk Update Error: {e}")
 
@@ -175,7 +180,7 @@ def print_batch_report(batch_num: int, stats: Counter):
         for key, count in Counter(reasons).most_common():
             logger.info(f"  - {key.replace('reason_', ''):25s}: {count}")
 
-def main(limit: int = 500, max_total: int = 0):
+def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
     run_id = start_run("validation_worker", PIPELINE_VERSION)
     
@@ -188,11 +193,19 @@ def main(limit: int = 500, max_total: int = 0):
         if max_total > 0 and sum(v for k, v in total_stats.items() if not k.startswith("reason_")) >= max_total:
             break
 
-        res = sb.table("raw_texts") \
-                .select("id, title, text, metadata") \
-                .eq("status", pc.STATUS_ENRICHED) \
-                .limit(limit) \
-                .execute()
+        try:
+            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            
+            res = sb.table("raw_texts") \
+                    .select("id, title, text, metadata") \
+                    .eq("status", pc.STATUS_ENRICHED) \
+                    .gte("ingested_at", time_filter) \
+                    .limit(limit) \
+                    .execute()
+        except Exception as e:
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            time.sleep(10)
+            continue
 
         rows = res.data or []
         if not rows:
@@ -212,10 +225,3 @@ def main(limit: int = 500, max_total: int = 0):
     
     finish_run(run_id, processed=total_processed, succeeded=total_succeeded, failed=total_failed)
     logger.info("Eksekusi Validation Selesai.")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--limit", type=int, default=500)
-    parser.add_argument("--max-total", type=int, default=0)
-    args = parser.parse_args()
-    main(limit=args.limit, max_total=args.max_total)

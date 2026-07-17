@@ -1,18 +1,19 @@
 """
-nlp_readiness_worker.py v5 — Final Gatekeeper & Title Deduplication
+nlp_readiness_worker.py v6 — Final Gatekeeper & Chunked DB
 ====================================================================
-PERUBAAHAN v5:
-  1. TITLE DEDUPLICATION: Mengecek apakah artikel dengan judul yang sama 
-     sudah pernah masuk antrian NLP (queued/processed) sebelum memasukkannya ke PGMQ.
-  2. NO N+1 QUERY: Ambil semua entity_contexts untuk 100 artikel sekali jalan.
-  3. NO 1-by-1 DELETE: Kumpulkan ID context sampah, hapus sekali pakai IN().
-  4. METADATA AWARE: Cek quality_score di metadata, bukan cuma panjang karakter.
+PERUBAAHAN v6:
+  1. TIME FILTER & ANTI-CRASH: Filter 30 hari terakhir agar tidak timeout.
+  2. FIX DUPLICATE QUERY: Menggunakan not_.in_() dan chunking agar akurat & tidak kena 400.
+  3. CHUNKED RPC: Memecah update raw_texts agar tidak kena payload limit.
+  4. CLEAN LOGGING: Menggunakan modul logging terstruktur.
 """
 import os
 import sys
 import re
+import time
 import logging
-from datetime import datetime, timezone
+import datetime
+from datetime import timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-READINESS_VERSION = "v5_final_gate"
+READINESS_VERSION = "v6_final_gate"
 MIN_CONTEXT_LEN = 100
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
@@ -43,7 +44,6 @@ def normalize_title(title: str) -> str:
     """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
     if not title: return ""
     title = title.lower().strip()
-    # Hapus tanda bata umum di judul berita
     title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
     title = re.sub(r'\s+', ' ', title)
     return title
@@ -58,23 +58,33 @@ def main(limit: int = 100, max_total: int = 0):
     total_duplicates = 0
     batch_num = 1
 
-    logger.info(f"[NLP_READINESS v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[NLP_READINESS v6] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
             
         logger.info(f"--- Batch {batch_num} ---")
-        res = sb.table("raw_texts") \
-                .select("id, title, text, metadata") \
-                .eq("status", pc.STATUS_VALIDATED) \
-                .not_.is_("context_extracted_at", "null") \
-                .is_("nlp_ready_at", "null") \
-                .limit(limit) \
-                .execute()
+        
+        # Filter 30 hari terakhir & try-except agar tidak crash
+        try:
+            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            res = sb.table("raw_texts") \
+                    .select("id, title, text, metadata") \
+                    .eq("status", pc.STATUS_VALIDATED) \
+                    .not_.is_("context_extracted_at", "null") \
+                    .is_("nlp_ready_at", "null") \
+                    .gte("ingested_at", time_filter) \
+                    .limit(limit) \
+                    .execute()
+        except Exception as e:
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            time.sleep(10)
+            continue
                 
         articles = res.data or []
         if not articles:
+            logger.info("Tidak ada artikel untuk di-readiness.")
             break
             
         art_ids = [a["id"] for a in articles]
@@ -82,24 +92,34 @@ def main(limit: int = 100, max_total: int = 0):
         
         # 1. BATCH QUERY: Cek duplikasi judul di DB (yang sudah queued/processed)
         existing_titles = set()
-        try:
-            # Cari artikel lain yang punya judul sama, tapi sudah pernah masuk NLP (nlp_ready_at tidak null)
-            dup_res = sb.table("raw_texts") \
-                        .select("title") \
-                        .in_("title", [a.get("title") or "" for a in articles]) \
-                        .not_.is_("nlp_ready_at", "null") \
-                        .neq("id", art_ids[0]) \
-                        .execute()
-            for row in (dup_res.data or []):
-                existing_titles.add(normalize_title(row.get("title") or ""))
-        except Exception as e:
-            logger.warning(f"Gagal cek duplikat judul: {e}")
+        titles_to_check = [a.get("title") or "" for a in articles if a.get("title")]
+        chunk_size = 50
+        
+        for i in range(0, len(titles_to_check), chunk_size):
+            chunk = titles_to_check[i:i + chunk_size]
+            try:
+                # Fix: gunakan not_.in_() agar tidak membandingkan dengan batch sendiri
+                dup_res = sb.table("raw_texts") \
+                            .select("title") \
+                            .in_("title", chunk) \
+                            .not_.is_("nlp_ready_at", "null") \
+                            .not_.in_("id", art_ids) \
+                            .execute()
+                for row in (dup_res.data or []):
+                    existing_titles.add(normalize_title(row.get("title") or ""))
+            except Exception as e:
+                logger.warning(f"Gagal cek duplikat judul: {e}")
 
         # 2. BATCH QUERY: Ambil semua contexts untuk 100 artikel sekaligus
-        ctx_res = sb.table("entity_contexts") \
-                    .select("id, raw_text_id, context_text, metadata") \
-                    .in_("raw_text_id", art_ids) \
-                    .execute()
+        try:
+            ctx_res = sb.table("entity_contexts") \
+                        .select("id, raw_text_id, context_text, metadata") \
+                        .in_("raw_text_id", art_ids) \
+                        .execute()
+        except Exception as e:
+            logger.warning(f"Gagal ambil contexts: {e}. Menunggu 5 detik...")
+            time.sleep(5)
+            continue
                     
         contexts_by_art = {}
         invalid_ctx_ids = []
@@ -165,9 +185,15 @@ def main(limit: int = 100, max_total: int = 0):
                 })
                 stats["rejected"] += 1
                 
+        # --- CHUNKED RPC UPDATE ---
         if updates:
-            try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-            except Exception as e: logger.error(f"DB Error: {e}")
+            chunk_size = 50
+            for i in range(0, len(updates), chunk_size):
+                chunk = updates[i:i + chunk_size]
+                try: 
+                    sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                except Exception as e: 
+                    logger.error(f"RPC Error (bulk_update_raw_texts): {e}")
                 
         logger.info(f"Ready: {stats['ready']} | Rejected: {stats['rejected']} | Duplicates: {stats['duplicate']} | Junk Deleted: {len(invalid_ctx_ids)}")
         

@@ -36,44 +36,44 @@ jobs:
           pip install -r requirements.txt
           # TIDAK PERLU download model spaCy karena kita pakai Regex murni
           
-      # 1. ENRICHER WORKER
+            # 1. ENRICHER WORKER
       - name: Run Enricher Worker
-        run: python main.py run-worker enricher --limit 500
+        run: python main.py run-worker enricher --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # 2. VALIDATION WORKER
       - name: Run Validation Worker
-        run: python main.py run-worker validation --limit 500
+        run: python main.py run-worker validation --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # 3. PREPROCESSING WORKER
       - name: Run Preprocessing Worker
-        run: python main.py run-worker preprocessing --limit 500
+        run: python main.py run-worker preprocessing --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # 4. ENTITY RESOLUTION WORKER
       - name: Run Entity Resolution Worker
-        run: python main.py run-worker entity --limit 500
+        run: python main.py run-worker entity --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # 5. CONTEXT WORKER
       - name: Run Context Worker
-        run: python main.py run-worker context --limit 500
+        run: python main.py run-worker context --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # 6. NLP READINESS WORKER
       - name: Run NLP Readiness Worker
-        run: python main.py run-worker readiness --limit 500
+        run: python main.py run-worker readiness --limit 250
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

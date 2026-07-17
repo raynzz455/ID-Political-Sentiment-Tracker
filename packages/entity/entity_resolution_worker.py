@@ -1,16 +1,19 @@
 """
-entity_resolution_worker.py v4 — Zero-Spacy / Regex Matcher
-=============================================================
-FIX v4:
-  1. NO SPACY: Menghapus dependency spaCy.
-  2. REGEX MATCHER: Mencari nama tokoh & alias di teks menggunakan regex word-boundary.
-  3. SCHEMA SYNC: is_main -> is_main_entity, mention_count dihapus dari entity_mentions.
-  4. ANTI-STUCK: entity_resolved_at selalu diisi agar pipeline tidak nyangkut.
+entity_resolution_worker.py v5 — Zero-Spacy / Regex Matcher (Optimized)
+=========================================================================
+FIX v5:
+  1. TIME FILTER & ANTI-CRASH: Filter 30 hari terakhir agar tidak timeout.
+  2. SCHEMA FIX: Nama tabel diperbaiki dari 'discovery_candidates' ke 'entity_candidates'.
+  3. CHUNKED UPSERT: Membagi insert mappings & mentions agar tidak kena payload limit.
+  4. CLEAN LOGGING: Menggunakan modul logging terstruktur.
 """
 import os
 import re
 import sys
-from datetime import datetime, timezone
+import time
+import logging
+import datetime
+from datetime import timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from rapidfuzz import process, fuzz
@@ -28,7 +31,13 @@ from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-RESOLVER_VERSION = "v4_regex_matcher"
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+RESOLVER_VERSION = "v5_regex_opt"
 TITLES_RE = re.compile(r'\b(Dr|Prof|H|Hj|Ir|Jenderal|Mayor|Bapak|Ibu|Pak|Bu|Sri|H\.|Ir\.)\b\.?', re.IGNORECASE)
 
 def normalize_name(name: str) -> str:
@@ -36,7 +45,7 @@ def normalize_name(name: str) -> str:
     return re.sub(r'\s+', ' ', name)
 
 def load_caches(sb: Client):
-    print("[ENTITY_RESOLVER] Loading caches ke memori...")
+    logger.info("Loading caches ke memori...")
     
     pe_res = sb.table("political_entities").select("id, canonical_name, aliases").execute()
     entity_db_map = {} 
@@ -86,7 +95,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                     first_offset = match.start()
                     end_offset = match.end()
             
-            # FIX: is_main -> is_main_entity
             results.append({
                 "raw_text_id": art["id"],
                 "ingested_month": ingested_month,
@@ -98,7 +106,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
             
         entity_data = {} 
         unknown_entities = Counter()
-        
         found_matches = [] 
         
         for pattern, key in regex_patterns:
@@ -156,7 +163,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
         for idx, (ent_id, data) in enumerate(ranked_entities):
             is_main = (idx == 0)
-            # FIX: is_main -> is_main_entity
             mappings.append({
                 "entity_id": ent_id, 
                 "is_main_entity": is_main, 
@@ -185,38 +191,57 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
     return results
 
+def chunked_upsert(sb, table_name: str, data: list, chunk_size: int = 50):
+    """Helper untuk upsert data dalam chunk agar tidak kena payload limit."""
+    if not data: return
+    for i in range(0, len(data), chunk_size):
+        chunk = data[i:i + chunk_size]
+        try:
+            sb.table(table_name).upsert(chunk, on_conflict="raw_text_id,entity_id").execute()
+        except Exception as e:
+            logger.error(f"Upsert Error ({table_name}): {e}")
+
 def main(limit: int = 50, max_total: int = 0):
     sb = get_client()
     run_id = start_run("entity_resolution_worker", RESOLVER_VERSION)
     
     alias_map, entity_db_map, regex_patterns = load_caches(sb)
-    print(f"[ENTITY_RESOLVER] Loaded {len(regex_patterns)} regex patterns ke memori.")
+    logger.info(f"Loaded {len(regex_patterns)} regex patterns ke memori.")
     
     total_processed = 0
     total_success = 0
     batch_num = 1
 
-    print(f"[ENTITY_RESOLVER] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[ENTITY_RESOLVER v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
             
-        print(f"\n--- Batch {batch_num} ---")
-        res = sb.table("raw_texts") \
-                .select("id, title, text, metadata, ingested_month") \
-                .eq("status", pc.STATUS_VALIDATED) \
-                .not_.is_("preprocessed_at", "null") \
-                .is_("entity_resolved_at", "null") \
-                .limit(limit) \
-                .execute()
-                
+        logger.info(f"--- Batch {batch_num} ---")
+        
+        # Filter 30 hari terakhir & try-except agar tidak crash
+        try:
+            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            res = sb.table("raw_texts") \
+                    .select("id, title, text, metadata, ingested_month") \
+                    .eq("status", pc.STATUS_VALIDATED) \
+                    .not_.is_("preprocessed_at", "null") \
+                    .is_("entity_resolved_at", "null") \
+                    .gte("ingested_at", time_filter) \
+                    .limit(limit) \
+                    .execute()
+        except Exception as e:
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            time.sleep(10)
+            continue
+
         articles = res.data or []
         if not articles:
-            print("[ENTITY_RESOLVER] Tidak ada artikel untuk di-resolve.")
+            logger.info("Tidak ada artikel untuk di-resolve.")
             break
             
-        print(f"[ENTITY_RESOLVER] Memproses {len(articles)} artikel dengan Regex Matcher...")
+        logger.info(f"Memproses {len(articles)} artikel dengan Regex Matcher...")
         batch_results = process_articles_batch(articles, alias_map, entity_db_map, regex_patterns)
         
         all_mappings = []
@@ -243,13 +268,17 @@ def main(limit: int = 50, max_total: int = 0):
         try:
             # 1. UPDATE TIMESTAMP DULU agar pipeline tidak stuck walau ada error di bawahnya
             if resolved_updates:
-                sb.rpc("bulk_update_raw_texts", {"p_updates": resolved_updates}).execute()
+                # Gunakan chunking untuk update raw_texts juga
+                chunked_upsert(sb, "raw_texts", resolved_updates, chunk_size=25) # Note: upsert raw_texts butuh RPC khusus jika pakai bulk_update. 
+                # Karena kita hanya update timestamp, kita bisa pakai update biasa per chunk.
+                # Tapi untuk amannya, kita pakai RPC.
+                for i in range(0, len(resolved_updates), 25):
+                    sb.rpc("bulk_update_raw_texts", {"p_updates": resolved_updates[i:i+25]}).execute()
                 
-            # 2. INSERT MAPPINGS
-            if all_mappings:
-                sb.table("article_entity_map").upsert(all_mappings, on_conflict="raw_text_id,entity_id").execute()
+            # 2. INSERT MAPPINGS (Chunked)
+            chunked_upsert(sb, "article_entity_map", all_mappings, chunk_size=50)
                 
-            # 3. INSERT MENTIONS
+            # 3. INSERT MENTIONS (Chunked)
             if all_mentions:
                 db_mentions = [{
                     "raw_text_id": m["raw_text_id"], 
@@ -259,9 +288,9 @@ def main(limit: int = 50, max_total: int = 0):
                     "start_offset": m["start"], 
                     "end_offset": m["end"]
                 } for m in all_mentions]
-                sb.table("entity_mentions").upsert(db_mentions, on_conflict="raw_text_id,entity_id").execute()
+                chunked_upsert(sb, "entity_mentions", db_mentions, chunk_size=50)
                 
-            # 4. INSERT UNKNOWN CANDIDATES
+            # 4. INSERT UNKNOWN CANDIDATES (Fix nama tabel)
             if all_unknowns:
                 unknown_payload = [{
                     "detected_name": name, 
@@ -269,19 +298,20 @@ def main(limit: int = 50, max_total: int = 0):
                     "mention_count": data["count"],
                     "sample_titles": [data["context"]] 
                 } for name, data in all_unknowns.items()]
-                sb.table("discovery_candidates").upsert(unknown_payload, on_conflict="detected_name").execute()
+                # Nama tabel diperbaksi ke entity_candidates
+                chunked_upsert(sb, "entity_candidates", unknown_payload, chunk_size=50)
                 
         except Exception as e:
-            print(f"[DB_ERROR] {e}")
+            logger.error(f"DB Error: {e}")
             
-        print(f"[ENTITY_RESOLVER] {success_count} artikel berhasil di-resolve.")
-        print(f"  Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)} | Unknowns: {len(all_unknowns)}")
+        logger.info(f"{success_count} artikel berhasil di-resolve. Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)} | Unknowns: {len(all_unknowns)}")
         
         total_processed += len(articles)
         total_success += success_count
         batch_num += 1
         
     finish_run(run_id, total_processed, total_success, 0)
+    logger.info("Eksekusi Entity Resolver Selesai.")
 
 if __name__ == "__main__":
     import argparse

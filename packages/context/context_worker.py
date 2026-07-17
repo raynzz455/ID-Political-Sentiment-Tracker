@@ -1,15 +1,18 @@
 """
-context_worker.py v4 — Pure Offset Window & Rich Scoring
+context_worker.py v5 — Pure Offset Window & Chunked DB
 =========================================================
-FIX dari v3:
-  1. PURE OFFSET MATCH: Ambil jendela karakter (misal 600 char) di sekitar offset NER.
-     Nol split('\n\n'), nol regex. 100% presisi.
-  2. QUALITY SCORE FIX: Hitung density entitas & signal words secara benar.
-  3. BATCH READY: Import dari packages.shared.
+FIX dari v4:
+  1. TIME FILTER & ANTI-CRASH: Filter 30 hari terakhir agar tidak timeout.
+  2. CHUNKED DB: Memecah upsert contexts dan update raw_texts agar tidak kena 400 Bad Request.
+  3. CLEAN LOGGING: Menggunakan modul logging terstruktur.
+  4. PURE OFFSET MATCH: Ambil jendela karakter (misal 800 char) di sekitar offset NER.
 """
 import os
 import sys
-from datetime import datetime, timezone
+import time
+import logging
+import datetime
+from datetime import timezone
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -26,7 +29,13 @@ from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-CONTEXT_VERSION = "v4_pure_offset"
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+CONTEXT_VERSION = "v5_pure_offset"
 CONTEXT_WINDOW_CHARS = 800 # Ambil 800 karakter di sekitar mention (400 sebelum, 400 sesudah)
 MAX_WORDS = 350 # Batas aman untuk 512 token IndoBERT
 
@@ -79,32 +88,47 @@ def main(limit: int = 50, max_total: int = 0):
     total_success = 0
     batch_num = 1
 
-    print(f"[CONTEXT_WORKER] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[CONTEXT_WORKER v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
             
-        print(f"\n--- Batch {batch_num} ---")
-        res = sb.table("raw_texts") \
-                .select("id, text, ingested_month") \
-                .eq("status", pc.STATUS_VALIDATED) \
-                .not_.is_("entity_resolved_at", "null") \
-                .is_("context_extracted_at", "null") \
-                .limit(limit) \
-                .execute()
+        logger.info(f"--- Batch {batch_num} ---")
+        
+        # Filter 30 hari terakhir & try-except agar tidak crash
+        try:
+            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            res = sb.table("raw_texts") \
+                    .select("id, text, ingested_month") \
+                    .eq("status", pc.STATUS_VALIDATED) \
+                    .not_.is_("entity_resolved_at", "null") \
+                    .is_("context_extracted_at", "null") \
+                    .gte("ingested_at", time_filter) \
+                    .limit(limit) \
+                    .execute()
+        except Exception as e:
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            time.sleep(10)
+            continue
                 
         articles = res.data or []
         if not articles:
+            logger.info("Tidak ada artikel untuk di-extract context-nya.")
             break
             
         art_ids = [a["id"] for a in articles]
         
         # BATCH QUERY: Ambil semua mentions
-        mentions_res = sb.table("entity_mentions") \
-                         .select("raw_text_id, entity_id, start_offset, end_offset, political_entities(canonical_name)") \
-                         .in_("raw_text_id", art_ids) \
-                         .execute()
+        try:
+            mentions_res = sb.table("entity_mentions") \
+                             .select("raw_text_id, entity_id, start_offset, end_offset, political_entities(canonical_name)") \
+                             .in_("raw_text_id", art_ids) \
+                             .execute()
+        except Exception as e:
+            logger.warning(f"Gagal ambil mentions: {e}. Menunggu 5 detik...")
+            time.sleep(5)
+            continue
                          
         mentions_by_art = {}
         for m in (mentions_res.data or []):
@@ -112,7 +136,7 @@ def main(limit: int = 50, max_total: int = 0):
             
         context_inserts = []
         updates = []
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         success_count = 0
         
         for art in articles:
@@ -141,21 +165,34 @@ def main(limit: int = 50, max_total: int = 0):
             updates.append({"id": art["id"], "context_extracted_at": now_iso})
             success_count += 1
             
+        # --- CHUNKED UPSERT (Cegah 400 Bad Request) ---
         if context_inserts:
-            try: sb.table("entity_contexts").upsert(context_inserts, on_conflict="raw_text_id,entity_id").execute()
-            except Exception as e: print(f"[DB_ERROR] {e}")
+            chunk_size = 50
+            for i in range(0, len(context_inserts), chunk_size):
+                chunk = context_inserts[i:i + chunk_size]
+                try: 
+                    sb.table("entity_contexts").upsert(chunk, on_conflict="raw_text_id,entity_id").execute()
+                except Exception as e: 
+                    logger.error(f"Upsert Error (entity_contexts): {e}")
                 
+        # --- CHUNKED RPC UPDATE ---
         if updates:
-            try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-            except Exception as e: print(f"[DB_ERROR] {e}")
+            chunk_size = 50
+            for i in range(0, len(updates), chunk_size):
+                chunk = updates[i:i + chunk_size]
+                try: 
+                    sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                except Exception as e: 
+                    logger.error(f"RPC Error (bulk_update_raw_texts): {e}")
                 
-        print(f"[CONTEXT_WORKER] {success_count} diproses. {len(context_inserts)} contexts dibuat.")
+        logger.info(f"{success_count} diproses. {len(context_inserts)} contexts dibuat.")
         
         total_processed += len(articles)
         total_success += success_count
         batch_num += 1
         
     finish_run(run_id, total_processed, total_success, 0)
+    logger.info("Eksekusi Context Worker Selesai.")
 
 if __name__ == "__main__":
     import argparse

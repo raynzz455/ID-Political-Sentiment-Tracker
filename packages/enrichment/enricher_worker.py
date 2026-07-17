@@ -62,27 +62,25 @@ def normalize_title(title: str) -> str:
     return title
 
 def find_duplicate_titles(sb, rows: list) -> set:
-    """
-    Cek apakah ada artikel di DB dengan judul yang sama 
-    yang sudah berstatus enriched/processed/skipped.
-    """
     titles_to_check = [r.get("title") or "" for r in rows]
     titles_to_check = [t for t in titles_to_check if t]
-    
     if not titles_to_check: return set()
-    
+    dup_titles = set()
+    chunk_size = 50  
     try:
-        res = sb.table("raw_texts") \
-                .select("title") \
-                .in_("title", titles_to_check) \
-                .in_("status", ["enriched", "processed", "skipped", "validated"]) \
-                .execute()
-                
-        dup_titles = set()
-        for row in (res.data or []):
-            norm = normalize_title(row.get("title") or "")
-            if norm: dup_titles.add(norm)
+        for i in range(0, len(titles_to_check), chunk_size):
+            chunk = titles_to_check[i:i + chunk_size]
             
+            res = sb.table("raw_texts") \
+                    .select("title") \
+                    .in_("title", chunk) \
+                    .in_("status", ["enriched", "processed", "skipped", "validated"]) \
+                    .execute()
+                    
+            for row in (res.data or []):
+                norm = normalize_title(row.get("title") or "")
+                if norm: dup_titles.add(norm)
+                
         return dup_titles
     except Exception as e:
         logger.warning(f"Gagal cek duplikat judul: {e}")
@@ -252,8 +250,13 @@ def bulk_store(sb, results: list) -> Counter:
             logger.info(f"ID: {rt_id[:8]} | Status: FAILED | Reason: {fetch_result.reason}")
 
     if updates:
-        try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-        except Exception as e: logger.error(f"DB Bulk Update Error: {e}")
+        CHUNK_SIZE = 50 
+        try:
+            for i in range(0, len(updates), CHUNK_SIZE):
+                chunk = updates[i:i + CHUNK_SIZE]
+                sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+        except Exception as e:
+            logger.error(f"DB Bulk Update Error: {e}")
     return stats
 
 def pipeline_worker(row: dict):

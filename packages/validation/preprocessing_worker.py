@@ -101,7 +101,7 @@ def main(limit: int = 100, max_total: int = 0):
     total_normalized = 0
     total_duplicates = 0
     batch_num = 1
-    start_time = time.perf_counter()  # Sekarang time.perf_counter() akan berfungsi normal
+    start_time = time.perf_counter()
 
     logger.info(f"[PREPROCESSOR v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
     
@@ -110,13 +110,21 @@ def main(limit: int = 100, max_total: int = 0):
             break
             
         logger.info(f"--- Batch {batch_num} ---")
-        res = sb.table("raw_texts") \
-                .select("id, text, metadata") \
-                .eq("status", pc.STATUS_VALIDATED) \
-                .or_(f"preprocessing_version.is.null,preprocessing_version.neq.{PIPELINE_VERSION}") \
-                .limit(limit) \
-                .execute()
-                
+        
+        try:
+            time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+            res = sb.table("raw_texts") \
+                    .select("id, text, metadata") \
+                    .eq("status", pc.STATUS_VALIDATED) \
+                    .or_(f"preprocessing_version.is.null,preprocessing_version.neq.{PIPELINE_VERSION}") \
+                    .gte("ingested_at", time_filter) \
+                    .limit(limit) \
+                    .execute()
+        except Exception as e:
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            time.sleep(10)
+            continue
+
         articles = res.data or []
         if not articles:
             logger.info("Tidak ada lagi artikel untuk diproses.")
@@ -144,12 +152,19 @@ def main(limit: int = 100, max_total: int = 0):
             
         db_hash_map = {}
         if batch_hashes:
-            dup_res = sb.table("raw_texts") \
-                        .select("id, content_hash") \
-                        .in_("content_hash", list(batch_hashes)) \
-                        .execute()
-            for row in (dup_res.data or []):
-                db_hash_map[row["content_hash"]] = row["id"]
+            hash_list = list(batch_hashes)
+            hash_chunk_size = 50  # Cek 50 hash per request
+            for i in range(0, len(hash_list), hash_chunk_size):
+                chunk = hash_list[i:i + hash_chunk_size]
+                try:
+                    dup_res = sb.table("raw_texts") \
+                                .select("id, content_hash") \
+                                .in_("content_hash", chunk) \
+                                .execute()
+                    for row in (dup_res.data or []):
+                        db_hash_map[row["content_hash"]] = row["id"]
+                except Exception as e:
+                    logger.warning(f"Gagal cek duplikat hash: {e}")
                 
         for item in processed_items:
             if item["hash"] in db_hash_map and db_hash_map[item["hash"]] != item["id"]:

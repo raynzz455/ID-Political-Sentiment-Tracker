@@ -20,10 +20,18 @@ Usage:
 import argparse
 import time
 import sys
+import logging  # <--- TAMBAHKAN INI
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(ROOT_DIR))
+
+# Setup Clean Logging
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+# Matikan noise HTTP dari Supabase/httpx
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # Import Workers
 try:
@@ -41,42 +49,51 @@ except ImportError as e:
 
 
 def run_prep_pipeline(limit: int, max_total: int):
-    """Menjalankan Layer 1 hingga 3.7 secara berurutan."""
-    print(f"\n{'='*70}")
-    print(f"🚀 STARTING PREPROCESSING PIPELINE (Batch: {limit} | Max Total: {'Unlimited' if max_total == 0 else max_total})")
-    print(f"{'='*70}")
+    """Menjalankan Layer 2 hingga 3.7 secara berurutan."""
+    logger.info("=" * 70)
+    logger.info(f"STARTING PREP PIPELINE (Batch: {limit} | Max Total: {'Unlimited' if max_total == 0 else max_total})")
+    logger.info("=" * 70)
     
     start_time = time.time()
 
-    print("\n--- [1/6] Running Enricher Worker ---")
+    logger.info("\n>>> [1/6] Enricher Worker")
     enricher_worker.main(limit=limit, max_total=max_total)
     
-    print("\n--- [2/6] Running Validation Worker ---")
+    logger.info("\n>>> [2/6] Validation Worker")
     validation_worker.main(limit=limit, max_total=max_total)
     
-    print("\n--- [3/6] Running Preprocessing Worker ---")
+    logger.info("\n>>> [3/6] Preprocessing Worker")
     preprocessing_worker.main(limit=limit, max_total=max_total)
     
-    print("\n--- [4/6] Running Entity Resolution Worker ---")
-    entity_resolution_worker.main(limit=limit, max_total=max_total)
+    logger.info("\n>>> [4/6] Entity Resolution Worker")
+    try:
+        entity_resolution_worker.main(limit=limit, max_total=max_total)
+    except TypeError:
+        entity_resolution_worker.main()
     
-    print("\n--- [5/6] Running Context Worker ---")
-    context_worker.main(limit=limit, max_total=max_total)
+    logger.info("\n>>> [5/6] Context Worker")
+    try:
+        context_worker.main(limit=limit, max_total=max_total)
+    except TypeError:
+        context_worker.main()
     
-    print("\n--- [6/6] Running NLP Readiness Worker ---")
-    nlp_readiness_worker.main(limit=limit, max_total=max_total)
+    logger.info("\n>>> [6/6] NLP Readiness Worker")
+    try:
+        nlp_readiness_worker.main(limit=limit, max_total=max_total)
+    except TypeError:
+        nlp_readiness_worker.main()
     
     elapsed = time.time() - start_time
-    print(f"\n{'='*70}")
-    print(f"✅ PREPROCESSING PIPELINE FINISHED in {elapsed:.2f} seconds.")
-    print(f"{'='*70}\n")
+    logger.info("=" * 70)
+    logger.info(f"PREP PIPELINE FINISHED in {elapsed:.2f} seconds.")
+    logger.info("=" * 70)
 
 
 def run_nlp_worker(target: int, batch_size: int, run_all: bool):
     """Menjalankan Layer 4 (NLP Inference)."""
-    print(f"\n{'='*70}")
-    print(f"🧠 STARTING NLP WORKER (Target: {'ALL' if run_all else target})")
-    print(f"{'='*70}")
+    logger.info("=" * 70)
+    logger.info(f"STARTING NLP WORKER (Target: {'ALL' if run_all else target})")
+    logger.info("=" * 70)
     
     args_to_pass = []
     if run_all:
@@ -92,16 +109,16 @@ def run_nlp_worker(target: int, batch_size: int, run_all: bool):
     try:
         nlp_worker.main()
     except Exception as e:
-        print(f"[ERROR] NLP Worker crashed: {e}")
+        logger.error(f"NLP Worker crashed: {e}")
     finally:
         sys.argv = original_sys_argv
 
 
 def run_specific_worker(worker_name: str, limit: int, max_total: int):
     """Menjalankan satu worker spesifik berdasarkan nama."""
-    print(f"\n{'='*70}")
-    print(f"⚙️ RUNNING SPECIFIC WORKER: {worker_name.upper()} (Batch: {limit} | Max Total: {'Unlimited' if max_total == 0 else max_total})")
-    print(f"{'='*70}")
+    logger.info("=" * 70)
+    logger.info(f"RUNNING SPECIFIC WORKER: {worker_name.upper()} (Batch: {limit} | Max Total: {'Unlimited' if max_total == 0 else max_total})")
+    logger.info("=" * 70)
     
     workers = {
         "enricher": enricher_worker,
@@ -114,8 +131,8 @@ def run_specific_worker(worker_name: str, limit: int, max_total: int):
     }
     
     if worker_name not in workers:
-        print(f"[ERROR] Worker '{worker_name}' tidak ditemukan.")
-        print(f"Pilih salah satu: {', '.join(workers.keys())}")
+        logger.error(f"Worker '{worker_name}' tidak ditemukan.")
+        logger.info(f"Pilih salah satu: {', '.join(workers.keys())}")
         return
         
     worker_module = workers[worker_name]
@@ -125,7 +142,7 @@ def run_specific_worker(worker_name: str, limit: int, max_total: int):
     except TypeError:
         worker_module.main()
     except Exception as e:
-        print(f"[ERROR] Worker {worker_name} crashed: {e}")
+        logger.error(f"Worker {worker_name} crashed: {e}")
 
 
 def main():

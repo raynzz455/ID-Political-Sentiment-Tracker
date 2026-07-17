@@ -18,6 +18,7 @@ import time
 import asyncio
 import argparse
 import logging
+import datetime
 from pathlib import Path
 from collections import Counter
 
@@ -245,18 +246,27 @@ async def async_main(sb, args):
             if args.max_total > 0 and total_processed >= args.max_total:
                 break
                 
-            logger.info(f"--- Batch {batch_num} ---")
-            # Ambil artikel GNews yang GAGAL (failed) ATAU yang berhasil tapi cuma SNIPPET
-            res = sb.table("raw_texts") \
-                .select("id, source_url, title, metadata, recovery_attempts") \
-                .or_(f"status.eq.{pc.STATUS_FAILED},and(status.eq.{pc.STATUS_ENRICHED}.content_type.eq.SNIPPET)") \
-                .lt("recovery_attempts", pc.MAX_RECOVERY_RETRY) \
-                .limit(args.limit) \
-                .execute()
+            logger.info(f"--- Batch {batch_num} (Total Processed: {total_processed}) ---")
+            try:
+                time_filter = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+                
+                res = sb.table("raw_texts") \
+                    .select("id, source_url, title, metadata, recovery_attempts") \
+                    .or_(f"status.eq.{pc.STATUS_FAILED},and(status.eq.{pc.STATUS_ENRICHED}.content_type.eq.SNIPPET)") \
+                    .lt("recovery_attempts", pc.MAX_RECOVERY_RETRY) \
+                    .gte("ingested_at", time_filter) \
+                    .order("recovery_attempts", desc=False) \
+                    .order("ingested_at", desc=False) \
+                    .limit(args.limit) \
+                    .execute()
+            except Exception as e:
+                logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+                await asyncio.sleep(10)
+                continue
                     
             articles = res.data or []
             if not articles:
-                logger.info("Tidak ada lagi artikel GNews untuk di-resolve.")
+                logger.info("Tidak ada lagi artikel GNews (30 hari terakhir) untuk di-resolve.")
                 break
                 
             # --- EARLY DEDUPLICATION GATE ---
@@ -269,7 +279,6 @@ async def async_main(sb, args):
                 norm_title = normalize_title(art.get("title") or "")
                 if norm_title and norm_title in existing_titles:
                     skipped_dup += 1
-                    # Jika duplikat, langsung skip tanpa buka Playwright
                     updates.append({
                         "id": art["id"],
                         "status": pc.STATUS_SKIPPED,
@@ -294,9 +303,15 @@ async def async_main(sb, args):
                 else:
                     updates.append(result)
                         
+            # --- CHUNKED RPC UPDATE (Agar pasti masuk DB) ---
             if updates:
-                try: sb.rpc("bulk_update_raw_texts", {"p_updates": updates}).execute()
-                except Exception as e: logger.error(f"DB Bulk Update Error: {e}")
+                CHUNK_SIZE = 25
+                try:
+                    for i in range(0, len(updates), CHUNK_SIZE):
+                        chunk = updates[i:i + CHUNK_SIZE]
+                        sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                except Exception as e: 
+                    logger.error(f"DB Bulk Update Error: {e}")
                 
             total_processed += len(articles)
             batch_num += 1
