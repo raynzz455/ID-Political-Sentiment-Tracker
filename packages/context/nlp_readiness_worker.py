@@ -167,12 +167,21 @@ def main(limit: int = 100, max_total: int = 0):
             
             # GATE 3: Lolos jika ada context valid, ATAU teks utuh cukup panjang untuk fallback
             if valid_contexts > 0 or len(full_text) >= 500:
+                
+                # 1. Ubah status jadi 'queued' di tabel raw_texts
                 updates.append({
                     "id": art_id, 
+                    "status": pc.STATUS_QUEUED, 
                     "nlp_ready_at": now_iso,
                     "metadata": {**metadata, "nlp_readiness_version": READINESS_VERSION, "valid_ctx_count": valid_contexts}
                 })
                 stats["ready"] += 1
+                
+                # 2. Masukkan ID ke antrian fisik PGMQ
+                try:
+                    sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
+                except Exception as e:
+                    logger.error(f"Gagal enqueue PGMQ (ID: {art_id}): {e}")
             else:
                 updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 

@@ -1,11 +1,11 @@
 """
-nlp_worker.py v10 — Layer 4 (NLP Worker Robust Edition)
+nlp_worker.py v11 — Layer 4 (NLP Worker Progress & Aspect Fill)
 =================================================================
-PERUBAHAN v10:
-  1. HEALTH CHECK (Bug 6): Verifikasi ketersediaan RPC sebelum drain dimulai.
-  2. EXPLICIT ASPECT (Bug 2): Mengirim p_aspect=None secara eksplisit.
-  3. INFORMATIVE LOGGING (Bug 3): Mencetak raw_id & entity_id saat error.
-  4. RPC RETRY (Bug 5): Wrapper untuk retry RPC jika terjadi network error.
+PERUBAAHAN v11:
+  1. REAL-TIME PROGRESS: Mencetak progres setiap 10 artikel agar tidak terlihat stuck.
+  2. ASPECT FILL: Mengisi kolom `aspect` dengan "general" (fallback) atau nama tokoh (targeted).
+  3. HEALTH CHECK: Verifikasi ketersediaan RPC sebelum drain dimulai.
+  4. RPC RETRY: Wrapper untuk retry RPC jika terjadi network error.
 """
 import sys
 import time
@@ -17,11 +17,6 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
-try:
-    from supabase import create_client, Client
-except ImportError:
-    print("[ERROR] pip install supabase"); sys.exit(1)
-
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
@@ -32,10 +27,9 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 MODEL_VERSION_FALLBACK = "indobert-fallback-v1"
 MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v1"
-NLP_VERSION = "v10_robust"
+NLP_VERSION = "v11_progress"
 
-# Bug 5: Helper untuk RPC Retry
-def rpc_with_retry(sb: Client, rpc_name: str, payload: dict, max_retries: int = 3) -> bool:
+def rpc_with_retry(sb, rpc_name: str, payload: dict, max_retries: int = 3) -> bool:
     for attempt in range(max_retries):
         try:
             sb.rpc(rpc_name, payload).execute()
@@ -48,20 +42,15 @@ def rpc_with_retry(sb: Client, rpc_name: str, payload: dict, max_retries: int = 
             time.sleep(2)
     return False
 
-# Bug 6: Health Check saat startup
-def check_db_health(sb: Client) -> bool:
+def check_db_health(sb) -> bool:
     required_rpcs = ["insert_sentiment_score", "dequeue_nlp_batch", "bulk_update_raw_texts", "ack_nlp_message"]
     for rpc in required_rpcs:
         try:
-            # Mengambil metadata fungsi dari PostgreSQL
-            sb.rpc("to_jsonb", {"p_arg": None}).execute() # Dummy safe call
-            # Cek di pg_proc
             res = sb.table("pg_proc").select("proname").eq("proname", rpc).limit(1).execute()
             if not res.data:
                 logger.error(f"Health Check GAGAL: RPC '{rpc}' tidak ditemukan di database!")
                 return False
         except Exception:
-            # Fallback jika pg_proc tidak bisa diakses (biasanya karena RLS)
             pass 
     logger.info("Health Check RPC: OK")
     return True
@@ -84,13 +73,12 @@ def process_one(sb, pipeline, item: dict, stats: Counter) -> None:
         "p_label": fb.label, "p_neg": float(fb.scores[0]),
         "p_neu": float(fb.scores[1]), "p_pos": float(fb.scores[2]),
         "p_confidence": float(fb.sentiment_confidence),
-        "p_aspect": None, # Bug 2 fix
+        "p_aspect": "general",  # <--- PERBAIKAN: Isi aspect
         "p_model_version": MODEL_VERSION_FALLBACK,
     }
     if rpc_with_retry(sb, "insert_sentiment_score", fb_payload):
         stats["fallback_inserted"] += 1
     else:
-        # Bug 3 fix: Logging informatif
         logger.error(f"Insert fallback gagal | raw_text={raw_id}")
         stats["fallback_error"] += 1
 
@@ -124,7 +112,7 @@ def process_one(sb, pipeline, item: dict, stats: Counter) -> None:
             "p_label": result.label, "p_neg": float(result.scores[0]),
             "p_neu": float(result.scores[1]), "p_pos": float(result.scores[2]),
             "p_confidence": float(result.sentiment_confidence),
-            "p_aspect": None, # Bug 2 fix
+            "p_aspect": entity_name,  # <--- PERBAIKAN: Isi aspect dengan nama tokoh
             "p_model_version": MODEL_VERSION_GATED,
         }
         
@@ -132,8 +120,7 @@ def process_one(sb, pipeline, item: dict, stats: Counter) -> None:
             stats["entity_inserted"] += 1
             stats[f"label_{result.label}"] += 1
         else:
-            # Bug 3 fix: Logging informatif
-            logger.error(f"Insert targeted gagal | raw_text={raw_id} | entity={entity_id} | payload={targeted_payload}")
+            logger.error(f"Insert targeted gagal | raw_text={raw_id} | entity={entity_id}")
             stats["insert_error"] += 1
 
     # 3. Ack & Update Status
@@ -147,7 +134,6 @@ def process_one(sb, pipeline, item: dict, stats: Counter) -> None:
 def main(target: int = 300, batch_size: int = 30, run_all: bool = False):
     sb = get_client()
     
-    # Bug 6 fix: Health check sebelum mulai
     if not check_db_health(sb):
         print("❌ Database Health Check Gagal! Pastikan semua RPC sudah terdaftar. Worker berhenti.")
         return
@@ -163,7 +149,7 @@ def main(target: int = 300, batch_size: int = 30, run_all: bool = False):
     processed = 0
     start = time.time()
 
-    print(f"{'='*70}\nDRAIN START (Robust Mode) — target={'ALL' if run_all else target}\n{'='*70}")
+    print(f"{'='*70}\nDRAIN START (Progress Mode) — target={'ALL' if run_all else target}\n{'='*70}")
 
     while True:
         if not run_all and processed >= target: break
@@ -182,6 +168,12 @@ def main(target: int = 300, batch_size: int = 30, run_all: bool = False):
         for item in items:
             process_one(sb, pipeline, item, stats)
             processed += 1
+            
+            # <--- PERBAIKAN: Cetak progres setiap 10 artikel
+            if processed % 10 == 0:
+                elapsed = time.time() - start
+                rate = processed / elapsed if elapsed > 0 else 0
+                print(f"[PROGRESS] Total Diproses: {processed} | Kecepatan: {rate:.1f} art/detik | Pos={stats['label_positive']} Neg={stats['label_negative']} Neu={stats['label_neutral']}", flush=True)
 
     elapsed = time.time() - start
     print(f"\n{'='*70}\nRINGKASAN DRAIN")
@@ -198,7 +190,7 @@ def main(target: int = 300, batch_size: int = 30, run_all: bool = False):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker v10 Robust)")
+    parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker v11)")
     parser.add_argument("--target", type=int, default=300)
     parser.add_argument("--batch-size", type=int, default=30)
     parser.add_argument("--all", action="store_true")
