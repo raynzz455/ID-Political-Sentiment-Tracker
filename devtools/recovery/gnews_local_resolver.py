@@ -81,9 +81,8 @@ def find_duplicate_titles(sb, rows: list) -> set:
         logger.warning(f"Gagal cek duplikat judul: {e}")
         return set()
 
-def extract_jsonld_article(html: str) -> str | None:
+def extract_jsonld_article(soup: BeautifulSoup) -> str | None:
     try:
-        soup = BeautifulSoup(html, "html.parser")
         scripts = soup.find_all("script", type="application/ld+json")
         for script in scripts:
             if not script.string: continue
@@ -116,14 +115,21 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
     current_attempts = art.get("recovery_attempts", 0) + 1
     start_time = time.perf_counter()
     
+    # PERBAIKAN BUG 3: Tambahkan status FAILED
     if len(gnews_url) < 80:
         stats["invalid_url"] += 1
-        return {"id": art_id, "recovery_attempts": pc.MAX_RECOVERY_RETRY, "recovery_status": "failed_truncated_url"}
+        return {
+            "id": art_id, 
+            "status": pc.STATUS_FAILED, 
+            "recovery_attempts": pc.MAX_RECOVERY_RETRY, 
+            "recovery_status": "failed_truncated_url"
+        }
         
     async with semaphore:
         page = await context.new_page()
         resolved_url = None
         html_content = None
+        error_reason = "redirect_failed" # PERBAIKAN BUG 2: Default error reason
         
         try:
             await page.goto(gnews_url, wait_until="domcontentloaded", timeout=timeout * 1000)
@@ -131,6 +137,7 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
                 await page.wait_for_url(lambda url: "google.com" not in url, timeout=timeout * 1000)
             except PlaywrightTimeoutError:
                 stats["timeout"] += 1
+                error_reason = "timeout"
             
             final_url = page.url
             if "google.com" not in final_url and "gstatic.com" not in final_url:
@@ -138,20 +145,23 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
                 html_content = await page.content()
             else:
                 stats["google_loop"] += 1
+                error_reason = "google_loop"
         except PlaywrightError:
             stats["http_error"] += 1
+            error_reason = "http_error"
         except Exception:
             stats["http_error"] += 1
+            error_reason = "http_error"
         finally:
             await page.close()
             
     if not resolved_url or not html_content:
-        if not any(k in str(stats) for k in ["timeout", "google_loop", "http_error"]):
+        if error_reason == "redirect_failed":
             stats["redirect_failed"] += 1
-        logger.info(f"ID: {art_id[:8]} | Status: FAILED | Reason: Redirect/Network Error")
+        logger.info(f"ID: {art_id[:8]} | Status: FAILED | Reason: {error_reason}")
         return {"id": art_id, "recovery_attempts": current_attempts, "recovery_status": pc.RECOVERY_FAILED}
 
-    # --- EXPERT VALIDATION ---
+# --- EXPERT VALIDATION ---
     html_size = len(html_content)
     if html_size > MAX_HTML_SIZE_BYTES:
         stats["html_too_large"] += 1
@@ -166,8 +176,8 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
         del html_content, soup
         return {"id": art_id, "recovery_attempts": current_attempts, "recovery_status": "rejected_low_density", "status": pc.STATUS_FAILED}
 
-    # 1. Try JSON-LD
-    full_text = extract_jsonld_article(html_content)
+    # 1. Try JSON-LD (Lewatkan soup, bukan html_content)
+    full_text = extract_jsonld_article(soup)
     extraction_method = "jsonld"
     
     # 2. Fallback to Trafilatura Precision
@@ -175,8 +185,8 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
         full_text = traf_extract(html_content, include_comments=False, include_tables=False, favor_precision=True) or ""
         extraction_method = "trafilatura"
 
+    # PERBAIKAN BUG 4: Hapus gc.collect() agar tidak memblokir async event loop
     del html_content, soup
-    gc.collect()
 
     # 3. Cleanup Boilerplate
     full_text = clean_boilerplate(full_text)
@@ -207,7 +217,7 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
     current_meta = dict(art.get("metadata") or {})
     current_meta["is_snippet"] = False
     current_meta["resolved_url"] = resolved_url
-    current_meta["resolver_method"] = f"playwright_hybrid_v13_{extraction_method}"
+    current_meta["resolver_method"] = f"playwright_hybrid_v14_{extraction_method}"
     current_meta["content_relevancy"] = round(relevancy, 2)
     
     return {

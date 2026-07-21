@@ -1,19 +1,28 @@
 """
-context_worker.py v8 — Semantic Candidate & Attribution Scoring
+context_worker.py v14 — Target-Centric Subgraph & Token Cap
 =====================================================================
-PERUBAAHAN v8:
-  1. MULTI-CANDIDATE: 1 mention menghasilkan 3 kandidat (Narrow, Adaptive, Paragraph).
-  2. ATTRIBUTION HUNTING: Boost skor drastis jika context mengandung kutipan langsung.
-  3. ADAPTIVE WINDOW: Ukuran jendela menyesuaikan target 250-450 kata, bukan kalimat tetap.
-  4. CLEAN BEFORE SCORE: Boilerplate dibuang sebelum teks dipecah dan dinilai.
-  5. PARAGRAPH IMPORTANCE: Skor posisi berbasis struktur (Lead/Body/Closing), bukan offset.
-  6. RICH METADATA: Menyimpan metrik kandidat untuk keperluan riset/training.
+FIX v14:
+  1. SUBJECT/OBJECT VERIFICATION: Menggunakan Dependency Parsing untuk memastikan
+     tokoh adalah Subjek (nsubj) atau Objek (obj) dari kata kerja utama (root).
+     Jika tokoh cuma posesif (nmod), sistem mencari kalimat lain.
+  2. QUOTE BACKTRACK: Jika tokoh berada di akhir kalimat (didahului "kata/ujar"),
+     sistem menarik 2 kalimat sebelumnya untuk menangkap kutipan utuh.
+  3. TOKEN CAP (MAX 180 WORDS): Membatasi total kata agar tidak melebihi limit
+     token IndoBERT (256 tokens). Jika kepanjangan, kalimat konteks dibuang.
 """
+
 import re
 import time
 import logging
 import argparse
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from dotenv import load_dotenv
+
+import stanza
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
@@ -23,131 +32,67 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v8_semantic_ir"
+CONTEXT_VERSION = "v14_target_subgraph"
 
-# 1. Action Verbs (Memicu opini)
-ACTION_VERBS = {"mengkritik", "mendesak", "menolak", "mendukung", "membantah", "mengecam", "menyerang", "mengancam", "menepis", "menuding"}
+logger.info("Memuat Stanza Pipeline (tokenize, pos, lemma, depparse)...")
+try:
+    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=True)
+except Exception as e:
+    logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
+    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False)
 
-# 2. Sentiment Hints (Kata sifat politik)
-SENTIMENT_HINTS = {"berhasil", "maju", "sejahtera", "solusi", "apresiasi", "gagal", "korupsi", "oligarki", "merugikan", "konflik", "tersangka"}
+ACTIVE_MARKERS = {"mengkritik", "menyindir", "menolak", "mengecam", "menegaskan", "menyatakan", "mengatakan", "menuding", "menyerang", "membela", "menilai", "mengaku", "mengklaim", "mengimbau", "mengingatkan", "menyampaikan", "menjelaskan", "menambahkan"}
+PASSIVE_MARKERS = {"dikecam", "dikritik", "dipuji", "ditahan", "dipecat", "dituding", "dituduh", "dilaporkan", "dicekal", "disindir"}
+PRONOUNS = {"dia", "ia", "beliau", "mereka", "nya"}
+QUOTE_CHARS = set('“"”‘’')
+ATTRIBUTION_WORDS = {"kata", "ujar", "tegas", "tutur", "sebut", "ungkap", "papar", "jelaskan", "tambahkan", "nyatakan"}
 
-# 3. Attribution Markers (Penanda kutipan langsung)
-ATTRIBUTION_MARKERS = ["kata", "ujar", "tegas", "tutur", "sebut", "ungkap", "katakan", "papar"]
-
-# 4. Coreferences (Diperluas ke jabatan)
-COREFERENCES = {"beliau", "ia", "dia", "presiden", "menteri", "wakil presiden", "ketua", "ketum", "bupati", "gubernur", "capres", "cawapres", "politikus", "mantan"}
-
-BOILERPLATE_RE = re.compile(r'(Baca Juga|Simak Juga|Berita Terkait|Advertisement|Ikuti Kami|Copyright|©|Reportase:|Jurnalis:|Editor:).*?(?=\n|$)', re.IGNORECASE)
-SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z“"])')
-
-def deep_clean_text(text: str) -> str:
-    """Bersihkan boilerplate sebelum di-split."""
-    text = BOILERPLATE_RE.sub('', text)
-    return text.strip()
-
-def split_sentences(text: str) -> list:
-    return [s.strip() for s in SENTENCE_SPLIT_RE.split(text) if len(s.strip()) > 10]
+MAX_CONTEXT_WORDS = 180 # Batas aman untuk IndoBERT 256 tokens
 
 def get_paragraph_index(text: str, offset: int) -> int:
-    """Hitung index paragraf (0=Lead) berdasarkan offset."""
     return text[:offset].count('\n\n')
 
-def generate_candidates(sentences: list, mention_idx: int) -> dict:
-    """Hasilkan 3 kandidat konteks dari index kalimat mention."""
-    candidates = {}
-    
-    # C1: Narrow Window (1 sebelum, 1 mention, 1 sesudah)
-    start = max(0, mention_idx - 1)
-    end = min(len(sentences), mention_idx + 2)
-    c1 = " ".join(sentences[start:end])
-    candidates["narrow"] = c1
-    
-    # C2: Adaptive Window (Target 250-450 kata, ekspansi dua arah)
-    target_words = 300
-    start = mention_idx
-    end = mention_idx
-    curr_words = len(sentences[mention_idx].split())
-    
-    while curr_words < target_words:
-        expanded = False
-        if start > 0:
-            start -= 1
-            curr_words += len(sentences[start].split())
-            expanded = True
-        if end < len(sentences) - 1 and curr_words < target_words + 50:
-            end += 1
-            curr_words += len(sentences[end].split())
-            expanded = True
-        if not expanded: break
-    c2 = " ".join(sentences[start:end+1])
-    candidates["adaptive"] = c2
-    
-    # C3: Full Paragraph (Cari batas \n\n terdekat)
-    # Pseudo-paragraph: gabungan adaptive jika tidak ada \n\n
-    candidates["paragraph"] = c2 # Fallback, akan dioptimasi jika ada \n\n
-    
-    return candidates
-
-def calculate_semantic_score(context_text: str, entity_name: str, paragraph_idx: int) -> dict:
-    """Skor berbasis Opini, Kutipan, dan Posisi Struktural."""
-    lower_ctx = context_text.lower()
-    lower_name = entity_name.lower()
-    words = context_text.split()
-    
-    # 1. Attribution & Quote Score (Maks 40) - Filsafat v8: Kutipan adalah raja sentimen
-    attr_hits = sum(1 for m in ATTRIBUTION_MARKERS if f"{m} " in lower_ctx or f"{m}lah" in lower_ctx)
-    has_quote = '"' in context_text or '“' in context_text or '”' in context_text
-    attr_score = min(40, (attr_hits * 20) + (20 if has_quote else 0))
-    
-    # 2. Sentiment Richness (Maks 30) - Mencari konteks yang punya "warna" opini
-    actions = sum(1 for v in ACTION_VERBS if v in lower_ctx)
-    hints = sum(1 for h in SENTIMENT_HINTS if h in lower_ctx)
-    rich_score = min(30, (actions * 15) + (hints * 10))
-    
-    # 3. Paragraph Importance (Maks 20) - Berbasis struktur, bukan offset
-    if paragraph_idx == 0:
-        pos_score = 20  # Lead Paragraph
-    elif paragraph_idx <= 2:
-        pos_score = 15  # Early Body
-    elif paragraph_idx <= 5:
-        pos_score = 10  # Mid Body
-    else:
-        pos_score = 5   # Closing/Footer
-    
-    # 4. Coreference Score (Maks 10)
-    coref_hits = sum(1 for c in COREFERENCES if c in lower_ctx)
-    coref_score = min(10, coref_hits * 3)
-    
-    # 5. Density (Maks 10)
-    density = lower_ctx.count(lower_name)
-    density_score = min(10, density * 3)
-    
-    total_score = attr_score + rich_score + pos_score + coref_score + density_score
-    confidence = min(100, total_score)
-    
-    return {
-        "attr_score": attr_score,
-        "rich_score": rich_score,
-        "pos_score": pos_score,
-        "quality_score": total_score,
-        "context_confidence": confidence,
-        "word_count": len(words),
-        "has_quote": has_quote
-    }
+def is_core_argument(sent, entity_name: str) -> bool:
+    """Cek apakah tokoh adalah Subjek/Objek utama, bukan cuma posesif."""
+    entity_lower = entity_name.lower()
+    for word in sent.words:
+        if entity_lower in word.text.lower() or entity_lower in word.lemma.lower():
+            # Jika dia subjek (nsubj) atau objek (obj/obj) dari root, itu aktor utama
+            if word.deprel in ['nsubj', 'nsubj:pass', 'obj', 'iobj', 'csubj']:
+                return True
+            # Jika dia modifier posesif (nmod/poss), dia bukan aktor utama
+            if word.deprel in ['nmod', 'nmod:poss', 'amod', 'appos']:
+                return False
+    return True # Default True jika Stanza ragu
 
 def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
     results = []
     
     for art in articles:
         art_id = art["id"]
-        title = art.get("title") or ""
-        raw_text = f"{title}\n{art.get('text', '')}"
+        title = (art.get("title") or "").strip()
+        body = (art.get("text") or "").strip()
         
-        # CLEAN BEFORE SCORE
-        clean_text = deep_clean_text(raw_text)
-        sentences = split_sentences(clean_text)
-        text_length = len(clean_text)
+        if title and body and body.startswith(title):
+            body = body[len(title):].lstrip(" :-\n")
+            
+        clean_text = f"{title}\n\n{body}" if title and body else (body or title)
+        if not clean_text: continue
+        
+        doc = NLP(clean_text)
+        sentences = []
+        for sent in doc.sentences:
+            if len(sent.text.strip()) > 10:
+                sentences.append({
+                    "text": sent.text,
+                    "start": sent.tokens[0].start_char,
+                    "end": sent.tokens[-1].end_char,
+                    "parsed": sent
+                })
+                
+        if not sentences: continue
         
         art_mentions = mentions_by_art.get(art_id, [])
         best_contexts = {} 
@@ -155,42 +100,90 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
         for m in art_mentions:
             entity_id = m["entity_id"]
             entity_name = m["political_entities"]["canonical_name"]
-            start_off = m["start_offset"]
+            start_offset = m.get("start_offset", -1)
             
-            # Cari index kalimat di mana mention ini berada
-            mention_idx = 0
-            char_count = 0
-            for i, sent in enumerate(sentences):
-                if start_off < char_count + len(sent):
-                    mention_idx = i
+            if start_offset < 0: continue
+            
+            anchor_idx = -1
+            for i, s in enumerate(sentences):
+                if s["start"] <= start_offset < s["end"]:
+                    anchor_idx = i
                     break
-                char_count += len(sent) + 1
             
-            # GENERATE MULTI-CANDIDATES
-            candidates = generate_candidates(sentences, mention_idx)
-            para_idx = get_paragraph_index(clean_text, start_off)
+            if anchor_idx == -1: continue
             
-            # RANKING KANDIDAT
-            best_candidate = None
-            best_score = -1
+            anchor_sent = sentences[anchor_idx]
+            context_parts = []
             
-            for c_type, c_text in candidates.items():
-                metrics = calculate_semantic_score(c_text, entity_name, para_idx)
-                if metrics["quality_score"] > best_score:
-                    best_score = metrics["quality_score"]
-                    best_candidate = (c_text, metrics, c_type)
+            # === 1. TARGET-CENTRIC VERIFICATION ===
+            is_main_actor = is_core_argument(anchor_sent["parsed"], entity_name)
             
-            if best_candidate:
-                ctx_text, quality, win_type = best_candidate
+            # === 2. ANALISIS KALIMAT ANCHOR ===
+            root_word = ""
+            has_action = False
+            is_attribution_end = False # Cek kalimat: "...," kata Prabowo.
+            
+            for word in anchor_sent["parsed"].words:
+                if word.deprel == 'root':
+                    root_word = (word.lemma or word.text).lower()
+                    if root_word in ACTIVE_MARKERS or root_word in PASSIVE_MARKERS:
+                        has_action = True
+                    if root_word in ATTRIBUTION_WORDS:
+                        is_attribution_end = True
+
+            # === 3. QUOTE BACKTRACK (Jika tokoh di akhir kalimat kutipan) ===
+            if is_attribution_end and anchor_idx > 0:
+                context_parts.append(sentences[anchor_idx - 1]["text"])
+                if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
+                    # Kalimat sebelumnya ada kutip, tarik 1 kalimat lagi ke belakang
+                    context_parts.insert(0, sentences[anchor_idx - 2]["text"])
+            
+            context_parts.append(anchor_sent["text"])
+            
+            # === 4. SMART LOOK-AHEAD (Hanya jika tokoh adalah aktor utama) ===
+            if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
+                next_sent = sentences[anchor_idx + 1]
+                first_word = next_sent["parsed"].words[0].text.lower()
+                if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
+                    context_parts.append(next_sent["text"])
+            
+            elif not has_action and anchor_idx + 1 < len(sentences):
+                # Jika netral, ambil 1 kalimat setelahnya
+                context_parts.append(sentences[anchor_idx + 1]["text"])
+            
+            ctx_text = " ".join(context_parts)
+            
+            # === 5. TOKEN CAP MANAGEMENT (Batasasi 180 kata) ===
+            words_list = ctx_text.split()
+            if len(words_list) > MAX_CONTEXT_WORDS:
+                # Jika kepanjangan, potong dari belakang (prioritaskan kalimat anchor)
+                # Tapi pastikan anchor_sent tidak terpotong.
+                # Cara aman: ambil kalimat anchor + sisa kata setelahnya
+                anchor_text = anchor_sent["text"]
+                anchor_len = len(anchor_text.split())
                 
-                # Tambahkan Rich Metadata untuk Riset/Training
-                quality["candidate_count"] = len(candidates)
-                quality["winner_window"] = win_type
-                quality["mention_order"] = mention_idx
-                quality["paragraph_idx"] = para_idx
-                
-                if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
-                    best_contexts[entity_id] = (ctx_text, quality)
+                if anchor_len >= MAX_CONTEXT_WORDS:
+                    ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS]) # Paksa potong anchor
+                else:
+                    # Ambil anchor, lalu isi sisa dengan kalimat sebelum/sesudah
+                    remaining_space = MAX_CONTEXT_WORDS - anchor_len
+                    other_text = " ".join([c for c in context_parts if c != anchor_text])
+                    other_text = " ".join(other_text.split()[:remaining_space])
+                    ctx_text = other_text + " " + anchor_text if context_parts[0] != anchor_text else anchor_text + " " + other_text
+            
+            para_idx = get_paragraph_index(clean_text, start_offset)
+            quality = {
+                "quality_score": 90 if (has_action and is_main_actor) else 50,
+                "attr_score": 40 if has_action else 10,
+                "pos_score": 20 if para_idx == 0 else 10,
+                "has_quote": any(qc in ctx_text for qc in QUOTE_CHARS),
+                "is_main_actor": is_main_actor,
+                "paragraph_idx": para_idx,
+                "winner_window": "stanza_v14_subgraph"
+            }
+            
+            if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
+                best_contexts[entity_id] = (ctx_text, quality)
                 
         for ent_id, (ctx_text, quality) in best_contexts.items():
             results.append({
@@ -212,7 +205,7 @@ def main(limit: int = 50, max_total: int = 0):
     total_success = 0
     batch_num = 1
 
-    logger.info(f"[CONTEXT_WORKER v8] Semantic IR Mode | Limit: {limit}/batch")
+    logger.info(f"[CONTEXT_WORKER v14] Target Subgraph Mode | Limit: {limit}/batch")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -236,8 +229,7 @@ def main(limit: int = 50, max_total: int = 0):
             continue
                 
         articles = res.data or []
-        if not articles:
-            break
+        if not articles: break
             
         art_ids = [a["id"] for a in articles]
         
@@ -257,25 +249,34 @@ def main(limit: int = 50, max_total: int = 0):
         context_inserts = process_articles_batch(articles, mentions_by_art)
         updates = [{"id": a["id"], "context_extracted_at": datetime.now(timezone.utc).isoformat()} for a in articles]
         
-        if context_inserts:
-            for i in range(0, len(context_inserts), 25):
-                chunk = context_inserts[i:i + 25]
-                try: sb.table("entity_contexts").upsert(chunk, on_conflict="raw_text_id,entity_id").execute()
-                except Exception as e: logger.error(f"Upsert Error: {e}")
+        try:
+            if art_ids:
+                for i in range(0, len(art_ids), 25):
+                    chunk_ids = art_ids[i:i+25]
+                    sb.table("entity_contexts").delete().in_("raw_text_id", chunk_ids).execute()
+
+            if context_inserts:
+                for i in range(0, len(context_inserts), 25):
+                    chunk = context_inserts[i:i + 25]
+                    try: sb.table("entity_contexts").insert(chunk).execute()
+                    except Exception as e: logger.error(f"Insert Error: {e}")
                 
-        if updates:
-            for i in range(0, len(updates), 25):
-                chunk = updates[i:i + 25]
-                try: sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
-                except Exception as e: logger.error(f"RPC Error: {e}")
+            if updates:
+                for i in range(0, len(updates), 25):
+                    chunk = updates[i:i + 25]
+                    try: sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                    except Exception as e: logger.error(f"RPC Error: {e}")
                 
+        except Exception as e:
+            logger.error(f"DB Error: {e}")
+            
         logger.info(f"{len(articles)} diproses. {len(context_inserts)} contexts dibuat.")
         total_processed += len(articles)
         total_success += len(context_inserts)
         batch_num += 1
         
     finish_run(run_id, total_processed, total_success, 0)
-    logger.info("Eksekusi Context Worker (Semantic IR) Selesai.")
+    logger.info("Eksekusi Context Worker (v14 Target Subgraph) Selesai.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
