@@ -16,6 +16,7 @@ import random
 import hashlib
 import logging
 import argparse
+import html as html_lib
 from collections import Counter
 from pathlib import Path
 from dotenv import load_dotenv
@@ -50,6 +51,7 @@ MIN_ARTICLE_LENGTH = 500
 MIN_PARAGRAPH_COUNT = 5
 TITLE_MATCH_THRESHOLD = 0.15
 
+
 def normalize_title(title: str) -> str:
     """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
     if not title: return ""
@@ -67,7 +69,6 @@ def find_duplicate_titles(sb, rows: list) -> set:
     try:
         for i in range(0, len(titles_to_check), chunk_size):
             chunk = titles_to_check[i:i + chunk_size]
-            
             res = sb.table("raw_texts") \
                     .select("title") \
                     .in_("title", chunk) \
@@ -83,9 +84,8 @@ def find_duplicate_titles(sb, rows: list) -> set:
         logger.warning(f"Gagal cek duplikat judul: {e}")
         return set()
 
-def extract_jsonld_article(html: str) -> str | None:
+def extract_jsonld_article(soup: BeautifulSoup) -> str | None:
     try:
-        soup = BeautifulSoup(html, "html.parser")
         scripts = soup.find_all("script", type="application/ld+json")
         for script in scripts:
             if not script.string: continue
@@ -98,11 +98,62 @@ def extract_jsonld_article(html: str) -> str | None:
     except: pass
     return None
 
-def clean_boilerplate(text: str) -> str:
+def clean_boilerplate(text: str, title: str = "") -> str:
     if not text: return ""
-    text = re.sub(r'(Baca Juga|Simak Juga|Berita Terkait)\s*:.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'(Reporter|Editor|Penulis|Pewarta)\s*:\s*.*?(?=\n|$)', '', text, flags=re.IGNORECASE)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
+    
+    # 1. Unescape HTML entities (&ldquo; &nbsp; dll)
+    text = html_lib.unescape(text)
+    
+    # 2. Hapus URL yang tersangkut di teks
+    text = re.sub(r'https?://\S+|www\.\S+', '', text)
+    
+    # 3. Hapus elemen UI & Boilerplate umum media Indonesia
+    # Hentikan pencarian di titik (.) atau baris baru (\n)
+    ui_patterns = [
+        r'(?i)(Tags\s*:|Berita Lainnya|Dark/Light Mode|BREAKINGNEWS).*?(?=\n|$|\.)',
+        r'(?i)Gambas\s*:\s*Video\s*\w+',
+        r'(?i)Dilarang keras mengambil konten.*?(?=\n|$|\.)',
+        r'(?i)Baca berita selengkapnya.*?(?=\n|$|\.)',
+        r'(?i)(Simak juga|Baca Juga|Berita Terkait)\s*:.*?(?=\n|$|\.)',
+        r'(?i)(Reporter|Editor|Penulis|Pewarta|Jurnalis)\s*:\s*.*?(?=\n|$|\.)',
+        r'(?i)(Pilihan untuk lu|Sumber:).*?(?=\n|$|\.)',
+        r'(?i)Sponsor.*?(?=\n|$|\.)'
+    ]
+    for pattern in ui_patterns:
+        text = re.sub(pattern, '', text)
+        
+    # 4. Hapus Credit Foto yang sering bikin noise (Contoh: " (Foto: DPP Partai Demokrat) " atau " (Antara Foto/Fauzan) ")
+    text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
+
+    # 5. Hilangkan judul yang menempel di awal body text (Headline Glue Fix)
+    if title:
+        clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
+        # Cek apakah 60 karakter pertama teks sama dengan judul
+        if text[:60].lower().startswith(clean_title[:30]):
+            # Potong berdasarkan panjang judul yang sudah dinormalisasi
+            text = text[len(clean_title):].strip()
+            # Kadang ada sisa "- NamaMedia.com" atau " Jakarta, "
+            text = re.sub(r'^[\s\-:|]+[a-zA-Z\s,\d]{0,20}', '', text).strip()
+
+    # 6. Deduplikasi kalimat yang berulang (Antara News case)
+    # Karena newline sering hilang, kita pecah per kalimat (berdasarkan titik+spasi)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    seen = set()
+    unique_sentences = []
+    for s in sentences:
+        s_clean = s.strip()
+        # Abaikan kalimat yang terlalu pendek (sisa regex yang kepotong)
+        if s_clean and len(s_clean) > 15 and s_clean not in seen:
+            seen.add(s_clean)
+            unique_sentences.append(s_clean)
+            
+    text = ' '.join(unique_sentences)
+    
+    # 7. Bersihkan spasi berlebih & sisa titik yang dobel
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'\.{2,}', '.', text)
+    
+    return text.strip()
 
 def calculate_title_relevancy(title: str, text: str) -> float:
     if not title or not text: return 0.0
@@ -112,49 +163,35 @@ def calculate_title_relevancy(title: str, text: str) -> float:
     return sum(1 for w in title_words if w in text_words) / len(title_words)
 
 def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str | None, str]:
-    """
-    Ekstraksi dan Validasi Terpadu.
-    Return: (full_text, extraction_method_or_fail_reason)
-    """
-    # 1. Jika RSS sudah menyediakan teks panjang, validasi langsung teks tersebut
     if rss_text and len(rss_text) >= RSS_TEXT_MIN_LEN:
-        full_text = clean_boilerplate(rss_text)
+        full_text = clean_boilerplate(rss_text, title) 
         extraction_method = "rss_fulltext"
     elif html:
-        # 2. Cek Ukuran HTML (Anti Homepage Sampah)
         if len(html) > MAX_HTML_SIZE_BYTES:
             return None, "rejected_html_too_large"
-            
         soup = BeautifulSoup(html, "html.parser")
-        
-        # 3. Cek Densitas Paragraf
+        for tag_name in ['title', 'h1']:
+            for tag in soup.find_all(tag_name):
+                tag.decompose()        
         if len(soup.find_all("p")) < MIN_PARAGRAPH_COUNT:
-            return None, "rejected_low_paragraph_density"
+            return None, "rejected_low_paragraph_density"            
             
-        # 4. Ekstraksi JSON-LD (Prioritas Utama)
-        full_text = extract_jsonld_article(html)
+        full_text = extract_jsonld_article(soup)
         extraction_method = "jsonld"
         
-        # 5. Fallback Trafilatura Precision
         if not full_text or len(full_text) < MIN_ARTICLE_LENGTH:
-            full_text = traf_extract(html, include_comments=False, include_tables=False, favor_precision=True) or ""
-            extraction_method = "trafilatura"
-            
+            full_text = traf_extract(str(soup), include_comments=False, include_tables=False, favor_precision=True) or ""
+            extraction_method = "trafilatura"            
         del html, soup
-        gc.collect()
     else:
         return None, "fetch_no_html"
+    full_text = clean_boilerplate(full_text, title) 
 
-    # 6. Boilerplate Cleanup
-    full_text = clean_boilerplate(full_text)
-
-    # 7. Length Validation
     if len(full_text) < MIN_ARTICLE_LENGTH:
         return None, "text_too_short"
     if len(full_text) > MAX_ARTICLE_LENGTH:
         return None, "section_leakage_too_long"
 
-    # 8. Title Relevancy (Kausalitas)
     relevancy = calculate_title_relevancy(title, full_text)
     if relevancy < TITLE_MATCH_THRESHOLD:
         return None, "title_mismatch"
@@ -178,7 +215,6 @@ def bulk_store(sb, results: list) -> Counter:
         current_metadata = dict(orig_metadata) if orig_metadata else {}
         db_update = {
             "id": rt_id,
-            "metadata": current_metadata,
             "resolved_domain": fetch_result.fetch_metadata.get("resolved_domain") if hasattr(fetch_result, 'fetch_metadata') else None,
             "canonical_url": fetch_result.canonical_url if hasattr(fetch_result, 'canonical_url') else None
         }
@@ -186,12 +222,12 @@ def bulk_store(sb, results: list) -> Counter:
             current_metadata["resolved_url"] = fetch_result.resolved_url
 
         if fetch_result.status == pc.FETCH_OK:
-            # Handle Artikel Duplikat (Dari Early Deduplication Gate)
             if fetch_result.reason == "duplicate_skipped":
                 current_metadata["fail_reason"] = "duplicate_title_at_enricher"
                 db_update["text"] = ""
                 db_update["status"] = pc.STATUS_SKIPPED
                 db_update["content_type"] = "SNIPPET"
+                db_update["metadata"] = current_metadata # Simpan metadata
                 updates.append(db_update)
                 stats["duplicate_skipped"] += 1
                 logger.info(f"ID: {rt_id[:8]} | Status: SKIPPED | Reason: Duplicate Title")
@@ -201,10 +237,10 @@ def bulk_store(sb, results: list) -> Counter:
                 db_update["text"] = ""
                 db_update["status"] = pc.STATUS_ENRICHED
                 db_update["content_type"] = "SNIPPET" 
+                db_update["metadata"] = current_metadata # Simpan metadata
                 updates.append(db_update)
                 stats["gnews_snippet"] += 1
             else:
-                # EXPERT VALIDATION GATE
                 full_text, validation_status = process_and_validate_text(fetch_result.html, title, orig_metadata.get("rss_text", ""))
                 
                 if full_text:
@@ -214,6 +250,8 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["status"] = pc.STATUS_ENRICHED
                     db_update["content_type"] = "FULLTEXT" 
                     db_update["content_hash"] = hashlib.sha256(full_text.encode()).hexdigest()
+                    # PERBAIKAN BUG 3: Simpan metadata yang berisi extraction_method!
+                    db_update["metadata"] = current_metadata 
                     updates.append(db_update)
                     stats["enriched"] += 1
                     logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: {validation_status} | Len: {len(full_text)}")
@@ -222,6 +260,7 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["text"] = ""
                     db_update["status"] = pc.STATUS_FAILED
                     db_update["content_type"] = "SNIPPET" 
+                    db_update["metadata"] = current_metadata
                     updates.append(db_update)
                     stats[validation_status] += 1
                     logger.info(f"ID: {rt_id[:8]} | Status: REJECTED | Reason: {validation_status}")
@@ -266,11 +305,10 @@ def pipeline_worker(row: dict):
         dummy_result = FetchResult(status=pc.FETCH_OK, reason=pc.REASON_RSS_FULL_TEXT, original_url=url, resolved_url=url)
         return row["id"], current_text, dummy_result, orig_metadata, title
 
-    fetch_result = fetch_article(url)
+    fetch_result = fetch_article(url, orig_metadata)
     return row["id"], "", fetch_result, orig_metadata, title
 
 def process_batch(sb, rows: list) -> Counter:
-    # 1. EARLY DEDUPLICATION GATE
     existing_titles = find_duplicate_titles(sb, rows)
     
     to_fetch = []
@@ -280,13 +318,11 @@ def process_batch(sb, rows: list) -> Counter:
     for r in rows:
         norm_title = normalize_title(r.get("title") or "")
         
-        # Jika judul sudah pernah diproses, buat dummy result untuk skip
         if norm_title and norm_title in existing_titles:
             skipped_count += 1
             dummy_result = FetchResult(status=pc.FETCH_OK, reason="duplicate_skipped", original_url=r.get("source_url"), resolved_url=r.get("source_url"))
             pipeline_results.append((r["id"], "", dummy_result, r.get("metadata"), r.get("title")))
         else:
-            # Jika tidak duplikat, cek apakah teks RSS sudah ada
             current_text = r.get("text") or ""
             if len(current_text) >= RSS_TEXT_MIN_LEN:
                 dummy_result = FetchResult(status=pc.FETCH_OK, reason=pc.REASON_RSS_FULL_TEXT, original_url=r.get("source_url"), resolved_url=r.get("source_url"))
@@ -300,7 +336,6 @@ def process_batch(sb, rows: list) -> Counter:
     if not to_fetch: 
         return bulk_store(sb, pipeline_results)
 
-    # 2. FETCH ARTIKEL NON-DUPLIKAT
     logger.info(f"  [FETCH] {len(to_fetch)} URLs dengan {MAX_WORKERS} threads paralel...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(pipeline_worker, r): r for r in to_fetch}

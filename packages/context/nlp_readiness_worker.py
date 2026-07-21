@@ -1,11 +1,11 @@
 """
-nlp_readiness_worker.py v6 — Final Gatekeeper & Chunked DB
+nlp_readiness_worker.py v7 — Safe Enqueue & Context Threshold Fix
 ====================================================================
-PERUBAAHAN v6:
-  1. TIME FILTER & ANTI-CRASH: Filter 30 hari terakhir agar tidak timeout.
-  2. FIX DUPLICATE QUERY: Menggunakan not_.in_() dan chunking agar akurat & tidak kena 400.
-  3. CHUNKED RPC: Memecah update raw_texts agar tidak kena payload limit.
-  4. CLEAN LOGGING: Menggunakan modul logging terstruktur & bersih dari unused imports.
+FIX v7:
+  1. SAFE ENQUEUE: Memasukkan ID ke PGMQ terlebih dahulu. Jika berhasil, baru
+     update status DB menjadi 'queued'. Mencegah artikel hilang dari antrian.
+  2. CONTEXT THRESHOLD FIX: Menurunkan MIN_CONTEXT_LEN dari 100 ke 50 agar
+     konteks kalimat pendek yang padat (hasil Token Cap v14) tidak terbuang.
 """
 import re
 import time
@@ -17,19 +17,17 @@ from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-# Setup Clean Logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-READINESS_VERSION = "v6_final_gate"
-MIN_CONTEXT_LEN = 100
+READINESS_VERSION = "v7_safe_enqueue"
+MIN_CONTEXT_LEN = 50  # Turunkan dari 100 ke 50
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
 
 def normalize_title(title: str) -> str:
-    """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
     if not title: return ""
     title = title.lower().strip()
     title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
@@ -46,22 +44,19 @@ def main(limit: int = 100, max_total: int = 0):
     total_duplicates = 0
     batch_num = 1
 
-    logger.info(f"[NLP_READINESS v6] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[NLP_READINESS v7] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
-        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
             logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
-        # 2. HITUNG LIMIT UNTUK BATCH INI
         current_limit = limit
         if max_total > 0:
             current_limit = min(limit, max_total - total_processed)
         
-        # Filter 30 hari terakhir & try-except agar tidak crash
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             res = sb.table("raw_texts") \
@@ -73,7 +68,7 @@ def main(limit: int = 100, max_total: int = 0):
                     .limit(current_limit) \
                     .execute()
         except Exception as e:
-            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik...")
             time.sleep(10)
             continue
                 
@@ -85,7 +80,7 @@ def main(limit: int = 100, max_total: int = 0):
         art_ids = [a["id"] for a in articles]
         art_titles = [normalize_title(a.get("title") or "") for a in articles]
         
-        # 1. BATCH QUERY: Cek duplikasi judul di DB (yang sudah queued/processed)
+        # 1. BATCH QUERY: Cek duplikasi judul
         existing_titles = set()
         titles_to_check = [a.get("title") or "" for a in articles if a.get("title")]
         chunk_size = 50
@@ -93,7 +88,6 @@ def main(limit: int = 100, max_total: int = 0):
         for i in range(0, len(titles_to_check), chunk_size):
             chunk = titles_to_check[i:i + chunk_size]
             try:
-                # Fix: gunakan not_.in_() agar tidak membandingkan dengan batch sendiri
                 dup_res = sb.table("raw_texts") \
                             .select("title") \
                             .in_("title", chunk) \
@@ -105,7 +99,7 @@ def main(limit: int = 100, max_total: int = 0):
             except Exception as e:
                 logger.warning(f"Gagal cek duplikat judul: {e}")
 
-        # 2. BATCH QUERY: Ambil semua contexts untuk 100 artikel sekaligus
+        # 2. BATCH QUERY: Ambil semua contexts
         try:
             ctx_res = sb.table("entity_contexts") \
                         .select("id, raw_text_id, context_text, metadata") \
@@ -151,10 +145,9 @@ def main(limit: int = 100, max_total: int = 0):
                     "metadata": {**metadata, "fail_reason": "duplicate_title_at_gate"}
                 })
                 stats["duplicate"] += 1
-                logger.info(f"  [SKIPPED] ID: {art_id[:8]} | Reason: Duplicate Title")
                 continue
                 
-            # GATE 2: Cek kelayakan teks utuh (Fallback National Index)
+            # GATE 2: Cek kelayakan teks utuh
             if len(full_text) < MIN_FULLTEXT_LEN:
                 updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 
@@ -168,20 +161,27 @@ def main(limit: int = 100, max_total: int = 0):
             # GATE 3: Lolos jika ada context valid, ATAU teks utuh cukup panjang untuk fallback
             if valid_contexts > 0 or len(full_text) >= 500:
                 
-                # 1. Ubah status jadi 'queued' di tabel raw_texts
-                updates.append({
-                    "id": art_id, 
-                    "status": pc.STATUS_QUEUED, 
-                    "nlp_ready_at": now_iso,
-                    "metadata": {**metadata, "nlp_readiness_version": READINESS_VERSION, "valid_ctx_count": valid_contexts}
-                })
-                stats["ready"] += 1
-                
-                # 2. Masukkan ID ke antrian fisik PGMQ
+                # === SAFE ENQUEUE: Masuk PGMQ dulu, baru update DB ===
                 try:
                     sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
+                    
+                    # Jika PGMQ berhasil, baru masukkan ke list update sebagai 'queued'
+                    updates.append({
+                        "id": art_id, 
+                        "status": pc.STATUS_QUEUED, 
+                        "nlp_ready_at": now_iso,
+                        "metadata": {**metadata, "nlp_readiness_version": READINESS_VERSION, "valid_ctx_count": valid_contexts}
+                    })
+                    stats["ready"] += 1
+                    
                 except Exception as e:
                     logger.error(f"Gagal enqueue PGMQ (ID: {art_id}): {e}")
+                    updates.append({
+                        "id": art_id, "status": pc.STATUS_FAILED, 
+                        "metadata": {**metadata, "fail_reason": "pgmq_enqueue_failed"}
+                    })
+                    stats["rejected"] += 1
+                    
             else:
                 updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 
@@ -191,7 +191,7 @@ def main(limit: int = 100, max_total: int = 0):
                 
         # --- CHUNKED RPC UPDATE ---
         if updates:
-            chunk_size = 25  # Turunkan ke 25 agar pasti aman dari 400 Bad Request
+            chunk_size = 25
             for i in range(0, len(updates), chunk_size):
                 chunk = updates[i:i + chunk_size]
                 try: 

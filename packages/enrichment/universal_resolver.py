@@ -9,6 +9,7 @@ import re
 import base64
 import threading
 import time
+from typing import Optional
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
@@ -34,7 +35,7 @@ GNEWS_DOMAIN = "news.google.com"
 
 MAX_CONCURRENT_PER_DOMAIN = 2
 MEDIA_FETCH_MAX_ATTEMPTS = 3
-MEDIA_FETCH_BACKOFF_SECONDS = [1, 2]
+MEDIA_FETCH_BACKOFF_SECONDS = [1, 2, 4] 
 
 BLOCKED_HTML_PATTERNS = [
     r"just a moment", r"checking your browser before accessing",
@@ -96,10 +97,14 @@ def _is_interstitial(html: str) -> bool:
 
 def _extract_canonical(html: str) -> Optional[str]:
     """Mencari tag <link rel="canonical"> di HTML untuk normalisasi URL."""
-    if not html: return None
+    if not html: return None    
     match = re.search(r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']', html, re.IGNORECASE)
     if match:
+        return match.group(1)        
+    match = re.search(r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']canonical["\']', html, re.IGNORECASE)
+    if match:
         return match.group(1)
+        
     return None
 
 # ─────────────────────────────────────────────────────────────
@@ -130,11 +135,12 @@ def _resolve_shortener(url: str, headers: dict, session: requests.Session) -> tu
 # MAIN ORCHESTRATOR
 # ─────────────────────────────────────────────────────────────
 
-def fetch_article(url: str) -> FetchResult:
+def fetch_article(url: str, metadata: Optional[dict] = None) -> FetchResult:
     if not url:
         return FetchResult(status=FETCH_DEAD_LINK, reason=REASON_EMPTY_URL)
-
-    if GNEWS_DOMAIN in url:
+    if metadata and metadata.get("resolved_url"):
+        url = metadata["resolved_url"]
+    elif GNEWS_DOMAIN in url:
         gnews_result = _resolve_gnews(url)
         if gnews_result.reason != REASON_GNEWS_SNIPPET_ONLY:
             url = gnews_result.resolved_url
@@ -160,7 +166,6 @@ def fetch_article(url: str) -> FetchResult:
         if _is_interstitial(resp.text):
             return FetchResult(status=FETCH_BLOCKED, reason=REASON_WAF_BLOCKED, original_url=url, resolved_url=final_url)
 
-        # 4. POST-FETCH: Canonical Detection (BUG INDENTASI DIPERBAIKI DI SINI)
         canonical = _extract_canonical(resp.text)
         resolver_method = "direct_get"
         confidence = 0.90
