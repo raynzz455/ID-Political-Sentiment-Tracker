@@ -1,19 +1,19 @@
 """
-preprocessing_worker.py v5 — Modular Pipeline & Clean Logging
+preprocessing_worker.py v9 — Headline De-glue Fix
 =============================================================
-PERUBAAHAN v5:
-  1. BUG FIX: Memperbaiki error import time.perf_counter() yang tertimpa oleh datetime.time.
-  2. CLEAN LOGGING: Mengganti print() dengan modul logging terstruktur.
-  3. CHUNKED RPC: Membagi payload bulk_update_raw_texts ke dalam chunk 50 baris.
-  4. TYPE CASTING: Memastikan semua nilai di audit_stats adalah int murni.
+FIX v9:
+  1. HEADLINE DE-GLUE: Menggunakan Regex Matcher yang toleran terhadap tanda baca
+     untuk memisahkan judul yang menempel ke body text. (Membasmi bug di v8).
+  2. RATE LIMIT SAFE: Mempertahankan jeda (sleep) antar batch.
 """
-import re
-import sys
 import time  
+import re
 import hashlib
 import unicodedata
 import logging
 import argparse
+import random
+import html as html_lib
 from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
@@ -21,29 +21,27 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
-try:
-    from supabase import create_client, Client
-except ImportError as e:
-    print(f"[ERROR] {e}"); sys.exit(1)
-
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
 
-# Setup Clean Logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-PIPELINE_VERSION = "v5_clean"
-CHUNK_SIZE = 50  # Bagi RPC menjadi 50 baris per request
+PIPELINE_VERSION = "v9_headline_deglue"
+CHUNK_SIZE = 25
 
 # ─────────────────────────────────────────────────────────────
 # MODULAR NORMALIZATION PIPELINE
 # ─────────────────────────────────────────────────────────────
 
 def normalize_unicode(text: str) -> str:
+    text = html_lib.unescape(text)
     text = unicodedata.normalize("NFKC", text)
-    return text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\xa0", " ")
+    text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\xa0", " ")
+    return text
 
 def remove_urls_emails(text: str) -> tuple[str, int]:
     urls = re.findall(r'https?://\S+|www\.\S+', text)
@@ -52,16 +50,36 @@ def remove_urls_emails(text: str) -> tuple[str, int]:
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
     return text, int(len(urls) + len(emails))
 
-def strip_news_boilerplate(text: str) -> str:
+def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
+    """Safety net ringan. Hanya memotong sampai tanda titik (.) agar tidak memakan seluruh artikel."""
+    
+    # 1. FIX HEADLINE GLUE: Pisahkan judul yang nempel ke body text
+    if title:
+        # Ambil maksimal 8 kata pertama dari judul agar regex ringan dan tidak salah tangkap
+        title_words = re.findall(r'\w+', title)[:8]
+        if title_words:
+            # Buat pattern: tiap kata dipisahkan oleh \W* (tanda baca/spasi bebas)
+            pattern_title = r'\W*'.join(re.escape(w) for w in title_words)
+            match = re.match(r'^\s*' + pattern_title, text, re.IGNORECASE)
+            if match:
+                # Jika judul ketemu di awal teks, potong dan buang sisa tanda bacanya
+                text = text[match.end():].lstrip(" :-\n\"'")
+                
+    # 2. Buang tag HTML yang nyangkut
     text = re.sub(r'<[^>]+>', ' ', text)
+    
+    # 3. Hapus sampah UI portal berita (Bounded Regex: berhenti di titik atau newline)
     patterns = [
-        r"baca juga:.*?(?=\n|$)", r"simak juga:.*?(?=\n|$)", r"berlangganan.*?(?=\n|$)",
-        r"advertisement.*?(?=\n|$)", r"iklan.*?(?=\n|$)",
-        r"reporter:.*?(?=\n|$)", r"editor:.*?(?=\n|$)", r"penulis:.*?(?=\n|$)",
-        r"copyright.*?(?=\n|$)", r"©.*?(?=\n|$)"
+        r"(?i)(baca juga|simak juga|berita terkait)\s*:[^.\n]*\.?",
+        r"(?i)(reporter|editor|penulis|pewarta|jurnalis)\s*:\s*[^.\n]*\.?",
+        r"(?i)(berlangganan|iklan|advertisement|sponsor)\s*[^.\n]*\.?",
+        r"(?i)(copyright|©|hak cipta)\s*[^.\n]*\.?",
+        r"(?i)(scroll ke bawah|mau berita terbaru|pilihan untuk lu)\s*[^.\n]*\.?"
     ]
     for p in patterns:
-        text = re.sub(p, '', text, flags=re.IGNORECASE)
+        text = re.sub(p, '', text)        
+    text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
+    
     return text
 
 def normalize_punctuation(text: str) -> str:
@@ -74,16 +92,12 @@ def normalize_whitespace(text: str) -> str:
     text = re.sub(r'\n{3,}', '\n\n', text)
     return re.sub(r'[ \t]+', ' ', text).strip()
 
-def normalize_pipeline(text: str) -> tuple[str, dict]:
-    stats = {
-        "original_len": int(len(text)), 
-        "urls_emails_removed": 0, 
-        "clean_len": 0
-    }
+def normalize_pipeline(text: str, title: str = "") -> tuple[str, dict]:
+    stats = {"original_len": int(len(text)), "clean_len": 0}
     text = normalize_unicode(text)
     text, removed_count = remove_urls_emails(text)
-    stats["urls_emails_removed"] = int(removed_count)
-    text = strip_news_boilerplate(text)
+    stats["urls_emails_removed"] = int(removed_count)    
+    text = strip_news_boilerplate_safe(text, title)
     text = normalize_punctuation(text)
     text = normalize_whitespace(text)
     stats["clean_len"] = int(len(text))
@@ -92,7 +106,7 @@ def normalize_pipeline(text: str) -> tuple[str, dict]:
 # ─────────────────────────────────────────────────────────────
 # MAIN WORKER
 # ─────────────────────────────────────────────────────────────
-
+# (Bagian main worker tetap sama persis seperti v8, tidak diubah)
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
     run_id = start_run("preprocessing_worker", PIPELINE_VERSION)
@@ -103,7 +117,7 @@ def main(limit: int = 100, max_total: int = 0):
     batch_num = 1
     start_time = time.perf_counter()
 
-    logger.info(f"[PREPROCESSOR v5] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[PREPROCESSOR v9] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
     
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -118,16 +132,15 @@ def main(limit: int = 100, max_total: int = 0):
         
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            
             res = sb.table("raw_texts") \
-                    .select("id, text, metadata") \
+                    .select("id, title, text, metadata") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .or_(f"preprocessing_version.is.null,preprocessing_version.neq.{PIPELINE_VERSION}") \
                     .gte("ingested_at", time_filter) \
                     .limit(current_limit) \
                     .execute()
         except Exception as e:
-            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik sebelum retry...")
+            logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik...")
             time.sleep(10)
             continue
 
@@ -144,8 +157,13 @@ def main(limit: int = 100, max_total: int = 0):
         batch_hashes = set()
         
         for art in articles:
-            clean_text, audit_stats = normalize_pipeline(art.get("text") or "")
-            content_hash = hashlib.sha256(clean_text.encode()).hexdigest()
+            title = art.get("title") or ""
+            clean_text, audit_stats = normalize_pipeline(art.get("text") or "", title)
+            
+            if not clean_text:
+                content_hash = f"empty_{art['id']}"
+            else:
+                content_hash = hashlib.sha256(clean_text.encode()).hexdigest()
             
             processed_items.append({
                 "id": art["id"],
@@ -159,7 +177,7 @@ def main(limit: int = 100, max_total: int = 0):
         db_hash_map = {}
         if batch_hashes:
             hash_list = list(batch_hashes)
-            hash_chunk_size = 50  # Cek 50 hash per request
+            hash_chunk_size = 50
             for i in range(0, len(hash_list), hash_chunk_size):
                 chunk = hash_list[i:i + hash_chunk_size]
                 try:
@@ -173,6 +191,18 @@ def main(limit: int = 100, max_total: int = 0):
                     logger.warning(f"Gagal cek duplikat hash: {e}")
                 
         for item in processed_items:
+            if item["hash"].startswith("empty_"):
+                updates.append({
+                    "id": item["id"], 
+                    "text": item["text"], 
+                    "content_hash": None,
+                    "preprocessed_at": now_iso,
+                    "metadata": item["metadata"],
+                    "preprocessing_version": PIPELINE_VERSION
+                })
+                stats["normalized"] += 1
+                continue
+
             if item["hash"] in db_hash_map and db_hash_map[item["hash"]] != item["id"]:
                 updates.append({
                     "id": item["id"], 
@@ -195,7 +225,6 @@ def main(limit: int = 100, max_total: int = 0):
             })
             stats["normalized"] += 1
             
-        # CHUNKED RPC CALL
         if updates:
             try:
                 for i in range(0, len(updates), CHUNK_SIZE):
@@ -211,9 +240,13 @@ def main(limit: int = 100, max_total: int = 0):
         total_duplicates += stats["duplicates"]
         batch_num += 1
         
+        sleep_time = random.uniform(2, 5)
+        logger.info(f"Menunggu {sleep_time:.1f}s sebelum batch berikutnya...")
+        time.sleep(sleep_time)
+        
     elapsed = time.perf_counter() - start_time
     logger.info("=" * 50)
-    logger.info("SELESAI (Preprocessing)")
+    logger.info("SELESAI (Preprocessing v9)")
     logger.info(f"  Total Processed : {total_processed}")
     logger.info(f"  Total Normalized: {total_normalized}")
     logger.info(f"  Total Duplicates: {total_duplicates}")
