@@ -134,7 +134,6 @@ def process_batch(sb, rows: list) -> Counter:
     updates = []
 
     # === OPTIMASI v13: THREADED SCORING ===
-    # Kalkulasi score diparalelkan. CPU 2-core akan memproses 4 threads bergantian.
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(score_worker, r): r for r in rows}
         
@@ -153,6 +152,8 @@ def process_batch(sb, rows: list) -> Counter:
                         "pipeline_version": PIPELINE_VERSION 
                     })
                     stats["validated"] += 1
+                    # LOG DETAIL PER ARTIKEL
+                    logger.info(f"ID: {rt_id[:8]} | Status: VALIDATED | Score: {result.score}")
                 else:
                     current_metadata["fail_reason"] = result.reason
                     current_metadata["quality_score"] = result.score
@@ -164,6 +165,7 @@ def process_batch(sb, rows: list) -> Counter:
                     })
                     stats["failed"] += 1
                     stats[f"reason_{result.reason}"] += 1
+                    logger.info(f"ID: {rt_id[:8]} | Status: REJECTED | Reason: {result.reason} | Score: {result.score}")
             except Exception as e:
                 logger.error(f"Scoring thread crashed: {e}")
                 stats["crash"] += 1

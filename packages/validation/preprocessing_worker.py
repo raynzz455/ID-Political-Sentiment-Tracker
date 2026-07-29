@@ -214,6 +214,8 @@ def main(limit: int = 100, max_total: int = 0):
                     "preprocessing_version": PIPELINE_VERSION
                 })
                 stats["normalized"] += 1
+                # LOG DETAIL
+                logger.info(f"ID: {item['id'][:8]} | Status: NORMALIZED (Empty Text)")
                 continue
 
             # Jika hash sudah ada di DB (duplikat)
@@ -227,6 +229,8 @@ def main(limit: int = 100, max_total: int = 0):
                     "duplicate_of": db_hash_map[item["hash"]] 
                 })
                 stats["duplicates"] += 1
+                # LOG DETAIL
+                logger.info(f"ID: {item['id'][:8]} | Status: SKIPPED | Reason: Duplicate Content")
                 continue
                 
             # Jika bersih dan unik
@@ -239,6 +243,8 @@ def main(limit: int = 100, max_total: int = 0):
                 "preprocessing_version": PIPELINE_VERSION
             })
             stats["normalized"] += 1
+            # LOG DETAIL
+            logger.info(f"ID: {item['id'][:8]} | Status: NORMALIZED | Clean Len: {item['metadata']['audit_stats']['clean_len']}")
             
         if updates:
             try:

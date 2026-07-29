@@ -293,7 +293,8 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
         # === LOG DETAIL UNTUK MONITORING ===
         if best_contexts:
-            logger.info(f"ID: {art_id[:8]} | Contexts: {len(best_contexts)} entities | Main Actor: {any(q.get('is_main_actor') for q in best_contexts.values())}")
+            # FIX: best_contexts.values() berisi tuple (ctx_text, quality). Akses quality di indeks [1].
+            logger.info(f"ID: {art_id[:8]} | Contexts: {len(best_contexts)} entities | Main Actor: {any(q[1].get('is_main_actor') for q in best_contexts.values())}")
         else:
             logger.info(f"ID: {art_id[:8]} | Contexts: 0 (Skipped)")
 

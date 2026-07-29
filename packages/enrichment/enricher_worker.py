@@ -155,18 +155,18 @@ def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str
         # OPTIMASI v20: Gunakan lxml, jauh lebih cepat dan hemat RAM
         soup = BeautifulSoup(html, "lxml")
         
+        # FIX: Hapus pengecekan tag <p> karena banyak media pakai <div> atau <br>.
+        # Kita andalkan JSON-LD dan Trafilatura untuk ekstraksi.
         for tag_name in ['title', 'h1']:
             for tag in soup.find_all(tag_name):
                 tag.decompose()        
-        if len(soup.find_all("p")) < MIN_PARAGRAPH_COUNT:
-            return None, "rejected_low_paragraph_density"            
-            
+                
         full_text = extract_jsonld_article(soup)
         extraction_method = "jsonld"
         
         if not full_text or len(full_text) < MIN_ARTICLE_LENGTH:
-            # Trafilatura juga akan otomatis pakai lxml jika terinstall
-            full_text = traf_extract(str(soup), include_comments=False, include_tables=False, favor_precision=True) or ""
+            # OPTIMASI: Pass html mentah ke Trafilatura, jangan str(soup) agar hemat CPU/RAM
+            full_text = traf_extract(html, include_comments=False, include_tables=False, favor_precision=True) or ""
             extraction_method = "trafilatura"            
             
         # Bersihkan memori secepat mungkin
@@ -219,6 +219,9 @@ def bulk_store(sb, results: list) -> Counter:
                 db_update["metadata"] = current_metadata
                 updates.append(db_update)
                 stats["duplicate_skipped"] += 1
+                # LOG DETAIL
+                logger.info(f"ID: {rt_id[:8]} | Status: SKIPPED | Reason: Duplicate Title")
+                
             elif fetch_result.reason == pc.REASON_GNEWS_SNIPPET_ONLY:
                 current_metadata["is_snippet"] = True
                 db_update["text"] = ""
@@ -227,6 +230,9 @@ def bulk_store(sb, results: list) -> Counter:
                 db_update["metadata"] = current_metadata
                 updates.append(db_update)
                 stats["gnews_snippet"] += 1
+                # LOG DETAIL
+                logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: GNews Snippet")
+                
             else:
                 full_text, validation_status = process_and_validate_text(fetch_result.html, title, orig_metadata.get("rss_text", ""))
                 
@@ -240,6 +246,8 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["metadata"] = current_metadata 
                     updates.append(db_update)
                     stats["enriched"] += 1
+                    # LOG DETAIL
+                    logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: {validation_status} | Len: {len(full_text)}")
                 else:
                     current_metadata["fail_reason"] = validation_status
                     db_update["text"] = ""
@@ -248,6 +256,8 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["metadata"] = current_metadata
                     updates.append(db_update)
                     stats[validation_status] += 1
+                    # LOG DETAIL
+                    logger.info(f"ID: {rt_id[:8]} | Status: REJECTED | Reason: {validation_status}")
 
         elif fetch_result.status in pc.RETRYABLE_FETCH_STATUSES:
             new_metadata, effective_reason = _apply_transient_result(current_metadata, fetch_result.reason)
@@ -258,6 +268,9 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = new_metadata
             updates.append(db_update)
             stats[effective_reason] += 1
+            # LOG DETAIL
+            logger.info(f"ID: {rt_id[:8]} | Status: RETRY | Reason: {effective_reason}")
+            
         else:
             current_metadata["fail_reason"] = fetch_result.reason
             db_update["text"] = ""
@@ -265,6 +278,8 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = current_metadata
             updates.append(db_update)
             stats[fetch_result.reason] += 1
+            # LOG DETAIL
+            logger.info(f"ID: {rt_id[:8]} | Status: FAILED | Reason: {fetch_result.reason}")
 
     if updates:
         CHUNK_SIZE = 50 
