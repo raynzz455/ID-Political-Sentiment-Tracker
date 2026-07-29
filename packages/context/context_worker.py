@@ -130,43 +130,25 @@ def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int
 
 def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
     results = []
-    
-    # === 1. PERSIAPAN BATCH: Kumpulkan semua body text ===
-    batch_texts = []
-    batch_meta = []
-    
+
+    # === 1. LOOPING SEQUENTIAL PER ARTIKEL (Fix Stanza List Error) ===
     for art in articles:
+        art_id = art["id"]
         title = (art.get("title") or "").strip()
         body = (art.get("text") or "").strip()
-        
+
+        # === FIX HEADLINE GLUE: Jangan gabungkan title dan body ===
         clean_text = body
         title_len = len(title) + 1 if title else 0
-        
+
         if not clean_text: continue
-        
-        batch_texts.append(clean_text)
-        batch_meta.append({
-            "art": art, "title_len": title_len, "clean_text": clean_text
-        })
 
-    if not batch_texts:
-        return []
-
-    # === 2. STANZA BATCH INFERENCE: Proses semua teks SEKALIGUS ===
-    logger.info(f"Memproses {len(batch_texts)} teks via Stanza Batch (Depparse)...")
-    try:
-        docs = NLP(batch_texts)
-    except Exception as e:
-        logger.error(f"Stanza Batch Error: {e}")
-        return []
-
-    # === 3. EKSTRAKSI KONTEKS: Loop hasil doc yang sudah di-parse ===
-    for i, doc in enumerate(docs):
-        meta = batch_meta[i]
-        art = meta["art"]
-        title_len = meta["title_len"]
-        clean_text = meta["clean_text"]
-        art_id = art["id"]
+        # === 2. STANZA INFERENCE (Sequential) ===
+        try:
+            doc = NLP(clean_text)
+        except Exception as e:
+            logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
+            continue
 
         sentences = []
         for sent in doc.sentences:
@@ -308,6 +290,12 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
             if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
                 best_contexts[entity_id] = (ctx_text, quality)
+
+        # === LOG DETAIL UNTUK MONITORING ===
+        if best_contexts:
+            logger.info(f"ID: {art_id[:8]} | Contexts: {len(best_contexts)} entities | Main Actor: {any(q.get('is_main_actor') for q in best_contexts.values())}")
+        else:
+            logger.info(f"ID: {art_id[:8]} | Contexts: 0 (Skipped)")
 
         for ent_id, (ctx_text, quality) in best_contexts.items():
             results.append({

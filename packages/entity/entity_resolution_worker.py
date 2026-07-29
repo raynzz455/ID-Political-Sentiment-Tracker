@@ -139,39 +139,41 @@ def is_false_positive(matched_text: str, canonical_name: str, full_persons: list
 def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict, id_to_name: dict, regex_patterns: list) -> list:
     results = []
     
-    # === 1. KUMPULKAN SEMUA TEKS (BATCH PREPARATION) ===
-    texts_to_process = []
     for art in articles:
         text = f"{art.get('title', '')}\n{art.get('text', '')}"
-        texts_to_process.append(text)
-
-    # === 2. STANZA BATCH INFERENCE (PROSES SEMUA SEKALIGUS) ===
-    # NLP(list_of_texts) akan memproses paralel di GPU/CPU. Jauh lebih cepat!
-    logger.info(f"Memproses {len(texts_to_process)} teks via Stanza Batch...")
-    try:
-        docs = NLP(texts_to_process)
-    except Exception as e:
-        logger.error(f"Stanza Batch Error: {e}")
-        return []
-
-    # === 3. LOOP HASIL STANZA UNTUK DIPROSES (BUSINESS LOGIC) ===
-    for i, doc in enumerate(docs):
-        art = articles[i]
-        text = texts_to_process[i]
         title_lower = (art.get('title') or "").lower()
         metadata = art.get("metadata") or {}
         ingested_month = art.get("ingested_month")
         
-        # Ambil nama orang dari doc yang SUDAH di-parse (tanpa panggil NLP lagi)
-        full_persons = extract_full_persons_from_doc(doc)
+        # 1. Ekstrak semua nama orang utuh via Stanza (Sequential untuk kompatibilitas)
+        try:
+            doc = NLP(text)
+        except Exception as e:
+            logger.error(f"ID: {art['id'][:8]} | Stanza Error: {e}")
+            continue
 
+        persons = []
+        current_person = []
+        for sent in doc.sentences:
+            for word in sent.words:
+                if word.upos == 'PROPN':
+                    current_person.append(word.text)
+                else:
+                    if current_person:
+                        persons.append(" ".join(current_person))
+                        current_person = []
+            if current_person:
+                persons.append(" ".join(current_person))
+        full_persons = persons
+
+        # === CO-OCCURRENCE FIX (v12) ===
         configured_entity_id = metadata.get("configured_entity_id")
         configured_entity_name = id_to_name.get(configured_entity_id, "") if configured_entity_id else ""
 
         entity_data = {} 
         found_matches = [] 
         
-        # Jalankan Regex Exact Match
+        # 2. Jalankan Regex Exact Match
         for pattern, key in regex_patterns:
             for match in pattern.finditer(text):
                 found_matches.append((match.start(), match.end(), match.group(), key))
@@ -195,6 +197,7 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
             if resolved_name and resolved_name.lower() in entity_db_map:
                 ent_id = entity_db_map[resolved_name.lower()]
                 
+                # === 3. HYBRID VALIDATION ===
                 if is_false_positive(matched_text, resolved_name, full_persons):
                     last_end = end
                     continue
@@ -219,6 +222,7 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
 
         ranked_entities = sorted(entity_data.items(), key=lambda item: (item[1]["in_title"], item[1]["count"]), reverse=True)
         
+        # === 4. SALIENCE GATE ===
         valid_entities = []
         for ent_id, data in ranked_entities:
             if data["in_title"] or data["count"] > 1 or ent_id == configured_entity_id:
@@ -244,6 +248,12 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                     "entity_id": ent_id, "text": offset["text"],
                     "count": data["count"], "start": offset["start"], "end": offset["end"]
                 })
+            
+        # LOG DETAIL UNTUK MONITORING
+        if mappings:
+            logger.info(f"ID: {art['id'][:8]} | Resolved: {len(mappings)} entities | Mentions: {len(mentions)}")
+        else:
+            logger.info(f"ID: {art['id'][:8]} | Resolved: 0 entities (Skipped)")
             
         results.append({
             "raw_text_id": art["id"],
