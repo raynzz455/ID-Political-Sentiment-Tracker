@@ -1,17 +1,21 @@
 """
-nlp_readiness_worker.py v7 — Safe Enqueue & Context Threshold Fix
+nlp_readiness_worker.py v8 — Threaded Enqueue & I/O Optimized
 ====================================================================
-FIX v7:
-  1. SAFE ENQUEUE: Memasukkan ID ke PGMQ terlebih dahulu. Jika berhasil, baru
-     update status DB menjadi 'queued'. Mencegah artikel hilang dari antrian.
-  2. CONTEXT THRESHOLD FIX: Menurunkan MIN_CONTEXT_LEN dari 100 ke 50 agar
-     konteks kalimat pendek yang padat (hasil Token Cap v14) tidak terbuang.
+FIX v8:
+  1. THREADED ENQUEUE: Menggunakan ThreadPoolExecutor untuk memparalelkan 
+     PGMQ enqueue. Mengatasi bottleneck Network I/O saat memasukkan ratusan 
+     artikel ke antrian.
+  2. I/O BATCHING: Menaikkan chunk size untuk DB updates (25 -> 50).
+  3. GC COLLECTION: Menambah garbage collection.
 """
+
 import re
+import gc
 import time
 import logging
 import argparse
 from datetime import datetime, timezone, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
@@ -22,10 +26,11 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-READINESS_VERSION = "v7_safe_enqueue"
-MIN_CONTEXT_LEN = 50  # Turunkan dari 100 ke 50
+READINESS_VERSION = "v8_threaded_enqueue"
+MIN_CONTEXT_LEN = 50
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
+MAX_WORKERS = 10  # Thread untuk PGMQ Enqueue paralel
 
 def normalize_title(title: str) -> str:
     if not title: return ""
@@ -33,6 +38,15 @@ def normalize_title(title: str) -> str:
     title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
     title = re.sub(r'\s+', ' ', title)
     return title
+
+def enqueue_worker(sb, art_id: str) -> tuple[str, bool]:
+    """Worker function untuk ThreadPoolExecutor (PGMQ Enqueue)"""
+    try:
+        sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
+        return art_id, True
+    except Exception as e:
+        logger.error(f"Gagal enqueue PGMQ (ID: {art_id}): {e}")
+        return art_id, False
 
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
@@ -44,7 +58,7 @@ def main(limit: int = 100, max_total: int = 0):
     total_duplicates = 0
     batch_num = 1
 
-    logger.info(f"[NLP_READINESS v7] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[NLP_READINESS v8] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -83,7 +97,7 @@ def main(limit: int = 100, max_total: int = 0):
         # 1. BATCH QUERY: Cek duplikasi judul
         existing_titles = set()
         titles_to_check = [a.get("title") or "" for a in articles if a.get("title")]
-        chunk_size = 50
+        chunk_size = 100 # Naikkan dari 50 ke 100
         
         for i in range(0, len(titles_to_check), chunk_size):
             chunk = titles_to_check[i:i + chunk_size]
@@ -129,7 +143,8 @@ def main(limit: int = 100, max_total: int = 0):
             except Exception as e: logger.error(f"Delete Context Error: {e}")
             
         # 3. KEPUTUSAN AKHIR NLP READINESS
-        updates = []
+        ready_to_enqueue = []
+        rejected_updates = []
         stats = {"ready": 0, "rejected": 0, "duplicate": 0}
         now_iso = datetime.now(timezone.utc).isoformat()
         
@@ -140,7 +155,7 @@ def main(limit: int = 100, max_total: int = 0):
             
             # GATE 1: Cek Duplikat Judul
             if norm_title and norm_title in existing_titles:
-                updates.append({
+                rejected_updates.append({
                     "id": art_id, "status": pc.STATUS_SKIPPED, 
                     "metadata": {**metadata, "fail_reason": "duplicate_title_at_gate"}
                 })
@@ -149,7 +164,7 @@ def main(limit: int = 100, max_total: int = 0):
                 
             # GATE 2: Cek kelayakan teks utuh
             if len(full_text) < MIN_FULLTEXT_LEN:
-                updates.append({
+                rejected_updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 
                     "metadata": {**metadata, "fail_reason": "nlp_ready_fulltext_too_short"}
                 })
@@ -160,44 +175,66 @@ def main(limit: int = 100, max_total: int = 0):
             
             # GATE 3: Lolos jika ada context valid, ATAU teks utuh cukup panjang untuk fallback
             if valid_contexts > 0 or len(full_text) >= 500:
-                
-                # === SAFE ENQUEUE: Masuk PGMQ dulu, baru update DB ===
-                try:
-                    sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
-                    
-                    # Jika PGMQ berhasil, baru masukkan ke list update sebagai 'queued'
-                    updates.append({
-                        "id": art_id, 
-                        "status": pc.STATUS_QUEUED, 
-                        "nlp_ready_at": now_iso,
-                        "metadata": {**metadata, "nlp_readiness_version": READINESS_VERSION, "valid_ctx_count": valid_contexts}
-                    })
-                    stats["ready"] += 1
-                    
-                except Exception as e:
-                    logger.error(f"Gagal enqueue PGMQ (ID: {art_id}): {e}")
-                    updates.append({
-                        "id": art_id, "status": pc.STATUS_FAILED, 
-                        "metadata": {**metadata, "fail_reason": "pgmq_enqueue_failed"}
-                    })
-                    stats["rejected"] += 1
-                    
+                ready_to_enqueue.append({
+                    "id": art_id, 
+                    "metadata": {**metadata, "nlp_readiness_version": READINESS_VERSION, "valid_ctx_count": valid_contexts}
+                })
             else:
-                updates.append({
+                rejected_updates.append({
                     "id": art_id, "status": pc.STATUS_FAILED, 
                     "metadata": {**metadata, "fail_reason": "nlp_ready_no_valid_context"}
                 })
                 stats["rejected"] += 1
                 
-        # --- CHUNKED RPC UPDATE ---
-        if updates:
-            chunk_size = 25
-            for i in range(0, len(updates), chunk_size):
-                chunk = updates[i:i + chunk_size]
-                try: 
+        # === OPTIMASI v8: THREADED PGMQ ENQUEUE ===
+        succeeded_ids = set()
+        if ready_to_enqueue:
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+                futures = {pool.submit(enqueue_worker, sb, item["id"]): item for item in ready_to_enqueue}
+                
+                for future in as_completed(futures):
+                    item = futures[future]
+                    try:
+                        art_id, success = future.result()
+                        if success:
+                            succeeded_ids.add(art_id)
+                            stats["ready"] += 1
+                        else:
+                            rejected_updates.append({
+                                "id": art_id, "status": pc.STATUS_FAILED, 
+                                "metadata": {**item["metadata"], "fail_reason": "pgmq_enqueue_failed"}
+                            })
+                            stats["rejected"] += 1
+                    except Exception as e:
+                        logger.error(f"Enqueue thread crashed: {e}")
+                        rejected_updates.append({
+                            "id": item["id"], "status": pc.STATUS_FAILED, 
+                            "metadata": {**item["metadata"], "fail_reason": "enqueue_thread_crash"}
+                        })
+                        stats["rejected"] += 1
+
+        # Susun updates untuk artikel yang sukses di-enqueue
+        success_updates = [
+            {
+                "id": aid, 
+                "status": pc.STATUS_QUEUED, 
+                "nlp_ready_at": now_iso,
+                "metadata": next(item["metadata"] for item in ready_to_enqueue if item["id"] == aid)
+            } 
+            for aid in succeeded_ids
+        ]
+        
+        all_updates = success_updates + rejected_updates
+        
+        # --- CHUNKED RPC UPDATE (50 per chunk) ---
+        if all_updates:
+            chunk_size = 50
+            try:
+                for i in range(0, len(all_updates), chunk_size):
+                    chunk = all_updates[i:i + chunk_size]
                     sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
-                except Exception as e: 
-                    logger.error(f"RPC Error (bulk_update_raw_texts): {e}")
+            except Exception as e: 
+                logger.error(f"RPC Error (bulk_update_raw_texts): {e}")
                 
         logger.info(f"Ready: {stats['ready']} | Rejected: {stats['rejected']} | Duplicates: {stats['duplicate']} | Junk Deleted: {len(invalid_ctx_ids)}")
         
@@ -206,6 +243,8 @@ def main(limit: int = 100, max_total: int = 0):
         total_rejected += stats["rejected"]
         total_duplicates += stats["duplicate"]
         batch_num += 1
+        
+        gc.collect()
         
     finish_run(run_id, total_processed, total_ready, total_rejected)
     logger.info(f"Total Duplicates Skipped: {total_duplicates}")

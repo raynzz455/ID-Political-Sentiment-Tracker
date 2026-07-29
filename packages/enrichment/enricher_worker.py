@@ -1,12 +1,12 @@
 """
-enricher_worker.py v19 — Expert Gate, Deduplication & Clean Logging
+enricher_worker.py v20 — RAM & CPU Optimized
 ====================================================================
-PERUBAAHAN v19:
-  1. EARLY DEDUPLICATION: Cek judul duplikat sebelum fetch HTTP (Hemat bandwidth/CPU).
-  2. EXPERT CONTENT FILTER: Menerapkan JSON-LD priority, Trafilatura favor_precision,
-     Title Relevancy, dan Max/Min Length check (membasmi section leakage & sidebar).
-  3. CLEAN LOGGING: Menghapus emoji dan format dekoratif. Log terstruktur agar mudah dibaca.
+FIX v20:
+  1. LXML PARSER: Mengganti html.parser ke lxml (3x lebih cepat, hemat RAM).
+  2. GC COLLECTION: Memaksa garbage collection tiap akhir batch agar RAM 16GB tidak bocor.
+  3. THREAD BOOST: Menaikkan limit thread dari 7 ke 10 untuk I/O paralel.
 """
+
 import re
 import sys
 import gc
@@ -27,8 +27,9 @@ load_dotenv(ROOT_DIR / ".env")
 try:
     from trafilatura import extract as traf_extract
     from bs4 import BeautifulSoup
+    # Pastikan lxml terinstall: pip install lxml
 except ImportError as e:
-    print(f"[ERROR] Dependency missing: {e}. Pastikan: pip install trafilatura beautifulsoup4")
+    print(f"[ERROR] Dependency missing: {e}. Pastikan: pip install trafilatura beautifulsoup4 lxml")
     sys.exit(1)
 
 from packages.shared.db_client import get_client
@@ -41,19 +42,17 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-MAX_WORKERS = 7
+MAX_WORKERS = 10  # Naikkan dari 7 ke 10
 RSS_TEXT_MIN_LEN = 500
 
 # Expert Validation Config
 MAX_HTML_SIZE_BYTES = 1500000  # 1.5 MB
-MAX_ARTICLE_LENGTH = 20000     # Batas maksimal artikel (menerima long-form journalism)
+MAX_ARTICLE_LENGTH = 20000     
 MIN_ARTICLE_LENGTH = 500
 MIN_PARAGRAPH_COUNT = 5
 TITLE_MATCH_THRESHOLD = 0.15
 
-
 def normalize_title(title: str) -> str:
-    """Normalisasi judul untuk deteksi duplikat (lowercase, hapus tanda baca)."""
     if not title: return ""
     title = title.lower().strip()
     title = re.sub(r'[\[\]\(\)\{\}"\':;,!?./]', '', title)
@@ -74,11 +73,9 @@ def find_duplicate_titles(sb, rows: list) -> set:
                     .in_("title", chunk) \
                     .in_("status", ["enriched", "processed", "skipped", "validated"]) \
                     .execute()
-                    
             for row in (res.data or []):
                 norm = normalize_title(row.get("title") or "")
                 if norm: dup_titles.add(norm)
-                
         return dup_titles
     except Exception as e:
         logger.warning(f"Gagal cek duplikat judul: {e}")
@@ -101,14 +98,9 @@ def extract_jsonld_article(soup: BeautifulSoup) -> str | None:
 def clean_boilerplate(text: str, title: str = "") -> str:
     if not text: return ""
     
-    # 1. Unescape HTML entities (&ldquo; &nbsp; dll)
     text = html_lib.unescape(text)
-    
-    # 2. Hapus URL yang tersangkut di teks
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     
-    # 3. Hapus elemen UI & Boilerplate umum media Indonesia
-    # Hentikan pencarian di titik (.) atau baris baru (\n)
     ui_patterns = [
         r'(?i)(Tags\s*:|Berita Lainnya|Dark/Light Mode|BREAKINGNEWS).*?(?=\n|$|\.)',
         r'(?i)Gambas\s*:\s*Video\s*\w+',
@@ -122,34 +114,24 @@ def clean_boilerplate(text: str, title: str = "") -> str:
     for pattern in ui_patterns:
         text = re.sub(pattern, '', text)
         
-    # 4. Hapus Credit Foto yang sering bikin noise (Contoh: " (Foto: DPP Partai Demokrat) " atau " (Antara Foto/Fauzan) ")
     text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
 
-    # 5. Hilangkan judul yang menempel di awal body text (Headline Glue Fix)
     if title:
         clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
-        # Cek apakah 60 karakter pertama teks sama dengan judul
         if text[:60].lower().startswith(clean_title[:30]):
-            # Potong berdasarkan panjang judul yang sudah dinormalisasi
             text = text[len(clean_title):].strip()
-            # Kadang ada sisa "- NamaMedia.com" atau " Jakarta, "
             text = re.sub(r'^[\s\-:|]+[a-zA-Z\s,\d]{0,20}', '', text).strip()
 
-    # 6. Deduplikasi kalimat yang berulang (Antara News case)
-    # Karena newline sering hilang, kita pecah per kalimat (berdasarkan titik+spasi)
     sentences = re.split(r'(?<=[.!?])\s+', text)
     seen = set()
     unique_sentences = []
     for s in sentences:
         s_clean = s.strip()
-        # Abaikan kalimat yang terlalu pendek (sisa regex yang kepotong)
         if s_clean and len(s_clean) > 15 and s_clean not in seen:
             seen.add(s_clean)
             unique_sentences.append(s_clean)
             
     text = ' '.join(unique_sentences)
-    
-    # 7. Bersihkan spasi berlebih & sisa titik yang dobel
     text = re.sub(r'[ \t]{2,}', ' ', text)
     text = re.sub(r'\.{2,}', '.', text)
     
@@ -169,7 +151,10 @@ def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str
     elif html:
         if len(html) > MAX_HTML_SIZE_BYTES:
             return None, "rejected_html_too_large"
-        soup = BeautifulSoup(html, "html.parser")
+            
+        # OPTIMASI v20: Gunakan lxml, jauh lebih cepat dan hemat RAM
+        soup = BeautifulSoup(html, "lxml")
+        
         for tag_name in ['title', 'h1']:
             for tag in soup.find_all(tag_name):
                 tag.decompose()        
@@ -180,11 +165,15 @@ def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str
         extraction_method = "jsonld"
         
         if not full_text or len(full_text) < MIN_ARTICLE_LENGTH:
+            # Trafilatura juga akan otomatis pakai lxml jika terinstall
             full_text = traf_extract(str(soup), include_comments=False, include_tables=False, favor_precision=True) or ""
             extraction_method = "trafilatura"            
+            
+        # Bersihkan memori secepat mungkin
         del html, soup
     else:
         return None, "fetch_no_html"
+        
     full_text = clean_boilerplate(full_text, title) 
 
     if len(full_text) < MIN_ARTICLE_LENGTH:
@@ -227,17 +216,15 @@ def bulk_store(sb, results: list) -> Counter:
                 db_update["text"] = ""
                 db_update["status"] = pc.STATUS_SKIPPED
                 db_update["content_type"] = "SNIPPET"
-                db_update["metadata"] = current_metadata # Simpan metadata
+                db_update["metadata"] = current_metadata
                 updates.append(db_update)
                 stats["duplicate_skipped"] += 1
-                logger.info(f"ID: {rt_id[:8]} | Status: SKIPPED | Reason: Duplicate Title")
-                
             elif fetch_result.reason == pc.REASON_GNEWS_SNIPPET_ONLY:
                 current_metadata["is_snippet"] = True
                 db_update["text"] = ""
                 db_update["status"] = pc.STATUS_ENRICHED
                 db_update["content_type"] = "SNIPPET" 
-                db_update["metadata"] = current_metadata # Simpan metadata
+                db_update["metadata"] = current_metadata
                 updates.append(db_update)
                 stats["gnews_snippet"] += 1
             else:
@@ -250,11 +237,9 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["status"] = pc.STATUS_ENRICHED
                     db_update["content_type"] = "FULLTEXT" 
                     db_update["content_hash"] = hashlib.sha256(full_text.encode()).hexdigest()
-                    # PERBAIKAN BUG 3: Simpan metadata yang berisi extraction_method!
                     db_update["metadata"] = current_metadata 
                     updates.append(db_update)
                     stats["enriched"] += 1
-                    logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: {validation_status} | Len: {len(full_text)}")
                 else:
                     current_metadata["fail_reason"] = validation_status
                     db_update["text"] = ""
@@ -263,7 +248,6 @@ def bulk_store(sb, results: list) -> Counter:
                     db_update["metadata"] = current_metadata
                     updates.append(db_update)
                     stats[validation_status] += 1
-                    logger.info(f"ID: {rt_id[:8]} | Status: REJECTED | Reason: {validation_status}")
 
         elif fetch_result.status in pc.RETRYABLE_FETCH_STATUSES:
             new_metadata, effective_reason = _apply_transient_result(current_metadata, fetch_result.reason)
@@ -274,8 +258,6 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = new_metadata
             updates.append(db_update)
             stats[effective_reason] += 1
-            logger.info(f"ID: {rt_id[:8]} | Status: RETRY | Reason: {effective_reason}")
-
         else:
             current_metadata["fail_reason"] = fetch_result.reason
             db_update["text"] = ""
@@ -283,7 +265,6 @@ def bulk_store(sb, results: list) -> Counter:
             db_update["metadata"] = current_metadata
             updates.append(db_update)
             stats[fetch_result.reason] += 1
-            logger.info(f"ID: {rt_id[:8]} | Status: FAILED | Reason: {fetch_result.reason}")
 
     if updates:
         CHUNK_SIZE = 50 
@@ -310,14 +291,12 @@ def pipeline_worker(row: dict):
 
 def process_batch(sb, rows: list) -> Counter:
     existing_titles = find_duplicate_titles(sb, rows)
-    
     to_fetch = []
     pipeline_results = []
     skipped_count = 0
     
     for r in rows:
         norm_title = normalize_title(r.get("title") or "")
-        
         if norm_title and norm_title in existing_titles:
             skipped_count += 1
             dummy_result = FetchResult(status=pc.FETCH_OK, reason="duplicate_skipped", original_url=r.get("source_url"), resolved_url=r.get("source_url"))
@@ -370,23 +349,20 @@ def main(limit: int = 100, max_total: int = 0):
     try: sb.table("raw_texts").select("id").limit(1).execute()
     except Exception as e: logger.error(f"[FATAL] DB tidak reachable: {e}"); sys.exit(1)
 
-    run_id = start_run("enricher_worker", "v19_expert_dedup")
+    run_id = start_run("enricher_worker", "v20_ram_optimized")
     total_stats = Counter()
-    total_processed = 0  # Pelacak jumlah artikel (baris) yang diproses
+    total_processed = 0
     batch_num = 1
     
-    logger.info(f"[ENRICHER v19] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[ENRICHER v20] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
-        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
             logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
             
         logger.info(f"--- Batch {batch_num} ---")
         
-        # 2. HITUNG LIMIT UNTUK BATCH INI
-        # Jika max_total=500 dan total_processed=450, sisa=50. Limit diambil yang terkecil.
         current_limit = limit
         if max_total > 0:
             current_limit = min(limit, max_total - total_processed)
@@ -400,9 +376,12 @@ def main(limit: int = 100, max_total: int = 0):
         print_batch_report(batch_num, batch_stats)
         
         total_stats.update(batch_stats)
-        total_processed += len(rows) # Tambah jumlah baris yang diproses
+        total_processed += len(rows)
         
-        time.sleep(8 + random.uniform(0, 4))
+        # OPTIMASI v20: Bersihkan memori agar RAM 16GB tidak cepat penuh dengan sisa HTML
+        gc.collect()
+        
+        time.sleep(5 + random.uniform(0, 3)) # Sedikit turunkan jeda karena thread naik
         batch_num += 1
 
     total_succeeded = total_stats.get('enriched', 0) + total_stats.get('gnews_snippet', 0)

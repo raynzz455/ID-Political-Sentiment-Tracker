@@ -1,15 +1,18 @@
 """
-preprocessing_worker.py v9 — Headline De-glue & Domain Strip Fix
+preprocessing_worker.py v10 — I/O & CPU Optimized
 =============================================================
-FIX v9:
-  1. HEADLINE DE-GLUE: Menggunakan Regex Matcher yang toleran terhadap tanda baca
-     untuk memisahkan judul yang menempel ke body text. (Membasmi bug di v8).
-  2. DOMAIN STRIP: Membuang nama domain media (Tirto.id, CNN.com, dll) yang
-     sering nyangkut di awal body text pasca pemotongan judul.
-  3. RATE LIMIT SAFE: Mempertahankan jeda (sleep) antar batch.
+FIX v10:
+  1. THREADED NORMALIZATION: Menggunakan ThreadPoolExecutor untuk memparalelkan 
+     Regex cleaning & Hashing per artikel (Memanfaatkan CPU multi-core).
+  2. I/O BATCHING: Menaikkan chunk size untuk query Duplikat (50 -> 100) dan 
+     RPC Update (25 -> 50) untuk mengurangi round-trip network ke Supabase.
+  3. HEADLINE DE-GLUE & DOMAIN STRIP: Mempertahankan fix v9 yang akurat.
+  4. GC COLLECTION: Menambah garbage collection agar RAM stabil.
 """
+
 import time  
 import re
+import gc
 import hashlib
 import unicodedata
 import logging
@@ -19,6 +22,7 @@ import html as html_lib
 from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
@@ -32,8 +36,9 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-PIPELINE_VERSION = "v9_headline_deglue"
-CHUNK_SIZE = 25
+PIPELINE_VERSION = "v10_io_cpu_optimized"
+CHUNK_SIZE = 50  # Naikkan dari 25 ke 50 untuk mengurangi Network I/O
+MAX_WORKERS = 4  # Thread untuk Regex & Hashing paralel
 
 # ─────────────────────────────────────────────────────────────
 # MODULAR NORMALIZATION PIPELINE
@@ -60,9 +65,12 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
             match = re.match(r'^\s*' + pattern_title, text, re.IGNORECASE)
             if match:
                 text = text[match.end():].lstrip(" :-\n\"'")
+    
+    # Hapus nama domain yang nyangkut
     domain_pattern = r'^[\w\.\-]+\.(com|id|co|tv|news|net)\b\s*[\-\|:]*\s*'
     for _ in range(2):
         text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)                
+    
     text = re.sub(r'<[^>]+>', ' ', text)    
     patterns = [
         r"(?i)(baca juga|simak juga|berita terkait)\s*:[^.\n]*\.?",
@@ -97,6 +105,24 @@ def normalize_pipeline(text: str, title: str = "") -> tuple[str, dict]:
     stats["clean_len"] = int(len(text))
     return text, stats
 
+def process_single_article(art: dict) -> dict:
+    """Worker function untuk ThreadPoolExecutor"""
+    title = art.get("title") or ""
+    clean_text, audit_stats = normalize_pipeline(art.get("text") or "", title)
+    
+    if not clean_text:
+        content_hash = None
+    else:
+        content_hash = hashlib.sha256(clean_text.encode()).hexdigest()
+        
+    return {
+        "id": art["id"],
+        "text": clean_text,
+        "hash": content_hash,
+        "metadata": {**(art.get("metadata") or {}), "audit_stats": audit_stats},
+        "orig_metadata": art.get("metadata") or {}
+    }
+
 # ─────────────────────────────────────────────────────────────
 # MAIN WORKER
 # ─────────────────────────────────────────────────────────────
@@ -110,7 +136,7 @@ def main(limit: int = 100, max_total: int = 0):
     batch_num = 1
     start_time = time.perf_counter()
 
-    logger.info(f"[PREPROCESSOR v9] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[PREPROCESSOR v10] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
     
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -146,33 +172,26 @@ def main(limit: int = 100, max_total: int = 0):
         stats = {"normalized": 0, "duplicates": 0}
         now_iso = datetime.now(timezone.utc).isoformat()
         
+        # === OPTIMASI v10: THREADED NORMALIZATION ===
+        # Paralelkan proses Regex dan Hashing ke 4 threads
         processed_items = []
-        batch_hashes = set()
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {pool.submit(process_single_article, art): art for art in articles}
+            for future in as_completed(futures):
+                try:
+                    processed_items.append(future.result())
+                except Exception as e:
+                    logger.error(f"Preprocess thread crashed: {e}")
+
+        # Kumpulkan hash yang tidak None untuk cek duplikat
+        batch_hashes = [item["hash"] for item in processed_items if item["hash"]]
         
-        for art in articles:
-            title = art.get("title") or ""
-            clean_text, audit_stats = normalize_pipeline(art.get("text") or "", title)
-            
-            if not clean_text:
-                content_hash = f"empty_{art['id']}"
-            else:
-                content_hash = hashlib.sha256(clean_text.encode()).hexdigest()
-            
-            processed_items.append({
-                "id": art["id"],
-                "text": clean_text,
-                "hash": content_hash,
-                "metadata": {**(art.get("metadata") or {}), "audit_stats": audit_stats},
-                "orig_metadata": art.get("metadata") or {}
-            })
-            batch_hashes.add(content_hash)
-            
+        # === OPTIMASI v10: I/O BATCHING (100 per query) ===
         db_hash_map = {}
         if batch_hashes:
-            hash_list = list(batch_hashes)
-            hash_chunk_size = 50
-            for i in range(0, len(hash_list), hash_chunk_size):
-                chunk = hash_list[i:i + hash_chunk_size]
+            hash_chunk_size = 100  # Naikkan dari 50 ke 100
+            for i in range(0, len(batch_hashes), hash_chunk_size):
+                chunk = batch_hashes[i:i + hash_chunk_size]
                 try:
                     dup_res = sb.table("raw_texts") \
                                 .select("id, content_hash") \
@@ -184,7 +203,8 @@ def main(limit: int = 100, max_total: int = 0):
                     logger.warning(f"Gagal cek duplikat hash: {e}")
                 
         for item in processed_items:
-            if item["hash"].startswith("empty_"):
+            # Jika hash None (teks kosong)
+            if not item["hash"]:
                 updates.append({
                     "id": item["id"], 
                     "text": item["text"], 
@@ -196,6 +216,7 @@ def main(limit: int = 100, max_total: int = 0):
                 stats["normalized"] += 1
                 continue
 
+            # Jika hash sudah ada di DB (duplikat)
             if item["hash"] in db_hash_map and db_hash_map[item["hash"]] != item["id"]:
                 updates.append({
                     "id": item["id"], 
@@ -208,6 +229,7 @@ def main(limit: int = 100, max_total: int = 0):
                 stats["duplicates"] += 1
                 continue
                 
+            # Jika bersih dan unik
             updates.append({
                 "id": item["id"], 
                 "text": item["text"], 
@@ -220,6 +242,7 @@ def main(limit: int = 100, max_total: int = 0):
             
         if updates:
             try:
+                # Chunk size RPC dinaikkan ke 50
                 for i in range(0, len(updates), CHUNK_SIZE):
                     chunk = updates[i:i + CHUNK_SIZE]
                     sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
@@ -233,13 +256,16 @@ def main(limit: int = 100, max_total: int = 0):
         total_duplicates += stats["duplicates"]
         batch_num += 1
         
-        sleep_time = random.uniform(2, 5)
+        # Bersihkan memori
+        gc.collect()
+        
+        sleep_time = random.uniform(1, 3)  # Turunkan jeda karena I/O sudah dioptimasi
         logger.info(f"Menunggu {sleep_time:.1f}s sebelum batch berikutnya...")
         time.sleep(sleep_time)
         
     elapsed = time.perf_counter() - start_time
     logger.info("=" * 50)
-    logger.info("SELESAI (Preprocessing v9)")
+    logger.info("SELESAI (Preprocessing v10)")
     logger.info(f"  Total Processed : {total_processed}")
     logger.info(f"  Total Normalized: {total_normalized}")
     logger.info(f"  Total Duplicates: {total_duplicates}")

@@ -68,10 +68,10 @@ CONTEXT_VERSION = "v16_crowded_sentence_fix"
 
 logger.info("Memuat Stanza Pipeline (tokenize, pos, lemma, depparse)...")
 try:
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=True)
+    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=True, batch_size=32)
 except Exception as e:
     logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False)
+    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False, batch_size=32)
 
 ACTIVE_MARKERS = {"mengkritik", "menyindir", "menolak", "mengecam", "menegaskan", "menyatakan", "mengatakan", "menuding", "menyerang", "membela", "menilai", "mengaku", "mengklaim", "mengimbau", "mengingatkan", "menyampaikan", "menjelaskan", "menambahkan"}
 PASSIVE_MARKERS = {"dikecam", "dikritik", "dipuji", "ditahan", "dipecat", "dituding", "dituduh", "dilaporkan", "dicekal", "disindir"}
@@ -130,19 +130,44 @@ def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int
 
 def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
     results = []
-
+    
+    # === 1. PERSIAPAN BATCH: Kumpulkan semua body text ===
+    batch_texts = []
+    batch_meta = []
+    
     for art in articles:
-        art_id = art["id"]
         title = (art.get("title") or "").strip()
         body = (art.get("text") or "").strip()
-
-        # === 1. FIX HEADLINE GLUE: Jangan gabungkan title dan body ===
+        
         clean_text = body
         title_len = len(title) + 1 if title else 0
-
+        
         if not clean_text: continue
+        
+        batch_texts.append(clean_text)
+        batch_meta.append({
+            "art": art, "title_len": title_len, "clean_text": clean_text
+        })
 
-        doc = NLP(clean_text)
+    if not batch_texts:
+        return []
+
+    # === 2. STANZA BATCH INFERENCE: Proses semua teks SEKALIGUS ===
+    logger.info(f"Memproses {len(batch_texts)} teks via Stanza Batch (Depparse)...")
+    try:
+        docs = NLP(batch_texts)
+    except Exception as e:
+        logger.error(f"Stanza Batch Error: {e}")
+        return []
+
+    # === 3. EKSTRAKSI KONTEKS: Loop hasil doc yang sudah di-parse ===
+    for i, doc in enumerate(docs):
+        meta = batch_meta[i]
+        art = meta["art"]
+        title_len = meta["title_len"]
+        clean_text = meta["clean_text"]
+        art_id = art["id"]
+
         sentences = []
         for sent in doc.sentences:
             if len(sent.text.strip()) > 10:
@@ -158,11 +183,7 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
         art_mentions = mentions_by_art.get(art_id, [])
         best_contexts = {}
 
-        # === PASS 1: cari anchor_idx tiap mention DULU (tanpa bangun context) ===
-        # Perlu ini sebelum bisa tahu kalimat mana yang "ramai" (dipakai >1
-        # entitas berbeda) -- baru pass 2 yang bangun context, supaya entitas
-        # non-main-actor di kalimat ramai bisa dapat perlakuan beda (klausa
-        # lokal), bukan seluruh kalimat mentah yang sama dgn entitas lain.
+        # === PASS 1: cari anchor_idx tiap mention ===
         resolved_mentions = []
         for m in art_mentions:
             entity_id = m["entity_id"]
@@ -176,15 +197,15 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
             adjusted_end = end_offset - title_len
 
             anchor_idx = -1
-            for i, s in enumerate(sentences):
+            for idx, s in enumerate(sentences):
                 if s["start"] <= adjusted_offset < s["end"]:
-                    anchor_idx = i
+                    anchor_idx = idx
                     break
 
             if anchor_idx == -1:
-                for i, s in enumerate(sentences):
+                for idx, s in enumerate(sentences):
                     if entity_name.lower() in s["text"].lower():
-                        anchor_idx = i
+                        anchor_idx = idx
                         break
                 if anchor_idx == -1:
                     continue
@@ -195,14 +216,12 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
                 "adjusted_end": adjusted_end,
             })
 
-        # Deteksi kalimat "ramai": anchor_idx yang dipakai >1 ENTITY_ID BERBEDA
-        # (bukan cuma >1 mention -- entitas yang sama muncul 2x boleh saja).
         entities_per_sentence = {}
         for rm in resolved_mentions:
             entities_per_sentence.setdefault(rm["anchor_idx"], set()).add(rm["entity_id"])
         crowded_sentence_idxs = {idx for idx, ents in entities_per_sentence.items() if len(ents) > 1}
 
-        # === PASS 2: bangun context, pakai info crowding dari pass 1 ===
+        # === PASS 2: bangun context ===
         for rm in resolved_mentions:
             entity_id = rm["entity_id"]
             entity_name = rm["entity_name"]
@@ -210,6 +229,7 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
             anchor_sent = sentences[anchor_idx]
             is_crowded = anchor_idx in crowded_sentence_idxs
             is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
+            
             root_word = ""
             has_action = False
             is_attribution_end = False
@@ -221,11 +241,6 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
                     if root_word in ATTRIBUTION_WORDS:
                         is_attribution_end = True
 
-            # === CROWDED-SENTENCE DISAMBIGUATION (fix utama v16) ===
-            # Kalimat ini dipakai bareng entitas lain DAN entitas ini BUKAN
-            # pemeran inti kalimat (nsubj/obj) -> pakai klausa lokal di
-            # sekitar posisi kemunculannya sendiri, bukan kalimat penuh yang
-            # akan identik dgn entitas lain yang berbagi kalimat ini.
             used_local_clause = False
             anchor_text_for_context = anchor_sent["text"]
             if is_crowded and not is_main_actor:
@@ -239,8 +254,6 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
             context_parts = []
 
-            # === 5. QUOTE BACKTRACK === (di-skip kalau pakai klausa lokal --
-            # backtrack itu utk kalimat penuh, tidak relevan utk klausa parsial)
             if is_attribution_end and not used_local_clause and anchor_idx > 0:
                 context_parts.append(sentences[anchor_idx - 1]["text"])
                 if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
@@ -248,9 +261,6 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
             context_parts.append(anchor_text_for_context)
 
-            # === 6. SMART LOOK-AHEAD === (juga di-skip kalau klausa lokal --
-            # menambah kalimat SETELAH kalimat ramai berisiko menarik konteks
-            # milik entitas lain lagi)
             if not used_local_clause:
                 if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
                     next_sent = sentences[anchor_idx + 1]
@@ -262,7 +272,6 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
             ctx_text = " ".join(context_parts)
 
-            # === 7. TOKEN CAP MANAGEMENT ===
             words_list = ctx_text.split()
             if len(words_list) > MAX_CONTEXT_WORDS:
                 anchor_text = anchor_text_for_context
@@ -277,9 +286,6 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
 
             para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
 
-            # === QUALITY SCORE DIGRADASI (fix v16) === 4 komponen, 0-100,
-            # bukan biner 90/50 spt v15 (yg nyaris selalu jatuh ke 50 krn
-            # syarat AND-nya jarang terpenuhi bersamaan).
             attr_score = 40 if has_action else (25 if is_attribution_end else 10)
             actor_score = 30 if is_main_actor else 10
             pos_score = 20 if para_idx == 0 else (12 if para_idx <= 2 else 5)

@@ -94,12 +94,10 @@ def load_caches(sb):
                 
     return alias_map, entity_db_map, id_to_name, regex_patterns
 
-def extract_full_persons(text: str) -> list:
-    """Cheat Code: Gruping Proper Noun (PROPN) yang berurutan menjadi satu nama utuh."""
-    doc = NLP(text)
+def extract_full_persons_from_doc(doc) -> list:
+    """Ekstrak nama orang utuh dari objek Document Stanza (sudah di-parse)."""
     persons = []
     current_person = []
-    
     for sent in doc.sentences:
         for word in sent.words:
             if word.upos == 'PROPN':
@@ -110,7 +108,6 @@ def extract_full_persons(text: str) -> list:
                     current_person = []
         if current_person:
             persons.append(" ".join(current_person))
-            
     return persons
 
 def is_false_positive(matched_text: str, canonical_name: str, full_persons: list) -> bool:
@@ -142,29 +139,39 @@ def is_false_positive(matched_text: str, canonical_name: str, full_persons: list
 def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict, id_to_name: dict, regex_patterns: list) -> list:
     results = []
     
+    # === 1. KUMPULKAN SEMUA TEKS (BATCH PREPARATION) ===
+    texts_to_process = []
     for art in articles:
         text = f"{art.get('title', '')}\n{art.get('text', '')}"
+        texts_to_process.append(text)
+
+    # === 2. STANZA BATCH INFERENCE (PROSES SEMUA SEKALIGUS) ===
+    # NLP(list_of_texts) akan memproses paralel di GPU/CPU. Jauh lebih cepat!
+    logger.info(f"Memproses {len(texts_to_process)} teks via Stanza Batch...")
+    try:
+        docs = NLP(texts_to_process)
+    except Exception as e:
+        logger.error(f"Stanza Batch Error: {e}")
+        return []
+
+    # === 3. LOOP HASIL STANZA UNTUK DIPROSES (BUSINESS LOGIC) ===
+    for i, doc in enumerate(docs):
+        art = articles[i]
+        text = texts_to_process[i]
         title_lower = (art.get('title') or "").lower()
         metadata = art.get("metadata") or {}
         ingested_month = art.get("ingested_month")
         
-        # 1. Ekstrak semua nama orang utuh via Stanza (Safety Net)
-        full_persons = extract_full_persons(text)
+        # Ambil nama orang dari doc yang SUDAH di-parse (tanpa panggil NLP lagi)
+        full_persons = extract_full_persons_from_doc(doc)
 
-        # === CO-OCCURRENCE FIX (v12) ===
-        # v11 di titik ini langsung `continue` begitu configured_entity_id
-        # ketemu -- SELURUH regex matching umum di bawah TIDAK PERNAH jalan,
-        # jadi entitas co-mention lain (mis. "Prabowo bertemu Jokowi" dari
-        # scraping_config Prabowo) tidak pernah ter-map. Sekarang: catat
-        # entity_id yang dikonfigurasi (dijamin masuk sbg main entity), tapi
-        # TETAP lanjut ke regex matching umum di bawah, bukan skip.
         configured_entity_id = metadata.get("configured_entity_id")
         configured_entity_name = id_to_name.get(configured_entity_id, "") if configured_entity_id else ""
 
         entity_data = {} 
         found_matches = [] 
         
-        # 2. Jalankan Regex Exact Match
+        # Jalankan Regex Exact Match
         for pattern, key in regex_patterns:
             for match in pattern.finditer(text):
                 found_matches.append((match.start(), match.end(), match.group(), key))
@@ -188,9 +195,7 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
             if resolved_name and resolved_name.lower() in entity_db_map:
                 ent_id = entity_db_map[resolved_name.lower()]
                 
-                # === 3. HYBRID VALIDATION (Cek Bobby Danuardi vs Bobby Nasution) ===
                 if is_false_positive(matched_text, resolved_name, full_persons):
-                    logger.debug(f"  [REJECT] '{matched_text}' diabaikan, terdeteksi sebagai nama orang lain.")
                     last_end = end
                     continue
                 
@@ -206,10 +211,6 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                 
             last_end = end
 
-        # Kalau configured_entity_id tidak ketemu sendiri lewat regex (mis.
-        # cara penyebutannya tidak match pattern manapun), tetap paksa masuk
-        # dgn offset kosong -- supaya main entity dari scraping_config TETAP
-        # terjamin ter-map walau NER/regex tidak "melihatnya" secara eksplisit.
         if configured_entity_id and configured_entity_id not in entity_data:
             entity_data[configured_entity_id] = {
                 "count": 0, "in_title": configured_entity_name.lower() in title_lower if configured_entity_name else False,
@@ -218,38 +219,26 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
 
         ranked_entities = sorted(entity_data.items(), key=lambda item: (item[1]["in_title"], item[1]["count"]), reverse=True)
         
-        # === 4. SALIENCE GATE (Filter Tokoh Figuran) ===
         valid_entities = []
         for ent_id, data in ranked_entities:
-            # Syarat 1: Tokoh ada di judul berita
-            # Syarat 2: Tokoh disebut minimal 2 kali di body text
-            # Syarat 3: ATAU memang entity yang dikonfigurasi scraping_config
-            #           (sinyal editorial eksplisit, tetap lolos walau sepi mention)
             if data["in_title"] or data["count"] > 1 or ent_id == configured_entity_id:
                 valid_entities.append((ent_id, data))
                 
-        # Safety Net: Jika tidak ada yang lolos (misal semua cuma disebut 1x), 
-        # ambil 1 tokoh peringkat pertama agar artikel tidak kosong.
         if not valid_entities and ranked_entities:
             valid_entities.append(ranked_entities[0])
             
         ranked_entities = valid_entities
-        # ============================================
         
         mappings = []
         mentions = []
         
         for idx, (ent_id, data) in enumerate(ranked_entities):
-            # is_main_entity: entity dari scraping_config SELALU main (sinyal
-            # editorial eksplisit menang atas urutan/frekuensi), else entitas
-            # peringkat pertama hasil ranking (in_title / count terbanyak).
             is_main = (ent_id == configured_entity_id) if configured_entity_id else (idx == 0)
             mappings.append({
                 "entity_id": ent_id, "is_main_entity": is_main, 
                 "confidence": data["conf"], "resolver_source": data["src"]
             })
             
-            # Buat 1 row untuk setiap kemunculan tokoh (Multi-Mention)
             for offset in data["offsets"]:
                 mentions.append({
                     "entity_id": ent_id, "text": offset["text"],

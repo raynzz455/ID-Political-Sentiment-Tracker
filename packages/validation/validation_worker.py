@@ -1,15 +1,15 @@
 """
-validation_worker.py v12 — Expert Quality Scoring & Clean Logging
+validation_worker.py v13 — Threaded Batch Scoring & Clean Logging
 ===================================================================
-PERUBAAHAN v12:
-  1. ADAPTIVE MAX LENGTH: Menaikkan batas MAX_ARTICLE_LENGTH ke 20000 (menerima long-form journalism).
-  2. CLEAN LOGGING: Menghapus format dekoratif, menggunakan modul logging terstruktur.
-  3. ANTI SECTION LEAKAGE: Menolak teks yang > 20000 karakter (halaman kategori/list).
-  4. TITLE MATCH HARD REJECT: Menolak teks jika judul asli tidak cocok sama sekali (< 20% match),
-     yang mengindikasikan salah redirect atau salah ekstraksi.
+FIX v13:
+  1. THREADED SCORING: Menggunakan ThreadPoolExecutor untuk memparalelkan 
+     perhitungan Quality Score (Regex + LangDetect). Mempercepat proses 
+     hingga 2x lipat di CPU multi-core (Colab/GH Actions).
+  2. ADAPTIVE MAX LENGTH: Menaikkan batas MAX_ARTICLE_LENGTH ke 20000.
+  3. ANTI SECTION LEAKAGE: Menolak teks > 20000 karakter.
+  4. TITLE MATCH HARD REJECT: Menolak teks jika judul asli tidak cocok sama sekali.
   5. Pure Quality Scoring (0-100). Tidak melakukan routing Headline/NLP.
-  6. Tidak menghapus teks snippet GNews. Data tetap utuh untuk training/reprocessing.
-  7. Mencatat pipeline_version untuk audit dan observability.
+  6. Mencatat pipeline_version untuk audit dan observability.
 """
 
 import re
@@ -23,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
@@ -37,12 +38,13 @@ except ImportError as e:
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
 from packages.shared import constants as pc
+
 # Setup Clean Logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 DetectorFactory.seed = 0  # Fix langdetect non-determinism
-PIPELINE_VERSION = "v12_validation"
+PIPELINE_VERSION = "v13_threaded_validation"
 
 ID_STOPWORDS = {"yang", "dan", "di", "ke", "untuk", "dengan", "ini", "itu", "atau", "dari", "pada", "juga"}
 HARD_REJECT_WINDOW = 200
@@ -51,8 +53,8 @@ SOFT_PENALTY_PATTERNS = ["captcha", "login", "sign in", "subscribe", "berlanggan
 SOFT_PENALTY_PER_HIT = 8
 QUALITY_THRESHOLD = 80
 
-# Batas maksimal adaptif (menerima long-form, memblokir section leakage)
 MAX_ARTICLE_LENGTH = 20000 
+MAX_WORKERS = 4  # Aman untuk CPU 2-core (GH Actions/Colab)
 
 class QualityResult(NamedTuple):
     score: int
@@ -66,9 +68,6 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
     if any(p in early_window for p in HARD_REJECT_PATTERNS):
         return QualityResult(0, "noise_page")
 
-    # 1. CEGAH HALAMAN KATEGORI/TAG (Section Leakage)
-    # Teks berita asli (long-form) bisa mencapai 15.000 karakter. 
-    # Jika lebih dari 20.000, kemungkinan besar itu halaman list.
     if len(text) > MAX_ARTICLE_LENGTH:
         return QualityResult(0, "rejected_section_page")
 
@@ -97,7 +96,6 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
         except LangDetectException:
             pass
 
-    # 2. PERKUAT TITLE MATCH
     title_words = set(re.findall(r"\b\w+\b", title.lower())) - ID_STOPWORDS
     if title_words:
         max_possible += 25
@@ -105,8 +103,6 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
         match_ratio = sum(1 for w in title_words if w in text_words) / len(title_words)
         earned += int(match_ratio * 25)
         
-        # Hard reject jika judul asli nyaris tidak cocok dengan teks (misal < 20% match)
-        # Ini menangkap kasus salah redirect (misal ke halaman utama)
         if match_ratio < 0.2:
             return QualityResult(0, "rejected_title_mismatch")
 
@@ -125,38 +121,54 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
         return QualityResult(score, "low_quality_no_stopword")
     return QualityResult(score, "low_quality")
 
+def score_worker(row: dict) -> tuple[str, QualityResult, dict]:
+    """Worker function untuk ThreadPoolExecutor"""
+    text = row.get("text") or ""
+    title = row.get("title") or ""
+    result = calculate_quality_score(text, title)
+    current_metadata = dict(row.get("metadata") or {})
+    return row["id"], result, current_metadata
+
 def process_batch(sb, rows: list) -> Counter:
     stats = Counter()
     updates = []
 
-    for r in rows:
-        result = calculate_quality_score(r.get("text") or "", r.get("title") or "")
-        current_metadata = dict(r.get("metadata") or {})
+    # === OPTIMASI v13: THREADED SCORING ===
+    # Kalkulasi score diparalelkan. CPU 2-core akan memproses 4 threads bergantian.
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(score_worker, r): r for r in rows}
+        
+        for future in as_completed(futures):
+            try:
+                rt_id, result, current_metadata = future.result()
+                
+                if result.reason == "validated":
+                    if "content_type" not in current_metadata:
+                        current_metadata["content_type"] = "SNIPPET" if current_metadata.get("is_snippet") else "FULLTEXT"
+                    
+                    updates.append({
+                        "id": rt_id, 
+                        "status": pc.STATUS_VALIDATED, 
+                        "metadata": current_metadata,
+                        "pipeline_version": PIPELINE_VERSION 
+                    })
+                    stats["validated"] += 1
+                else:
+                    current_metadata["fail_reason"] = result.reason
+                    current_metadata["quality_score"] = result.score
+                    updates.append({
+                        "id": rt_id, 
+                        "status": pc.STATUS_FAILED, 
+                        "metadata": current_metadata,
+                        "pipeline_version": PIPELINE_VERSION
+                    })
+                    stats["failed"] += 1
+                    stats[f"reason_{result.reason}"] += 1
+            except Exception as e:
+                logger.error(f"Scoring thread crashed: {e}")
+                stats["crash"] += 1
 
-        if result.reason == "validated":
-            if "content_type" not in current_metadata:
-                current_metadata["content_type"] = "SNIPPET" if current_metadata.get("is_snippet") else "FULLTEXT"
-            
-            updates.append({
-                "id": r["id"], 
-                "status": pc.STATUS_VALIDATED, 
-                "metadata": current_metadata,
-                "pipeline_version": PIPELINE_VERSION 
-            })
-            stats["validated"] += 1
-        else:
-            current_metadata["fail_reason"] = result.reason
-            current_metadata["quality_score"] = result.score
-            updates.append({
-                "id": r["id"], 
-                "status": pc.STATUS_FAILED, 
-                "metadata": current_metadata,
-                "pipeline_version": PIPELINE_VERSION
-            })
-            stats["failed"] += 1
-            stats[f"reason_{result.reason}"] += 1
-
-    # --- PERBAIKAN: CHUNKED RPC CALL ---
+    # --- CHUNKED RPC CALL ---
     if updates:
         CHUNK_SIZE = 50
         try:
@@ -172,6 +184,7 @@ def print_batch_report(batch_num: int, stats: Counter):
     logger.info(f"--- BATCH {batch_num} REPORT ---")
     logger.info(f"  Validated : {stats.get('validated', 0)}")
     logger.info(f"  Failed    : {stats.get('failed', 0)}")
+    logger.info(f"  Crash     : {stats.get('crash', 0)}")
     
     reasons = {k: v for k, v in stats.items() if k.startswith("reason_") and v > 0}
     if reasons:
@@ -183,24 +196,21 @@ def main(limit: int = 100, max_total: int = 0):
     run_id = start_run("validation_worker", PIPELINE_VERSION)
     
     total_stats = Counter()
-    total_processed = 0  # <--- LACAK JUMLAH BARIS SECARA EKSPLISIT
+    total_processed = 0
     batch_num = 1
 
-    logger.info(f"[VALIDATOR v12] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[VALIDATOR v13] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
-        # 1. STOP JIKA SUDAH MENCAPAI MAX TOTAL
         if max_total > 0 and total_processed >= max_total:
             logger.info(f"Max total ({max_total}) tercapai. Berhenti.")
             break
 
-        # 2. HITUNG LIMIT UNTUK BATCH INI
         current_limit = limit
         if max_total > 0:
             current_limit = min(limit, max_total - total_processed)
 
         try:
-            # PERBAIKAN PENGGUNAAN DATETIME
             time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             
             res = sb.table("raw_texts") \
@@ -219,12 +229,12 @@ def main(limit: int = 100, max_total: int = 0):
             logger.info("Tidak ada lagi artikel untuk divalidasi.")
             break
 
-        logger.info(f"Scoring {len(rows)} artikel...")
+        logger.info(f"Scoring {len(rows)} artikel secara paralel...")
         batch_stats = process_batch(sb, rows)
         print_batch_report(batch_num, batch_stats)
         
         total_stats.update(batch_stats)
-        total_processed += len(rows)  # <--- TAMBAHKAN JUMLAH BARIS YANG DIPROSES
+        total_processed += len(rows)
         
         batch_num += 1
         time.sleep(2 + random.uniform(0, 2))
