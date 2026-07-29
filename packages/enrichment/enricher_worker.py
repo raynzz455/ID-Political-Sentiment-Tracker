@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-MAX_WORKERS = 10  # Naikkan dari 7 ke 10
+MAX_WORKERS = 7  # Naikkan dari 7 ke 10
 RSS_TEXT_MIN_LEN = 500
 
 # Expert Validation Config

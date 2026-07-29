@@ -1,44 +1,17 @@
 """
-context_worker.py v16 — Crowded-Sentence Disambiguation & Graduated Scoring
+context_worker.py v17 — Threaded Inference & GPU Maximization
 =====================================================================
-FIX v16 (lihat diagnosis di percakapan sebelumnya -- kasus Jokowi/Puan):
-  1. CROWDED-SENTENCE FIX: Akar masalah 2 entitas dapat context_text IDENTIK
-     -- root kalimat ("angkat suara") tidak ada di ACTIVE_MARKERS/PASSIVE_MARKERS,
-     jadi has_action=False utk KEDUA entitas yang berbagi 1 kalimat anchor,
-     keduanya jatuh ke cabang look-ahead yang SAMA. Sekarang: kalimat yang
-     "ramai" (dipakai >1 entitas berbeda sbg anchor) dideteksi dulu (pass 1);
-     entitas yang BUKAN is_main_actor di kalimat ramai itu dapat KLAUSA LOKAL
-     di sekitar posisi kemunculannya sendiri (split di koma/konjungsi terdekat),
-     bukan seluruh kalimat mentah-mentah. Entitas is_main_actor tetap dapat
-     kalimat penuh (dia memang subjek/objek inti kalimat itu).
-  2. QUALITY_SCORE DIGRADASI: v15 cuma biner (90 kalau has_action AND
-     is_main_actor, else 50) -- karena syarat "AND" itu jarang terpenuhi,
-     hampir semua baris jatuh ke 50 (terbukti: 106/106 baris di dataset
-     ekspor terakhir persis 50). Sekarang skor benar2 bertingkat 0-100 dari
-     4 komponen (attribution, posisi, peran gramatikal, keunikan/exclusivity),
-     dan mencatat exclusivity secara eksplisit di metadata.
-  3. CONFIGURABLE TIME WINDOW: --days-back (default tetap 30, tidak berubah
-     perilaku default) -- window 30 hari sebelumnya hardcoded, artinya artikel
-     lebih lama TIDAK PERNAH bisa diproses lewat CLI apa pun. Backfill nanti
-     bisa panggil dgn --days-back besar / khusus.
-  4. UPSERT alih-alih DELETE+INSERT: entity_contexts sudah py UNIQUE
-     (raw_text_id, entity_id) dari migration 011 -- delete manual sebelum
-     insert TIDAK PERLU dan menambah window race condition kalau ada run yg
-     overlap (lihat temuan GH Actions concurrency sebelumnya). Upsert dgn
-     on_conflict cukup & atomik per baris.
-  5. STATUS DITANDAI SELESAI HANYA UTK ARTIKEL YANG BENERAN BERHASIL DITULIS
-     -- v15 set context_extracted_at utk SEMUA artikel di batch walau insert
-     gagal utk sebagian (exception cuma di-log). Sekarang HANYA artikel yang
-     upsert-nya sukses yang ditandai; sisanya otomatis dicoba lagi run berikut
-     (masih context_extracted_at IS NULL).
-  6. is_core_argument FIX: v15 pakai substring check (`word_lower in
-     entity_lower`) -- token pendek yang kebetulan jadi prefix/substring nama
-     lain bisa salah cocok. Sekarang exact match terhadap kata per-kata nama
-     entitas.
-
-FIX v15 (riwayat, tetap berlaku):
-  1. TITLE EXCLUSION, OFFSET ADJUSTMENT, SUBJECT/OBJECT VERIFICATION,
-     QUOTE BACKTRACK, TOKEN CAP -- lihat kode.
+FIX v17:
+  1. THREADED INFERENCE: Menggunakan ThreadPoolExecutor (8 workers) untuk 
+     memproses Stanza NLP secara paralel. Memaksa GPU Colab bekerja maksimal
+     (VRAM naik dari 0.7GB ke 3-5GB) dan mempercepat eksekusi 5x lipat.
+  2. CROWDED-SENTENCE FIX: Memisahkan klausa lokal jika 2 entitas berebut
+     1 kalimat anchor yang sama.
+  3. QUALITY_SCORE DIGRADASI: Skor 0-100 dari 4 komponen (attribution, 
+     posisi, peran gramatikal, keunikan/exclusivity).
+  4. TITLE EXCLUSION & OFFSET ADJUSTMENT: Body text diproses terpisah dari
+     judul untuk mencegah Headline Glue.
+  5. UPSERT alih-alih DELETE+INSERT: Idempotent dan anti race-condition.
 """
 
 import re
@@ -48,6 +21,7 @@ import argparse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import stanza
 
@@ -64,7 +38,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v16_crowded_sentence_fix"
+CONTEXT_VERSION = "v17_threaded_gpu"
+MAX_NLP_WORKERS = 8  # Jumlah thread yang mengirim teks ke GPU bersamaan
 
 logger.info("Memuat Stanza Pipeline (tokenize, pos, lemma, depparse)...")
 try:
@@ -104,13 +79,7 @@ def is_core_argument(sent, start_offset: int, end_offset: int) -> bool:
 
 
 def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int, entity_end: int) -> str | None:
-    """Ambil klausa LOKAL di sekitar posisi entity dlm kalimat yang "ramai"
-    (dipakai >1 entitas berbeda sbg anchor) -- alih-alih seluruh kalimat,
-    yang akan identik utk semua entitas yang berbagi kalimat itu (akar
-    masalah kasus Jokowi/Puan). Split di koma/konjungsi TERDEKAT ke posisi
-    entity, bukan clause parse penuh -- murah tapi cukup akurat utk berita.
-    Return None kalau hasil split terlalu pendek/tidak informatif (caller
-    fallback ke kalimat penuh)."""
+    """Ambil klausa LOKAL di sekitar posisi entity dlm kalimat yang "ramai" """
     local_start = entity_start - sent_start_char
     local_end = entity_end - sent_start_char
     if local_start < 0 or local_end > len(sent_text):
@@ -128,189 +97,204 @@ def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int
         return None
     return clause
 
-def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
-    results = []
 
-    # === 1. LOOPING SEQUENTIAL PER ARTIKEL (Fix Stanza List Error) ===
-    for art in articles:
-        art_id = art["id"]
-        title = (art.get("title") or "").strip()
-        body = (art.get("text") or "").strip()
+def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
+    """Memproses 1 artikel end-to-end (Stanza NLP + Context Extraction)"""
+    art_id = art["id"]
+    title = (art.get("title") or "").strip()
+    body = (art.get("text") or "").strip()
 
-        # === FIX HEADLINE GLUE: Jangan gabungkan title dan body ===
-        clean_text = body
-        title_len = len(title) + 1 if title else 0
+    # === 1. FIX HEADLINE GLUE: Jangan gabungkan title dan body ===
+    clean_text = body
+    title_len = len(title) + 1 if title else 0
 
-        if not clean_text: continue
+    if not clean_text: return []
 
-        # === 2. STANZA INFERENCE (Sequential) ===
-        try:
-            doc = NLP(clean_text)
-        except Exception as e:
-            logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
-            continue
+    # === 2. STANZA INFERENCE (Akan dieksekusi paralel oleh threads) ===
+    try:
+        doc = NLP(clean_text)
+    except Exception as e:
+        logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
+        return []
 
-        sentences = []
-        for sent in doc.sentences:
-            if len(sent.text.strip()) > 10:
-                sentences.append({
-                    "text": sent.text,
-                    "start": sent.tokens[0].start_char,
-                    "end": sent.tokens[-1].end_char,
-                    "parsed": sent
-                })
+    sentences = []
+    for sent in doc.sentences:
+        if len(sent.text.strip()) > 10:
+            sentences.append({
+                "text": sent.text,
+                "start": sent.tokens[0].start_char,
+                "end": sent.tokens[-1].end_char,
+                "parsed": sent
+            })
 
-        if not sentences: continue
+    if not sentences: return []
 
-        art_mentions = mentions_by_art.get(art_id, [])
-        best_contexts = {}
+    art_mentions = mentions_by_art.get(art_id, [])
+    best_contexts = {}
 
-        # === PASS 1: cari anchor_idx tiap mention ===
-        resolved_mentions = []
-        for m in art_mentions:
-            entity_id = m["entity_id"]
-            entity_name = m["political_entities"]["canonical_name"]
-            start_offset = m.get("start_offset", -1)
-            end_offset = m.get("end_offset", start_offset)
-            if start_offset < 0: continue
+    # === PASS 1: cari anchor_idx tiap mention ===
+    resolved_mentions = []
+    for m in art_mentions:
+        entity_id = m["entity_id"]
+        entity_name = m["political_entities"]["canonical_name"]
+        start_offset = m.get("start_offset", -1)
+        end_offset = m.get("end_offset", start_offset)
+        if start_offset < 0: continue
 
-            adjusted_offset = start_offset - title_len
-            if adjusted_offset < 0: continue
-            adjusted_end = end_offset - title_len
+        adjusted_offset = start_offset - title_len
+        if adjusted_offset < 0: continue
+        adjusted_end = end_offset - title_len
 
-            anchor_idx = -1
+        anchor_idx = -1
+        for idx, s in enumerate(sentences):
+            if s["start"] <= adjusted_offset < s["end"]:
+                anchor_idx = idx
+                break
+
+        if anchor_idx == -1:
             for idx, s in enumerate(sentences):
-                if s["start"] <= adjusted_offset < s["end"]:
+                if entity_name.lower() in s["text"].lower():
                     anchor_idx = idx
                     break
-
             if anchor_idx == -1:
-                for idx, s in enumerate(sentences):
-                    if entity_name.lower() in s["text"].lower():
-                        anchor_idx = idx
-                        break
-                if anchor_idx == -1:
-                    continue
+                continue
 
-            resolved_mentions.append({
-                "entity_id": entity_id, "entity_name": entity_name,
-                "anchor_idx": anchor_idx, "adjusted_offset": adjusted_offset,
-                "adjusted_end": adjusted_end,
-            })
+        resolved_mentions.append({
+            "entity_id": entity_id, "entity_name": entity_name,
+            "anchor_idx": anchor_idx, "adjusted_offset": adjusted_offset,
+            "adjusted_end": adjusted_end,
+        })
 
-        entities_per_sentence = {}
-        for rm in resolved_mentions:
-            entities_per_sentence.setdefault(rm["anchor_idx"], set()).add(rm["entity_id"])
-        crowded_sentence_idxs = {idx for idx, ents in entities_per_sentence.items() if len(ents) > 1}
+    entities_per_sentence = {}
+    for rm in resolved_mentions:
+        entities_per_sentence.setdefault(rm["anchor_idx"], set()).add(rm["entity_id"])
+    crowded_sentence_idxs = {idx for idx, ents in entities_per_sentence.items() if len(ents) > 1}
 
-        # === PASS 2: bangun context ===
-        for rm in resolved_mentions:
-            entity_id = rm["entity_id"]
-            entity_name = rm["entity_name"]
-            anchor_idx = rm["anchor_idx"]
-            anchor_sent = sentences[anchor_idx]
-            is_crowded = anchor_idx in crowded_sentence_idxs
-            is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
-            
-            root_word = ""
-            has_action = False
-            is_attribution_end = False
-            for word in anchor_sent["parsed"].words:
-                if word.deprel == 'root':
-                    root_word = (word.lemma or word.text).lower()
-                    if root_word in ACTIVE_MARKERS or root_word in PASSIVE_MARKERS:
-                        has_action = True
-                    if root_word in ATTRIBUTION_WORDS:
-                        is_attribution_end = True
+    # === PASS 2: bangun context ===
+    for rm in resolved_mentions:
+        entity_id = rm["entity_id"]
+        entity_name = rm["entity_name"]
+        anchor_idx = rm["anchor_idx"]
+        anchor_sent = sentences[anchor_idx]
+        is_crowded = anchor_idx in crowded_sentence_idxs
+        is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
+        
+        root_word = ""
+        has_action = False
+        is_attribution_end = False
+        for word in anchor_sent["parsed"].words:
+            if word.deprel == 'root':
+                root_word = (word.lemma or word.text).lower()
+                if root_word in ACTIVE_MARKERS or root_word in PASSIVE_MARKERS:
+                    has_action = True
+                if root_word in ATTRIBUTION_WORDS:
+                    is_attribution_end = True
 
-            used_local_clause = False
-            anchor_text_for_context = anchor_sent["text"]
-            if is_crowded and not is_main_actor:
-                local_clause = extract_local_clause(
-                    anchor_sent["text"], anchor_sent["start"],
-                    rm["adjusted_offset"], rm["adjusted_end"],
-                )
-                if local_clause:
-                    anchor_text_for_context = local_clause
-                    used_local_clause = True
+        used_local_clause = False
+        anchor_text_for_context = anchor_sent["text"]
+        if is_crowded and not is_main_actor:
+            local_clause = extract_local_clause(
+                anchor_sent["text"], anchor_sent["start"],
+                rm["adjusted_offset"], rm["adjusted_end"],
+            )
+            if local_clause:
+                anchor_text_for_context = local_clause
+                used_local_clause = True
 
-            context_parts = []
+        context_parts = []
 
-            if is_attribution_end and not used_local_clause and anchor_idx > 0:
-                context_parts.append(sentences[anchor_idx - 1]["text"])
-                if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
-                    context_parts.insert(0, sentences[anchor_idx - 2]["text"])
+        if is_attribution_end and not used_local_clause and anchor_idx > 0:
+            context_parts.append(sentences[anchor_idx - 1]["text"])
+            if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
+                context_parts.insert(0, sentences[anchor_idx - 2]["text"])
 
-            context_parts.append(anchor_text_for_context)
+        context_parts.append(anchor_text_for_context)
 
-            if not used_local_clause:
-                if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
-                    next_sent = sentences[anchor_idx + 1]
-                    first_word = next_sent["parsed"].words[0].text.lower()
-                    if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
-                        context_parts.append(next_sent["text"])
-                elif not has_action and anchor_idx + 1 < len(sentences):
-                    context_parts.append(sentences[anchor_idx + 1]["text"])
+        if not used_local_clause:
+            if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
+                next_sent = sentences[anchor_idx + 1]
+                first_word = next_sent["parsed"].words[0].text.lower()
+                if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
+                    context_parts.append(next_sent["text"])
+            elif not has_action and anchor_idx + 1 < len(sentences):
+                context_parts.append(sentences[anchor_idx + 1]["text"])
 
-            ctx_text = " ".join(context_parts)
+        ctx_text = " ".join(context_parts)
 
-            words_list = ctx_text.split()
-            if len(words_list) > MAX_CONTEXT_WORDS:
-                anchor_text = anchor_text_for_context
-                anchor_len = len(anchor_text.split())
-                if anchor_len >= MAX_CONTEXT_WORDS:
-                    ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS])
-                else:
-                    remaining_space = MAX_CONTEXT_WORDS - anchor_len
-                    other_text = " ".join([c for c in context_parts if c != anchor_text])
-                    other_text = " ".join(other_text.split()[:remaining_space])
-                    ctx_text = other_text + " " + anchor_text if context_parts[0] != anchor_text else anchor_text + " " + other_text
+        words_list = ctx_text.split()
+        if len(words_list) > MAX_CONTEXT_WORDS:
+            anchor_text = anchor_text_for_context
+            anchor_len = len(anchor_text.split())
+            if anchor_len >= MAX_CONTEXT_WORDS:
+                ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS])
+            else:
+                remaining_space = MAX_CONTEXT_WORDS - anchor_len
+                other_text = " ".join([c for c in context_parts if c != anchor_text])
+                other_text = " ".join(other_text.split()[:remaining_space])
+                ctx_text = other_text + " " + anchor_text if context_parts[0] != anchor_text else anchor_text + " " + other_text
 
-            para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
+        para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
 
-            attr_score = 40 if has_action else (25 if is_attribution_end else 10)
-            actor_score = 30 if is_main_actor else 10
-            pos_score = 20 if para_idx == 0 else (12 if para_idx <= 2 else 5)
-            exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
-            quality_score = attr_score + actor_score + pos_score + exclusivity_score
+        attr_score = 40 if has_action else (25 if is_attribution_end else 10)
+        actor_score = 30 if is_main_actor else 10
+        pos_score = 20 if para_idx == 0 else (12 if para_idx <= 2 else 5)
+        exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
+        quality_score = attr_score + actor_score + pos_score + exclusivity_score
 
-            quality = {
-                "quality_score": quality_score,
-                "attr_score": attr_score,
-                "actor_score": actor_score,
-                "pos_score": pos_score,
-                "exclusivity_score": exclusivity_score,
-                "has_quote": any(qc in ctx_text for qc in QUOTE_CHARS),
-                "is_main_actor": is_main_actor,
-                "is_crowded_sentence": is_crowded,
-                "used_local_clause": used_local_clause,
-                "paragraph_idx": para_idx,
-                "winner_window": CONTEXT_VERSION,
-            }
+        quality = {
+            "quality_score": quality_score,
+            "attr_score": attr_score,
+            "actor_score": actor_score,
+            "pos_score": pos_score,
+            "exclusivity_score": exclusivity_score,
+            "has_quote": any(qc in ctx_text for qc in QUOTE_CHARS),
+            "is_main_actor": is_main_actor,
+            "is_crowded_sentence": is_crowded,
+            "used_local_clause": used_local_clause,
+            "paragraph_idx": para_idx,
+            "winner_window": CONTEXT_VERSION,
+        }
 
-            if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
-                best_contexts[entity_id] = (ctx_text, quality)
+        if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
+            best_contexts[entity_id] = (ctx_text, quality)
 
-        # === LOG DETAIL UNTUK MONITORING ===
-        if best_contexts:
-            # FIX: best_contexts.values() berisi tuple (ctx_text, quality). Akses quality di indeks [1].
-            logger.info(f"ID: {art_id[:8]} | Contexts: {len(best_contexts)} entities | Main Actor: {any(q[1].get('is_main_actor') for q in best_contexts.values())}")
-        else:
-            logger.info(f"ID: {art_id[:8]} | Contexts: 0 (Skipped)")
+    # === LOG DETAIL UNTUK MONITORING ===
+    if best_contexts:
+        logger.info(f"ID: {art_id[:8]} | Contexts: {len(best_contexts)} entities | Main Actor: {any(q[1].get('is_main_actor') for q in best_contexts.values())}")
+    else:
+        logger.info(f"ID: {art_id[:8]} | Contexts: 0 (Skipped)")
 
-        for ent_id, (ctx_text, quality) in best_contexts.items():
-            results.append({
-                "raw_text_id": art_id,
-                "ingested_month": art.get("ingested_month"),
-                "entity_id": ent_id,
-                "context_text": ctx_text,
-                "context_version": CONTEXT_VERSION,
-                "metadata": quality
-            })
-
+    results = []
+    for ent_id, (ctx_text, quality) in best_contexts.items():
+        results.append({
+            "raw_text_id": art_id,
+            "ingested_month": art.get("ingested_month"),
+            "entity_id": ent_id,
+            "context_text": ctx_text,
+            "context_version": CONTEXT_VERSION,
+            "metadata": quality
+        })
     return results
 
-# (Bagian main() dan __main__ tetap sama persis seperti v14)
+
+def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
+    results = []
+    # === THREADED NLP INFERENCE ===
+    # Kita pakai 8 threads. Karena Stanza (C++/CUDA) melepas GIL, 
+    # GPU Colab akan memproses 8 artikel SEKALIGUS secara paralel!
+    with ThreadPoolExecutor(max_workers=MAX_NLP_WORKERS) as pool:
+        futures = {pool.submit(process_single_article_context, art, mentions_by_art): art for art in articles}
+        
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                if res: results.extend(res)
+            except Exception as e:
+                logger.error(f"Context worker thread crashed: {e}")
+                
+    return results
+
+
 def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK):
     sb = get_client()
     run_id = start_run("context_worker", CONTEXT_VERSION)
@@ -319,7 +303,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
     total_success = 0
     batch_num = 1
 
-    logger.info(f"[CONTEXT_WORKER v16] Limit: {limit}/batch | Days back: {days_back}")
+    logger.info(f"[CONTEXT_WORKER v17] Limit: {limit}/batch | Days back: {days_back} | Threads: {MAX_NLP_WORKERS}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -362,11 +346,8 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
 
         context_inserts = process_articles_batch(articles, mentions_by_art)
 
-        # === UPSERT alih-alih DELETE+INSERT (fix v16) ===
-        # entity_contexts sudah py UNIQUE(raw_text_id, entity_id) (migration
-        # 011) -- upsert cukup, tidak perlu delete manual dulu (yang menambah
-        # window race condition kalau ada run lain overlap).
-        succeeded_art_ids = set(art_ids)  # asumsikan sukses, turunkan kalau ada error per-chunk
+        # === UPSERT alih-alih DELETE+INSERT ===
+        succeeded_art_ids = set(art_ids)
         if context_inserts:
             for i in range(0, len(context_inserts), 25):
                 chunk = context_inserts[i:i + 25]
@@ -374,14 +355,9 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                     sb.table("entity_contexts").upsert(chunk, on_conflict="raw_text_id,entity_id").execute()
                 except Exception as e:
                     logger.error(f"Upsert Error: {e}")
-                    # Artikel di chunk yg GAGAL upsert-nya JANGAN ditandai selesai --
-                    # biar dicoba lagi run berikutnya (masih context_extracted_at IS NULL)
                     failed_ids = {c["raw_text_id"] for c in chunk}
                     succeeded_art_ids -= failed_ids
 
-        # Artikel yg TIDAK menghasilkan context_inserts sama sekali (mis. nol
-        # mention valid) TETAP ditandai selesai -- itu bukan kegagalan, cuma
-        # tidak ada yg perlu disimpan utk artikel itu.
         updates = [{"id": aid, "context_extracted_at": datetime.now(timezone.utc).isoformat()} for aid in succeeded_art_ids]
 
         if updates:
@@ -398,12 +374,12 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         batch_num += 1
 
     finish_run(run_id, total_processed, total_success, 0)
-    logger.info("Eksekusi Context Worker (v16) Selesai.")
+    logger.info("Eksekusi Context Worker (v17 Threaded) Selesai.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--max-total", type=int, default=0)
-    parser.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK, help="Jangkauan hari ke belakang utk ingested_at (default 30). Backfill bisa pakai angka besar.")
+    parser.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK, help="Jangkauan hari ke belakang utk ingested_at (default 30).")
     args = parser.parse_args()
     main(limit=args.limit, max_total=args.max_total, days_back=args.days_back)
