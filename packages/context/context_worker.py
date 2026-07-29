@@ -17,13 +17,14 @@ FIX v17:
 import re
 import time
 import logging
+import torch
 import argparse
+import stanza
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import stanza
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
@@ -39,7 +40,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
 CONTEXT_VERSION = "v17_threaded_gpu"
-MAX_NLP_WORKERS = 8  # Jumlah thread yang mengirim teks ke GPU bersamaan
+MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
 logger.info("Memuat Stanza Pipeline (tokenize, pos, lemma, depparse)...")
 try:

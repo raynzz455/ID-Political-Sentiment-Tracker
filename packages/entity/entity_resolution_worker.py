@@ -20,6 +20,7 @@ import random
 import logging
 import argparse
 import stanza
+import torch
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
@@ -40,8 +41,7 @@ logging.getLogger("stanza").setLevel(logging.WARNING)
 
 RESOLVER_VERSION = "v13_threaded_gpu"
 DEFAULT_DAYS_BACK = 30
-MAX_NLP_WORKERS = 8  # Jumlah thread yang mengirim teks ke GPU bersamaan
-
+MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 # Load Stanza Pipeline SEKALI di awal
 logger.info("Memuat Stanza POS Tagger (Bahasa Indonesia)...")
 try:
