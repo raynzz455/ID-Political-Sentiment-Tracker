@@ -1,10 +1,12 @@
 """
-preprocessing_worker.py v9 — Headline De-glue Fix
+preprocessing_worker.py v9 — Headline De-glue & Domain Strip Fix
 =============================================================
 FIX v9:
   1. HEADLINE DE-GLUE: Menggunakan Regex Matcher yang toleran terhadap tanda baca
      untuk memisahkan judul yang menempel ke body text. (Membasmi bug di v8).
-  2. RATE LIMIT SAFE: Mempertahankan jeda (sleep) antar batch.
+  2. DOMAIN STRIP: Membuang nama domain media (Tirto.id, CNN.com, dll) yang
+     sering nyangkut di awal body text pasca pemotongan judul.
+  3. RATE LIMIT SAFE: Mempertahankan jeda (sleep) antar batch.
 """
 import time  
 import re
@@ -50,25 +52,18 @@ def remove_urls_emails(text: str) -> tuple[str, int]:
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
     return text, int(len(urls) + len(emails))
 
-def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
-    """Safety net ringan. Hanya memotong sampai tanda titik (.) agar tidak memakan seluruh artikel."""
-    
-    # 1. FIX HEADLINE GLUE: Pisahkan judul yang nempel ke body text
+def strip_news_boilerplate_safe(text: str, title: str = "") -> str:    
     if title:
-        # Ambil maksimal 8 kata pertama dari judul agar regex ringan dan tidak salah tangkap
         title_words = re.findall(r'\w+', title)[:8]
         if title_words:
-            # Buat pattern: tiap kata dipisahkan oleh \W* (tanda baca/spasi bebas)
             pattern_title = r'\W*'.join(re.escape(w) for w in title_words)
             match = re.match(r'^\s*' + pattern_title, text, re.IGNORECASE)
             if match:
-                # Jika judul ketemu di awal teks, potong dan buang sisa tanda bacanya
                 text = text[match.end():].lstrip(" :-\n\"'")
-                
-    # 2. Buang tag HTML yang nyangkut
-    text = re.sub(r'<[^>]+>', ' ', text)
-    
-    # 3. Hapus sampah UI portal berita (Bounded Regex: berhenti di titik atau newline)
+    domain_pattern = r'^[\w\.\-]+\.(com|id|co|tv|news|net)\b\s*[\-\|:]*\s*'
+    for _ in range(2):
+        text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)                
+    text = re.sub(r'<[^>]+>', ' ', text)    
     patterns = [
         r"(?i)(baca juga|simak juga|berita terkait)\s*:[^.\n]*\.?",
         r"(?i)(reporter|editor|penulis|pewarta|jurnalis)\s*:\s*[^.\n]*\.?",
@@ -79,8 +74,7 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
     for p in patterns:
         text = re.sub(p, '', text)        
     text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
-    
-    return text
+    return text.strip(" :-\n\"'")
 
 def normalize_punctuation(text: str) -> str:
     text = text.replace('“', '"').replace('”', '"').replace("‘", "'").replace("’", "'")
@@ -106,7 +100,6 @@ def normalize_pipeline(text: str, title: str = "") -> tuple[str, dict]:
 # ─────────────────────────────────────────────────────────────
 # MAIN WORKER
 # ─────────────────────────────────────────────────────────────
-# (Bagian main worker tetap sama persis seperti v8, tidak diubah)
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
     run_id = start_run("preprocessing_worker", PIPELINE_VERSION)

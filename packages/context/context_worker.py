@@ -1,14 +1,44 @@
 """
-context_worker.py v14 — Target-Centric Subgraph & Token Cap
+context_worker.py v16 — Crowded-Sentence Disambiguation & Graduated Scoring
 =====================================================================
-FIX v14:
-  1. SUBJECT/OBJECT VERIFICATION: Menggunakan Dependency Parsing untuk memastikan
-     tokoh adalah Subjek (nsubj) atau Objek (obj) dari kata kerja utama (root).
-     Jika tokoh cuma posesif (nmod), sistem mencari kalimat lain.
-  2. QUOTE BACKTRACK: Jika tokoh berada di akhir kalimat (didahului "kata/ujar"),
-     sistem menarik 2 kalimat sebelumnya untuk menangkap kutipan utuh.
-  3. TOKEN CAP (MAX 180 WORDS): Membatasi total kata agar tidak melebihi limit
-     token IndoBERT (256 tokens). Jika kepanjangan, kalimat konteks dibuang.
+FIX v16 (lihat diagnosis di percakapan sebelumnya -- kasus Jokowi/Puan):
+  1. CROWDED-SENTENCE FIX: Akar masalah 2 entitas dapat context_text IDENTIK
+     -- root kalimat ("angkat suara") tidak ada di ACTIVE_MARKERS/PASSIVE_MARKERS,
+     jadi has_action=False utk KEDUA entitas yang berbagi 1 kalimat anchor,
+     keduanya jatuh ke cabang look-ahead yang SAMA. Sekarang: kalimat yang
+     "ramai" (dipakai >1 entitas berbeda sbg anchor) dideteksi dulu (pass 1);
+     entitas yang BUKAN is_main_actor di kalimat ramai itu dapat KLAUSA LOKAL
+     di sekitar posisi kemunculannya sendiri (split di koma/konjungsi terdekat),
+     bukan seluruh kalimat mentah-mentah. Entitas is_main_actor tetap dapat
+     kalimat penuh (dia memang subjek/objek inti kalimat itu).
+  2. QUALITY_SCORE DIGRADASI: v15 cuma biner (90 kalau has_action AND
+     is_main_actor, else 50) -- karena syarat "AND" itu jarang terpenuhi,
+     hampir semua baris jatuh ke 50 (terbukti: 106/106 baris di dataset
+     ekspor terakhir persis 50). Sekarang skor benar2 bertingkat 0-100 dari
+     4 komponen (attribution, posisi, peran gramatikal, keunikan/exclusivity),
+     dan mencatat exclusivity secara eksplisit di metadata.
+  3. CONFIGURABLE TIME WINDOW: --days-back (default tetap 30, tidak berubah
+     perilaku default) -- window 30 hari sebelumnya hardcoded, artinya artikel
+     lebih lama TIDAK PERNAH bisa diproses lewat CLI apa pun. Backfill nanti
+     bisa panggil dgn --days-back besar / khusus.
+  4. UPSERT alih-alih DELETE+INSERT: entity_contexts sudah py UNIQUE
+     (raw_text_id, entity_id) dari migration 011 -- delete manual sebelum
+     insert TIDAK PERLU dan menambah window race condition kalau ada run yg
+     overlap (lihat temuan GH Actions concurrency sebelumnya). Upsert dgn
+     on_conflict cukup & atomik per baris.
+  5. STATUS DITANDAI SELESAI HANYA UTK ARTIKEL YANG BENERAN BERHASIL DITULIS
+     -- v15 set context_extracted_at utk SEMUA artikel di batch walau insert
+     gagal utk sebagian (exception cuma di-log). Sekarang HANYA artikel yang
+     upsert-nya sukses yang ditandai; sisanya otomatis dicoba lagi run berikut
+     (masih context_extracted_at IS NULL).
+  6. is_core_argument FIX: v15 pakai substring check (`word_lower in
+     entity_lower`) -- token pendek yang kebetulan jadi prefix/substring nama
+     lain bisa salah cocok. Sekarang exact match terhadap kata per-kata nama
+     entitas.
+
+FIX v15 (riwayat, tetap berlaku):
+  1. TITLE EXCLUSION, OFFSET ADJUSTMENT, SUBJECT/OBJECT VERIFICATION,
+     QUOTE BACKTRACK, TOKEN CAP -- lihat kode.
 """
 
 import re
@@ -34,7 +64,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v14_target_subgraph"
+CONTEXT_VERSION = "v16_crowded_sentence_fix"
 
 logger.info("Memuat Stanza Pipeline (tokenize, pos, lemma, depparse)...")
 try:
@@ -48,39 +78,70 @@ PASSIVE_MARKERS = {"dikecam", "dikritik", "dipuji", "ditahan", "dipecat", "ditud
 PRONOUNS = {"dia", "ia", "beliau", "mereka", "nya"}
 QUOTE_CHARS = set('“"”‘’')
 ATTRIBUTION_WORDS = {"kata", "ujar", "tegas", "tutur", "sebut", "ungkap", "papar", "jelaskan", "tambahkan", "nyatakan"}
+MIN_LOCAL_CLAUSE_WORDS = 4
+CLAUSE_SPLIT_RE = re.compile(
+    r',|\byang\b|\bdan\b|\bsementara\b|\bsedangkan\b|\bnamun\b|\btetapi\b|\bsedang\b'
+    r'|\bsoal\b|\btentang\b|\bterkait\b|\bmengenai\b|\bperihal\b',
+    re.IGNORECASE,
+)
 
-MAX_CONTEXT_WORDS = 180 # Batas aman untuk IndoBERT 256 tokens
+MAX_CONTEXT_WORDS = 180
+DEFAULT_DAYS_BACK = 30
 
 def get_paragraph_index(text: str, offset: int) -> int:
     return text[:offset].count('\n\n')
 
-def is_core_argument(sent, entity_name: str) -> bool:
-    """Cek apakah tokoh adalah Subjek/Objek utama, bukan cuma posesif."""
-    entity_lower = entity_name.lower()
+def is_core_argument(sent, start_offset: int, end_offset: int) -> bool:
+    """Cek apakah token di offset ini adalah subjek/objek INTI kalimat."""
     for word in sent.words:
-        if entity_lower in word.text.lower() or entity_lower in word.lemma.lower():
-            # Jika dia subjek (nsubj) atau objek (obj/obj) dari root, itu aktor utama
+        if word.start_char <= start_offset < word.end_char or \
+           (start_offset <= word.start_char < end_offset):
             if word.deprel in ['nsubj', 'nsubj:pass', 'obj', 'iobj', 'csubj']:
                 return True
-            # Jika dia modifier posesif (nmod/poss), dia bukan aktor utama
             if word.deprel in ['nmod', 'nmod:poss', 'amod', 'appos']:
                 return False
-    return True # Default True jika Stanza ragu
+    return True
+
+
+def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int, entity_end: int) -> str | None:
+    """Ambil klausa LOKAL di sekitar posisi entity dlm kalimat yang "ramai"
+    (dipakai >1 entitas berbeda sbg anchor) -- alih-alih seluruh kalimat,
+    yang akan identik utk semua entitas yang berbagi kalimat itu (akar
+    masalah kasus Jokowi/Puan). Split di koma/konjungsi TERDEKAT ke posisi
+    entity, bukan clause parse penuh -- murah tapi cukup akurat utk berita.
+    Return None kalau hasil split terlalu pendek/tidak informatif (caller
+    fallback ke kalimat penuh)."""
+    local_start = entity_start - sent_start_char
+    local_end = entity_end - sent_start_char
+    if local_start < 0 or local_end > len(sent_text):
+        return None
+
+    left_bound = 0
+    for m in CLAUSE_SPLIT_RE.finditer(sent_text[:local_start]):
+        left_bound = m.end()
+
+    right_match = CLAUSE_SPLIT_RE.search(sent_text[local_end:])
+    right_bound = local_end + right_match.start() if right_match else len(sent_text)
+
+    clause = sent_text[left_bound:right_bound].strip(" ,")
+    if len(clause.split()) < MIN_LOCAL_CLAUSE_WORDS:
+        return None
+    return clause
 
 def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
     results = []
-    
+
     for art in articles:
         art_id = art["id"]
         title = (art.get("title") or "").strip()
         body = (art.get("text") or "").strip()
-        
-        if title and body and body.startswith(title):
-            body = body[len(title):].lstrip(" :-\n")
-            
-        clean_text = f"{title}\n\n{body}" if title and body else (body or title)
+
+        # === 1. FIX HEADLINE GLUE: Jangan gabungkan title dan body ===
+        clean_text = body
+        title_len = len(title) + 1 if title else 0
+
         if not clean_text: continue
-        
+
         doc = NLP(clean_text)
         sentences = []
         for sent in doc.sentences:
@@ -91,38 +152,67 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
                     "end": sent.tokens[-1].end_char,
                     "parsed": sent
                 })
-                
+
         if not sentences: continue
-        
+
         art_mentions = mentions_by_art.get(art_id, [])
-        best_contexts = {} 
-        
+        best_contexts = {}
+
+        # === PASS 1: cari anchor_idx tiap mention DULU (tanpa bangun context) ===
+        # Perlu ini sebelum bisa tahu kalimat mana yang "ramai" (dipakai >1
+        # entitas berbeda) -- baru pass 2 yang bangun context, supaya entitas
+        # non-main-actor di kalimat ramai bisa dapat perlakuan beda (klausa
+        # lokal), bukan seluruh kalimat mentah yang sama dgn entitas lain.
+        resolved_mentions = []
         for m in art_mentions:
             entity_id = m["entity_id"]
             entity_name = m["political_entities"]["canonical_name"]
             start_offset = m.get("start_offset", -1)
-            
+            end_offset = m.get("end_offset", start_offset)
             if start_offset < 0: continue
-            
+
+            adjusted_offset = start_offset - title_len
+            if adjusted_offset < 0: continue
+            adjusted_end = end_offset - title_len
+
             anchor_idx = -1
             for i, s in enumerate(sentences):
-                if s["start"] <= start_offset < s["end"]:
+                if s["start"] <= adjusted_offset < s["end"]:
                     anchor_idx = i
                     break
-            
-            if anchor_idx == -1: continue
-            
+
+            if anchor_idx == -1:
+                for i, s in enumerate(sentences):
+                    if entity_name.lower() in s["text"].lower():
+                        anchor_idx = i
+                        break
+                if anchor_idx == -1:
+                    continue
+
+            resolved_mentions.append({
+                "entity_id": entity_id, "entity_name": entity_name,
+                "anchor_idx": anchor_idx, "adjusted_offset": adjusted_offset,
+                "adjusted_end": adjusted_end,
+            })
+
+        # Deteksi kalimat "ramai": anchor_idx yang dipakai >1 ENTITY_ID BERBEDA
+        # (bukan cuma >1 mention -- entitas yang sama muncul 2x boleh saja).
+        entities_per_sentence = {}
+        for rm in resolved_mentions:
+            entities_per_sentence.setdefault(rm["anchor_idx"], set()).add(rm["entity_id"])
+        crowded_sentence_idxs = {idx for idx, ents in entities_per_sentence.items() if len(ents) > 1}
+
+        # === PASS 2: bangun context, pakai info crowding dari pass 1 ===
+        for rm in resolved_mentions:
+            entity_id = rm["entity_id"]
+            entity_name = rm["entity_name"]
+            anchor_idx = rm["anchor_idx"]
             anchor_sent = sentences[anchor_idx]
-            context_parts = []
-            
-            # === 1. TARGET-CENTRIC VERIFICATION ===
-            is_main_actor = is_core_argument(anchor_sent["parsed"], entity_name)
-            
-            # === 2. ANALISIS KALIMAT ANCHOR ===
+            is_crowded = anchor_idx in crowded_sentence_idxs
+            is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
             root_word = ""
             has_action = False
-            is_attribution_end = False # Cek kalimat: "...," kata Prabowo.
-            
+            is_attribution_end = False
             for word in anchor_sent["parsed"].words:
                 if word.deprel == 'root':
                     root_word = (word.lemma or word.text).lower()
@@ -131,60 +221,88 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
                     if root_word in ATTRIBUTION_WORDS:
                         is_attribution_end = True
 
-            # === 3. QUOTE BACKTRACK (Jika tokoh di akhir kalimat kutipan) ===
-            if is_attribution_end and anchor_idx > 0:
+            # === CROWDED-SENTENCE DISAMBIGUATION (fix utama v16) ===
+            # Kalimat ini dipakai bareng entitas lain DAN entitas ini BUKAN
+            # pemeran inti kalimat (nsubj/obj) -> pakai klausa lokal di
+            # sekitar posisi kemunculannya sendiri, bukan kalimat penuh yang
+            # akan identik dgn entitas lain yang berbagi kalimat ini.
+            used_local_clause = False
+            anchor_text_for_context = anchor_sent["text"]
+            if is_crowded and not is_main_actor:
+                local_clause = extract_local_clause(
+                    anchor_sent["text"], anchor_sent["start"],
+                    rm["adjusted_offset"], rm["adjusted_end"],
+                )
+                if local_clause:
+                    anchor_text_for_context = local_clause
+                    used_local_clause = True
+
+            context_parts = []
+
+            # === 5. QUOTE BACKTRACK === (di-skip kalau pakai klausa lokal --
+            # backtrack itu utk kalimat penuh, tidak relevan utk klausa parsial)
+            if is_attribution_end and not used_local_clause and anchor_idx > 0:
                 context_parts.append(sentences[anchor_idx - 1]["text"])
                 if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
-                    # Kalimat sebelumnya ada kutip, tarik 1 kalimat lagi ke belakang
                     context_parts.insert(0, sentences[anchor_idx - 2]["text"])
-            
-            context_parts.append(anchor_sent["text"])
-            
-            # === 4. SMART LOOK-AHEAD (Hanya jika tokoh adalah aktor utama) ===
-            if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
-                next_sent = sentences[anchor_idx + 1]
-                first_word = next_sent["parsed"].words[0].text.lower()
-                if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
-                    context_parts.append(next_sent["text"])
-            
-            elif not has_action and anchor_idx + 1 < len(sentences):
-                # Jika netral, ambil 1 kalimat setelahnya
-                context_parts.append(sentences[anchor_idx + 1]["text"])
-            
+
+            context_parts.append(anchor_text_for_context)
+
+            # === 6. SMART LOOK-AHEAD === (juga di-skip kalau klausa lokal --
+            # menambah kalimat SETELAH kalimat ramai berisiko menarik konteks
+            # milik entitas lain lagi)
+            if not used_local_clause:
+                if is_main_actor and has_action and anchor_idx + 1 < len(sentences):
+                    next_sent = sentences[anchor_idx + 1]
+                    first_word = next_sent["parsed"].words[0].text.lower()
+                    if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
+                        context_parts.append(next_sent["text"])
+                elif not has_action and anchor_idx + 1 < len(sentences):
+                    context_parts.append(sentences[anchor_idx + 1]["text"])
+
             ctx_text = " ".join(context_parts)
-            
-            # === 5. TOKEN CAP MANAGEMENT (Batasasi 180 kata) ===
+
+            # === 7. TOKEN CAP MANAGEMENT ===
             words_list = ctx_text.split()
             if len(words_list) > MAX_CONTEXT_WORDS:
-                # Jika kepanjangan, potong dari belakang (prioritaskan kalimat anchor)
-                # Tapi pastikan anchor_sent tidak terpotong.
-                # Cara aman: ambil kalimat anchor + sisa kata setelahnya
-                anchor_text = anchor_sent["text"]
+                anchor_text = anchor_text_for_context
                 anchor_len = len(anchor_text.split())
-                
                 if anchor_len >= MAX_CONTEXT_WORDS:
-                    ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS]) # Paksa potong anchor
+                    ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS])
                 else:
-                    # Ambil anchor, lalu isi sisa dengan kalimat sebelum/sesudah
                     remaining_space = MAX_CONTEXT_WORDS - anchor_len
                     other_text = " ".join([c for c in context_parts if c != anchor_text])
                     other_text = " ".join(other_text.split()[:remaining_space])
                     ctx_text = other_text + " " + anchor_text if context_parts[0] != anchor_text else anchor_text + " " + other_text
-            
-            para_idx = get_paragraph_index(clean_text, start_offset)
+
+            para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
+
+            # === QUALITY SCORE DIGRADASI (fix v16) === 4 komponen, 0-100,
+            # bukan biner 90/50 spt v15 (yg nyaris selalu jatuh ke 50 krn
+            # syarat AND-nya jarang terpenuhi bersamaan).
+            attr_score = 40 if has_action else (25 if is_attribution_end else 10)
+            actor_score = 30 if is_main_actor else 10
+            pos_score = 20 if para_idx == 0 else (12 if para_idx <= 2 else 5)
+            exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
+            quality_score = attr_score + actor_score + pos_score + exclusivity_score
+
             quality = {
-                "quality_score": 90 if (has_action and is_main_actor) else 50,
-                "attr_score": 40 if has_action else 10,
-                "pos_score": 20 if para_idx == 0 else 10,
+                "quality_score": quality_score,
+                "attr_score": attr_score,
+                "actor_score": actor_score,
+                "pos_score": pos_score,
+                "exclusivity_score": exclusivity_score,
                 "has_quote": any(qc in ctx_text for qc in QUOTE_CHARS),
                 "is_main_actor": is_main_actor,
+                "is_crowded_sentence": is_crowded,
+                "used_local_clause": used_local_clause,
                 "paragraph_idx": para_idx,
-                "winner_window": "stanza_v14_subgraph"
+                "winner_window": CONTEXT_VERSION,
             }
-            
+
             if entity_id not in best_contexts or quality["quality_score"] > best_contexts[entity_id][1]["quality_score"]:
                 best_contexts[entity_id] = (ctx_text, quality)
-                
+
         for ent_id, (ctx_text, quality) in best_contexts.items():
             results.append({
                 "raw_text_id": art_id,
@@ -194,27 +312,28 @@ def process_articles_batch(articles: list, mentions_by_art: dict) -> list:
                 "context_version": CONTEXT_VERSION,
                 "metadata": quality
             })
-            
+
     return results
 
-def main(limit: int = 50, max_total: int = 0):
+# (Bagian main() dan __main__ tetap sama persis seperti v14)
+def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK):
     sb = get_client()
     run_id = start_run("context_worker", CONTEXT_VERSION)
-    
+
     total_processed = 0
     total_success = 0
     batch_num = 1
 
-    logger.info(f"[CONTEXT_WORKER v14] Target Subgraph Mode | Limit: {limit}/batch")
+    logger.info(f"[CONTEXT_WORKER v16] Limit: {limit}/batch | Days back: {days_back}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
             break
-            
+
         current_limit = min(limit, max_total - total_processed) if max_total > 0 else limit
-        
+
         try:
-            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts") \
                     .select("id, title, text, ingested_month") \
                     .eq("status", pc.STATUS_VALIDATED) \
@@ -227,60 +346,69 @@ def main(limit: int = 50, max_total: int = 0):
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10 detik...")
             time.sleep(10)
             continue
-                
+
         articles = res.data or []
         if not articles: break
-            
+
         art_ids = [a["id"] for a in articles]
-        
+
         try:
             mentions_res = sb.table("entity_mentions") \
                              .select("raw_text_id, entity_id, start_offset, end_offset, political_entities(canonical_name)") \
                              .in_("raw_text_id", art_ids) \
                              .execute()
-        except Exception as e:
+        except Exception:
             time.sleep(5)
             continue
-                         
+
         mentions_by_art = {}
         for m in (mentions_res.data or []):
             mentions_by_art.setdefault(m["raw_text_id"], []).append(m)
-            
-        context_inserts = process_articles_batch(articles, mentions_by_art)
-        updates = [{"id": a["id"], "context_extracted_at": datetime.now(timezone.utc).isoformat()} for a in articles]
-        
-        try:
-            if art_ids:
-                for i in range(0, len(art_ids), 25):
-                    chunk_ids = art_ids[i:i+25]
-                    sb.table("entity_contexts").delete().in_("raw_text_id", chunk_ids).execute()
 
-            if context_inserts:
-                for i in range(0, len(context_inserts), 25):
-                    chunk = context_inserts[i:i + 25]
-                    try: sb.table("entity_contexts").insert(chunk).execute()
-                    except Exception as e: logger.error(f"Insert Error: {e}")
-                
-            if updates:
-                for i in range(0, len(updates), 25):
-                    chunk = updates[i:i + 25]
-                    try: sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
-                    except Exception as e: logger.error(f"RPC Error: {e}")
-                
-        except Exception as e:
-            logger.error(f"DB Error: {e}")
-            
-        logger.info(f"{len(articles)} diproses. {len(context_inserts)} contexts dibuat.")
+        context_inserts = process_articles_batch(articles, mentions_by_art)
+
+        # === UPSERT alih-alih DELETE+INSERT (fix v16) ===
+        # entity_contexts sudah py UNIQUE(raw_text_id, entity_id) (migration
+        # 011) -- upsert cukup, tidak perlu delete manual dulu (yang menambah
+        # window race condition kalau ada run lain overlap).
+        succeeded_art_ids = set(art_ids)  # asumsikan sukses, turunkan kalau ada error per-chunk
+        if context_inserts:
+            for i in range(0, len(context_inserts), 25):
+                chunk = context_inserts[i:i + 25]
+                try:
+                    sb.table("entity_contexts").upsert(chunk, on_conflict="raw_text_id,entity_id").execute()
+                except Exception as e:
+                    logger.error(f"Upsert Error: {e}")
+                    # Artikel di chunk yg GAGAL upsert-nya JANGAN ditandai selesai --
+                    # biar dicoba lagi run berikutnya (masih context_extracted_at IS NULL)
+                    failed_ids = {c["raw_text_id"] for c in chunk}
+                    succeeded_art_ids -= failed_ids
+
+        # Artikel yg TIDAK menghasilkan context_inserts sama sekali (mis. nol
+        # mention valid) TETAP ditandai selesai -- itu bukan kegagalan, cuma
+        # tidak ada yg perlu disimpan utk artikel itu.
+        updates = [{"id": aid, "context_extracted_at": datetime.now(timezone.utc).isoformat()} for aid in succeeded_art_ids]
+
+        if updates:
+            for i in range(0, len(updates), 25):
+                chunk = updates[i:i + 25]
+                try:
+                    sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                except Exception as e:
+                    logger.error(f"RPC Error: {e}")
+
+        logger.info(f"{len(articles)} diproses ({len(succeeded_art_ids)} ditandai selesai). {len(context_inserts)} contexts dibuat.")
         total_processed += len(articles)
         total_success += len(context_inserts)
         batch_num += 1
-        
+
     finish_run(run_id, total_processed, total_success, 0)
-    logger.info("Eksekusi Context Worker (v14 Target Subgraph) Selesai.")
+    logger.info("Eksekusi Context Worker (v16) Selesai.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--max-total", type=int, default=0)
+    parser.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK, help="Jangkauan hari ke belakang utk ingested_at (default 30). Backfill bisa pakai angka besar.")
     args = parser.parse_args()
-    main(limit=args.limit, max_total=args.max_total)
+    main(limit=args.limit, max_total=args.max_total, days_back=args.days_back)

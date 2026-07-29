@@ -1,14 +1,29 @@
 """
-entity_resolution_worker.py v11 — Stanza Hybrid & Salience Gate
+entity_resolution_worker.py v12 — Co-occurrence Fix & Word-Boundary Matching
 =========================================================================
-FIX v11:
-  1. STANZA NLP INTEGRATION: Menggunakan POS Tagger Stanza untuk mendeteksi
-     nama orang utuh (PROPN Grouping) sebagai safety net.
-  2. CANONICAL VERIFICATION: Membasmi False Positive alias 1 kata (Bobby, Budi)
-     dengan mengecek apakah nama utuhnya mengandung nama belakang tokoh sebenarnya.
-  3. SALIENCE GATE (NEW): Menolak tokoh figuran (hanya disebut 1x dan tidak ada di judul).
-     Ini membasmi noise di dashboard sentimen.
-  4. MULTI-MENTION STORAGE: Menyimpan SEMUA offset kemunculan tokoh utama.
+FIX v12 (lihat diagnosis di percakapan sebelumnya):
+  1. CO-OCCURRENCE REGRESSION FIX: v11 (jalur configured_entity_id) langsung
+     `continue` begitu entity dari scraping_config ketemu -- TIDAK menjalankan
+     regex matching umum, jadi entitas co-mention lain (mis. "Prabowo bertemu
+     Jokowi" dari config khusus Prabowo) TIDAK PERNAH ter-map. Ini regresi
+     dari fix yang sama yang pernah dibuat di versi sebelum Stanza rewrite ini.
+     Sekarang: configured_entity_id tetap DIJAMIN masuk sbg is_main_entity,
+     TAPI regex matching umum tetap jalan penuh utk menangkap entitas lain.
+  2. is_false_positive FIX: v11 pakai substring check (`matched_lower in
+     person_lower`) -- "budi" adalah substring "budiman", tapi itu 2 nama
+     depan yang beda. Sekarang exact match kata-per-kata.
+  3. CONFIGURABLE TIME WINDOW: --days-back (default tetap 30).
+  4. entity_mentions sekarang UPSERT dgn on_conflict eksplisit (butuh UNIQUE
+     (raw_text_id, entity_id, start_offset) -- lihat migration), bukan
+     delete-lalu-insert polos. article_entity_map: DELETE manual yg
+     mendahului upsert DIHAPUS (redundan -- upsert dgn on_conflict sudah
+     menangani replace, delete tambahan cuma menambah window race condition).
+  5. entity_resolved_at HANYA ditandai utk artikel yang db write-nya BENERAN
+     sukses (v11 menandai semua artikel di batch tanpa syarat, walau upsert
+     gagal utk sebagian -- exception cuma di-log).
+
+FIX v11 (riwayat, tetap berlaku): STANZA NLP INTEGRATION, CANONICAL
+VERIFICATION, SALIENCE GATE, MULTI-MENTION STORAGE -- lihat kode.
 """
 
 import re
@@ -35,7 +50,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING) # Reduksi log stanza
 
-RESOLVER_VERSION = "v11_stanza_salience"
+RESOLVER_VERSION = "v12_cooccurrence_fix"
+DEFAULT_DAYS_BACK = 30
 
 # Load Stanza Pipeline SEKALI di awal
 logger.info("Memuat Stanza POS Tagger (Bahasa Indonesia)...")
@@ -98,23 +114,27 @@ def extract_full_persons(text: str) -> list:
     return persons
 
 def is_false_positive(matched_text: str, canonical_name: str, full_persons: list) -> bool:
-    """Cek apakah alias yang ketemu ternyata bagian dari nama orang lain."""
+    """Cek apakah alias yang ketemu ternyata bagian dari nama orang lain.
+    Exact match KATA-PER-KATA (bukan substring) -- v11 pakai `matched_lower
+    in person_lower` yang bisa salah cocok token pendek yang kebetulan jadi
+    prefix nama lain (mis. "budi" adalah substring "budiman", tapi Budi
+    Gunawan != Budiman Sudjatmiko)."""
     matched_lower = matched_text.lower()
     canonical_lower = canonical_name.lower()
-    
+
     for person in full_persons:
         person_lower = person.lower()
-        if matched_lower in person_lower and len(person_lower) > len(matched_lower):
-            # Alias ada di dalam nama utuh. Apakah nama utuh ini milik tokoh kita?
-            # Kita cek apakah ada bagian nama canonical (selain alias) di nama utuh tersebut.
+        person_words = person_lower.split()
+        if matched_lower in person_words and len(person_lower) > len(matched_lower):
+            # Alias ada di dalam nama utuh (sbg KATA, bukan cuma substring).
+            # Apakah nama utuh ini milik tokoh kita?
             canonical_parts = [p for p in canonical_lower.split() if p != matched_lower]
-            
-            # Jika ada bagian canonical yang cocok, ini bukan false positive.
+
+            # Jika ada bagian canonical yang cocok (sbg kata), ini bukan false positive.
             # Contoh: matched="bobby", canonical="bobby nasution", person="bobby afif nasution" -> "nasution" cocok! -> Bukan FP.
-            if any(part in person_lower for part in canonical_parts):
+            if any(part in person_words for part in canonical_parts):
                 return False
             else:
-                # Jika tidak ada yang cocok, ini pasti orang lain.
                 # Contoh: matched="bobby", canonical="bobby nasution", person="bobby danuardi" -> FP!
                 return True
     return False
@@ -130,32 +150,17 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
         # 1. Ekstrak semua nama orang utuh via Stanza (Safety Net)
         full_persons = extract_full_persons(text)
-        
-        # Pre-Attribution Check (GNews/DDG)
-        if metadata.get("configured_entity_id"):
-            ent_id = metadata["configured_entity_id"]
-            ent_name = id_to_name.get(ent_id, "Unknown")
-            
-            mentions = []
-            if ent_name != "Unknown":
-                for pattern, key in regex_patterns:
-                    if key == ent_name.lower() or alias_map.get(key, "").lower() == ent_name.lower():
-                        for match in pattern.finditer(text):
-                            mentions.append({
-                                "entity_id": ent_id, "text": match.group(),
-                                "count": 1, "start": match.start(), "end": match.end()
-                            })
-            if not mentions:
-                mentions.append({"entity_id": ent_id, "text": ent_name, "count": 1, "start": -1, "end": -1})
-                
-            results.append({
-                "raw_text_id": art["id"],
-                "ingested_month": ingested_month,
-                "mappings": [{"entity_id": ent_id, "is_main_entity": True, "confidence": 1.0, "resolver_source": "pre_attributed"}],
-                "mentions": mentions
-            })
-            continue
-            
+
+        # === CO-OCCURRENCE FIX (v12) ===
+        # v11 di titik ini langsung `continue` begitu configured_entity_id
+        # ketemu -- SELURUH regex matching umum di bawah TIDAK PERNAH jalan,
+        # jadi entitas co-mention lain (mis. "Prabowo bertemu Jokowi" dari
+        # scraping_config Prabowo) tidak pernah ter-map. Sekarang: catat
+        # entity_id yang dikonfigurasi (dijamin masuk sbg main entity), tapi
+        # TETAP lanjut ke regex matching umum di bawah, bukan skip.
+        configured_entity_id = metadata.get("configured_entity_id")
+        configured_entity_name = id_to_name.get(configured_entity_id, "") if configured_entity_id else ""
+
         entity_data = {} 
         found_matches = [] 
         
@@ -200,7 +205,17 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                 entity_data[ent_id]["offsets"].append({"start": start, "end": end, "text": matched_text})
                 
             last_end = end
-                    
+
+        # Kalau configured_entity_id tidak ketemu sendiri lewat regex (mis.
+        # cara penyebutannya tidak match pattern manapun), tetap paksa masuk
+        # dgn offset kosong -- supaya main entity dari scraping_config TETAP
+        # terjamin ter-map walau NER/regex tidak "melihatnya" secara eksplisit.
+        if configured_entity_id and configured_entity_id not in entity_data:
+            entity_data[configured_entity_id] = {
+                "count": 0, "in_title": configured_entity_name.lower() in title_lower if configured_entity_name else False,
+                "src": "pre_attributed", "conf": 1.0, "offsets": []
+            }
+
         ranked_entities = sorted(entity_data.items(), key=lambda item: (item[1]["in_title"], item[1]["count"]), reverse=True)
         
         # === 4. SALIENCE GATE (Filter Tokoh Figuran) ===
@@ -208,7 +223,9 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         for ent_id, data in ranked_entities:
             # Syarat 1: Tokoh ada di judul berita
             # Syarat 2: Tokoh disebut minimal 2 kali di body text
-            if data["in_title"] or data["count"] > 1:
+            # Syarat 3: ATAU memang entity yang dikonfigurasi scraping_config
+            #           (sinyal editorial eksplisit, tetap lolos walau sepi mention)
+            if data["in_title"] or data["count"] > 1 or ent_id == configured_entity_id:
                 valid_entities.append((ent_id, data))
                 
         # Safety Net: Jika tidak ada yang lolos (misal semua cuma disebut 1x), 
@@ -223,7 +240,10 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         mentions = []
         
         for idx, (ent_id, data) in enumerate(ranked_entities):
-            is_main = (idx == 0)
+            # is_main_entity: entity dari scraping_config SELALU main (sinyal
+            # editorial eksplisit menang atas urutan/frekuensi), else entitas
+            # peringkat pertama hasil ranking (in_title / count terbanyak).
+            is_main = (ent_id == configured_entity_id) if configured_entity_id else (idx == 0)
             mappings.append({
                 "entity_id": ent_id, "is_main_entity": is_main, 
                 "confidence": data["conf"], "resolver_source": data["src"]
@@ -245,19 +265,24 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
         
     return results
 
-def chunked_upsert(sb, table_name: str, data: list, on_conflict: str = None, chunk_size: int = 50):
-    if not data: return
+def chunked_upsert_tracked(sb, table_name: str, data: list, on_conflict: str, chunk_size: int = 50) -> set:
+    """Upsert per-chunk, MENGEMBALIKAN set raw_text_id yang GAGAL ditulis
+    (chunk yg exception). Dipakai main() utk memutuskan artikel mana yang
+    boleh ditandai entity_resolved_at -- fix v12 (lihat changelog: v11
+    menandai SEMUA artikel tanpa syarat walau sebagian upsert gagal)."""
+    failed_ids = set()
+    if not data:
+        return failed_ids
     for i in range(0, len(data), chunk_size):
         chunk = data[i:i + chunk_size]
         try:
-            if on_conflict:
-                sb.table(table_name).upsert(chunk, on_conflict=on_conflict).execute()
-            else:
-                sb.table(table_name).insert(chunk).execute()
+            sb.table(table_name).upsert(chunk, on_conflict=on_conflict).execute()
         except Exception as e:
             logger.error(f"Upsert Error ({table_name}): {e}")
+            failed_ids.update(c["raw_text_id"] for c in chunk)
+    return failed_ids
 
-def main(limit: int = 50, max_total: int = 0):
+def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK):
     sb = get_client()
     run_id = start_run("entity_resolution_worker", RESOLVER_VERSION)
     
@@ -268,7 +293,7 @@ def main(limit: int = 50, max_total: int = 0):
     total_success = 0
     batch_num = 1
 
-    logger.info(f"[ENTITY_RESOLVER v11] Hybrid Stanza & Salience Gate | Limit: {limit}/batch")
+    logger.info(f"[ENTITY_RESOLVER v12] Co-occurrence Fix | Limit: {limit}/batch | Days back: {days_back}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -277,7 +302,7 @@ def main(limit: int = 50, max_total: int = 0):
         current_limit = min(limit, max_total - total_processed) if max_total > 0 else limit
         
         try:
-            time_filter = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts") \
                     .select("id, title, text, metadata, ingested_month") \
                     .eq("status", pc.STATUS_VALIDATED) \
@@ -300,50 +325,56 @@ def main(limit: int = 50, max_total: int = 0):
         
         all_mappings = []
         all_mentions = []
-        resolved_updates = []
         now_iso = datetime.now(timezone.utc).isoformat()
-        success_count = 0
-        processed_ids = []
-        
+        # succeeded_ids: mulai dari asumsi SEMUA sukses, turunkan kalau ada
+        # chunk upsert yg gagal (fix v12 -- v11 menandai semua tanpa syarat)
+        succeeded_ids = {result["raw_text_id"] for result in batch_results}
+
         for result in batch_results:
-            processed_ids.append(result["raw_text_id"])
-            resolved_updates.append({
-                "id": result["raw_text_id"],
-                "entity_resolved_at": now_iso,  
-                "resolver_version": RESOLVER_VERSION
-            })
-            
             if result["mappings"]:
                 all_mappings.extend([{**m, "raw_text_id": result["raw_text_id"], "ingested_month": result["ingested_month"]} for m in result["mappings"]])
                 all_mentions.extend([{**m, "raw_text_id": result["raw_text_id"], "ingested_month": result["ingested_month"]} for m in result["mentions"]])
-                success_count += 1
-        
-        try:
-            if processed_ids:
-                sb.table("entity_mentions").delete().in_("raw_text_id", processed_ids).execute()
-                sb.table("article_entity_map").delete().in_("raw_text_id", processed_ids).execute()
 
-            if resolved_updates:
-                for i in range(0, len(resolved_updates), 25):
+        # === UPSERT, BUKAN DELETE+INSERT (fix v12) ===
+        # article_entity_map: DELETE manual yg tadinya mendahului upsert
+        # DIHAPUS -- chunked_upsert dgn on_conflict="raw_text_id,entity_id"
+        # SUDAH menangani replace-if-exists, delete tambahan cuma menambah
+        # window race condition kalau ada run lain yg overlap (lihat temuan
+        # concurrency GH Actions sebelumnya) tanpa manfaat tambahan.
+        mapping_fail_ids = chunked_upsert_tracked(sb, "article_entity_map", all_mappings, on_conflict="raw_text_id,entity_id")
+        succeeded_ids -= mapping_fail_ids
+
+        # entity_mentions: upsert dgn on_conflict eksplisit (butuh UNIQUE
+        # (raw_text_id, entity_id, start_offset) -- lihat migration 012).
+        # v11 pakai on_conflict=None (insert polos) + delete manual sebelumnya;
+        # sekarang idempotent tanpa perlu delete sama sekali.
+        db_mentions = [{
+            "raw_text_id": m["raw_text_id"],
+            "ingested_month": m["ingested_month"],
+            "entity_id": m["entity_id"],
+            "mention_text": m["text"],
+            "start_offset": m["start"],
+            "end_offset": m["end"]
+        } for m in all_mentions]
+        mention_fail_ids = chunked_upsert_tracked(sb, "entity_mentions", db_mentions, on_conflict="raw_text_id,entity_id,start_offset")
+        succeeded_ids -= mention_fail_ids
+
+        # entity_resolved_at HANYA utk artikel yang mapping & mention-nya
+        # (kalau ada) benar2 tertulis -- sisanya otomatis dicoba lagi run
+        # berikutnya (masih entity_resolved_at IS NULL).
+        resolved_updates = [
+            {"id": rid, "entity_resolved_at": now_iso, "resolver_version": RESOLVER_VERSION}
+            for rid in succeeded_ids
+        ]
+        if resolved_updates:
+            for i in range(0, len(resolved_updates), 25):
+                try:
                     sb.rpc("bulk_update_raw_texts", {"p_updates": resolved_updates[i:i+25]}).execute()
-            
-            chunked_upsert(sb, "article_entity_map", all_mappings, on_conflict="raw_text_id,entity_id")
-                
-            if all_mentions:
-                db_mentions = [{
-                    "raw_text_id": m["raw_text_id"], 
-                    "ingested_month": m["ingested_month"],
-                    "entity_id": m["entity_id"], 
-                    "mention_text": m["text"],
-                    "start_offset": m["start"], 
-                    "end_offset": m["end"]
-                } for m in all_mentions]
-                chunked_upsert(sb, "entity_mentions", db_mentions, on_conflict=None)
-                
-        except Exception as e:
-            logger.error(f"DB Error: {e}")
-            
-        logger.info(f"{success_count} artikel berhasil di-resolve. Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)}")
+                except Exception as e:
+                    logger.error(f"Status Update Error: {e}")
+
+        success_count = len(succeeded_ids)
+        logger.info(f"{success_count}/{len(articles)} artikel berhasil di-resolve & ditandai. Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)}")
         
         total_processed += len(articles)
         total_success += success_count
@@ -354,11 +385,12 @@ def main(limit: int = 50, max_total: int = 0):
         time.sleep(sleep_time)
         
     finish_run(run_id, total_processed, total_success, 0)
-    logger.info("Eksekusi Entity Resolver (v11 Stanza Hybrid & Salience Gate) Selesai.")
+    logger.info("Eksekusi Entity Resolver (v12 Co-occurrence Fix) Selesai.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--max-total", type=int, default=0)
+    parser.add_argument("--days-back", type=int, default=DEFAULT_DAYS_BACK, help="Jangkauan hari ke belakang utk ingested_at (default 30). Backfill bisa pakai angka besar.")
     args = parser.parse_args()
-    main(limit=args.limit, max_total=args.max_total)
+    main(limit=args.limit, max_total=args.max_total, days_back=args.days_back)
