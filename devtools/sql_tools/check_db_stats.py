@@ -1,9 +1,13 @@
 """
-check_db_status.py v2 — Detailed Audit & Clean Logging
+check_db_stats.py v3 — Detailed Audit & PGMQ Visibility
 ========================================================
-Cek kesehatan seluruh layer pipeline langsung dari terminal.
-Usage: python -m devtools.sql_tools.check_db_stats
+FIX v3:
+  1. PGMQ VISIBILITY: Memisahkan status 'queued' agar diketahui berapa
+     artikel yang siap dimakan oleh NLP Worker.
+  2. SKIP VS FAIL: Memisahkan 'skipped' (duplikat) dari 'failed' (error)
+     agar angka penolakan tidak terlihat menakutkan dan akurat.
 """
+
 import os
 import sys
 import logging
@@ -46,15 +50,16 @@ def main():
     sb = create_client(url, key)
     
     logger.info("=" * 50)
-    logger.info("ID-SENTIMENT TRACKER: PIPELINE HEALTH DASHBOARD")
+    logger.info("ID-SENTIMENT TRACKER: DETAILED HEALTH DASHBOARD")
     logger.info("=" * 50)
     
-    # 1. VOLUME & STATUS
-    logger.info("\n--- [ VOLUME & STATUS (Layer 1-2) ] ---")
+    # 1. VOLUME & STATUS BREAKDOWN
+    logger.info("\n--- [ VOLUME & STATUS (Layer 1-4) ] ---")
     total = get_count(sb, "raw_texts")
     pending = get_count(sb, "raw_texts", "status", "pending")
     enriched = get_count(sb, "raw_texts", "status", "enriched")
     validated = get_count(sb, "raw_texts", "status", "validated")
+    queued = get_count(sb, "raw_texts", "status", "queued")
     processed = get_count(sb, "raw_texts", "status", "processed")
     failed = get_count(sb, "raw_texts", "status", "failed")
     skipped = get_count(sb, "raw_texts", "status", "skipped")
@@ -63,26 +68,19 @@ def main():
     logger.info(f"  - Pending      : {pending:>6}")
     logger.info(f"  - Enriched     : {enriched:>6}")
     logger.info(f"  - Validated    : {validated:>6}")
-    logger.info(f"  - Processed    : {processed:>6}")
-    logger.info(f"  - Failed/Skip  : {failed + skipped:>6}")
+    logger.info(f"  - Queued (NLP) : {queued:>6}  <-- Siap diproses AI IndoBERT")
+    logger.info(f"  - Processed    : {processed:>6}  <-- Sudah punya skor sentimen")
+    logger.info(f"  - Skipped (Dup): {skipped:>6}  <-- Duplikat yang dibuang")
+    logger.info(f"  - Failed (Err) : {failed:>6}  <-- Gagal karena error sistem")
 
-    # 2. CONTENT QUALITY & ANOMALIES (Audit Adaptif)
-    logger.info("\n--- [ CONTENT QUALITY & AUDIT ] ---")
+    # 2. CONTENT QUALITY & ANOMALIES
+    logger.info("\n--- [ CONTENT QUALITY ] ---")
     fulltext = get_count(sb, "raw_texts", "content_type", "FULLTEXT")
     snippet = get_count(sb, "raw_texts", "content_type", "SNIPPET")
-    logger.info(f"  Fulltext       : {fulltext:>6}")
+    logger.info(f"  Fulltext Valid : {fulltext:>6}")
     logger.info(f"  Snippet (GNews): {snippet:>6}")
     
-    # Cek Anomali: Section Leakage (Fulltext > 20000 chars)
-    try:
-        leak_res = sb.rpc("get_anomaly_count", {"p_type": "section_leakage"}).execute()
-        leak_count = leak_res.data or 0
-        if leak_count > 0:
-            logger.warning(f"  [WARNING] Section Leakage (>20k chars): {leak_count} artikel (Perlu dibersihkan!)")
-    except Exception:
-        pass # Abaikan jika RPC belum ada
-
-    # Cek Alasan Kegagalan (Ambil 1000 failed terakhir)
+    # 3. ALASAN KEGAGALAN (Hanya yang Failed, bukan Skipped)
     try:
         fail_res = sb.table("raw_texts").select("metadata").eq("status", "failed").limit(1000).execute()
         reasons = Counter()
@@ -92,26 +90,27 @@ def main():
             reasons[reason] += 1
         
         if reasons:
-            logger.info("\n--- [ TOP 5 ALASAN KEGAGALAN ] ---")
+            logger.info("\n--- [ TOP 5 ALASAN FAILED (Error Asli) ] ---")
             for reason, count in reasons.most_common(5):
-                logger.info(f"  - {reason:25s}: {count}")
+                logger.info(f"  - {reason:30s}: {count}")
     except Exception:
         pass
 
-    # 3. ENTITY & CONTEXT (Layer 3)
+    # 4. ENTITY & CONTEXT (Layer 3)
     logger.info("\n--- [ ENTITY & CONTEXT (Layer 3) ] ---")
     mentions = get_count(sb, "entity_mentions")
     contexts = get_count(sb, "entity_contexts")
     logger.info(f"  Entity Mentions: {mentions:>6}")
     logger.info(f"  Contexts Built : {contexts:>6}")
 
-    # 4. NLP & SENTIMENT (Layer 4)
+    # 5. SENTIMENT OUTPUT (Layer 4)
     logger.info("\n--- [ SENTIMENT OUTPUT (Layer 4) ] ---")
     total_sentiments = get_count(sb, "sentiment_scores")
     logger.info(f"  Total Scores   : {total_sentiments:>6}")
     
     if total_sentiments > 0:
         try:
+            # Ambil sample untuk distribusi persentase
             sent_res = sb.table("sentiment_scores").select("label").limit(10000).execute()
             sent_dist = Counter(r["label"] for r in (sent_res.data or []))
             total_sample = sum(sent_dist.values())

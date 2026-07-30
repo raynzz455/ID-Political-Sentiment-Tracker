@@ -143,22 +143,22 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         if start_offset < 0: continue
 
         adjusted_offset = start_offset - title_len
-        if adjusted_offset < 0: continue
+        if adjusted_offset < 0: continue  
         adjusted_end = end_offset - title_len
 
         anchor_idx = -1
         for idx, s in enumerate(sentences):
-            if s["start"] <= adjusted_offset < s["end"]:
-                anchor_idx = idx
-                break
-
-        if anchor_idx == -1:
-            for idx, s in enumerate(sentences):
-                if entity_name.lower() in s["text"].lower():
+                if s["start"] <= adjusted_offset < s["end"]:
                     anchor_idx = idx
                     break
-            if anchor_idx == -1:
-                continue
+
+        if anchor_idx == -1:
+                for idx, s in enumerate(sentences):
+                    if entity_name.lower() in s["text"].lower():
+                        anchor_idx = idx
+                        break
+                if anchor_idx == -1:
+                    continue  
 
         resolved_mentions.append({
             "entity_id": entity_id, "entity_name": entity_name,
