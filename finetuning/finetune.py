@@ -56,16 +56,26 @@ np.random.seed(H.SEED)
 # ---------------------------------------------------------------------------
 TASK_CFG = {
     "relevancy": {
-        "data_file": "dataset_relevancy.jsonl",
+        # Uses the ENHANCED dataset (dataset_enhanced.jsonl) which has:
+        #   - gold_relevancy field (relevant | not_relevant)
+        #   - label_confidence for sample weighting
+        #   - context_flag to exclude corruption_stitch / wrong_entity
+        "data_file": "dataset_enhanced.jsonl",
+        "label_field": "gold_relevancy",
         "base_model": H.RELEVANCY_BASE,
         "labels": H.RELEVANCY_LABELS,
         "out_dir": H.OUT_DIR_RELEVANCY,
+        "exclude_flags": ["corruption_stitch", "wrong_entity"],
     },
     "sentiment": {
-        "data_file": "dataset_sentiment.jsonl",
+        # Same enhanced dataset, filtered to gold_relevancy == "relevant"
+        "data_file": "dataset_enhanced.jsonl",
+        "label_field": "gold_label",
+        "filter": lambda r: r.get("gold_relevancy") == "relevant",
         "base_model": H.SENTIMENT_BASE,
         "labels": H.SENTIMENT_LABELS,
         "out_dir": H.OUT_DIR_SENTIMENT,
+        "exclude_flags": ["corruption_stitch", "wrong_entity"],
     },
 }
 
@@ -74,6 +84,9 @@ class PairDataset(Dataset):
 
     premise   = entity_name (+ alias hint)
     hypothesis = cleaned context_text
+
+    Also carries per-sample `confidence` (from label_source) so the trainer
+    can down-weight unverified pseudo-labels.
     """
     def __init__(self, rows, tokenizer, label2id, max_len=H.MAX_SEQ_LENGTH):
         self.rows = rows
@@ -98,6 +111,8 @@ class PairDataset(Dataset):
                 if self.tokenizer.model_max_length and "token_type_ids" in enc
                 else torch.zeros(self.max_len, dtype=torch.long),
             "labels": torch.tensor(self.label2id[r["label"]], dtype=torch.long),
+            # per-sample confidence weight for loss scaling
+            "sample_weight": torch.tensor(r.get("confidence", 0.5), dtype=torch.float),
         }
 
 def load_jsonl(path):
@@ -156,6 +171,7 @@ class FocalLossTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
+        sample_weights = inputs.pop("sample_weight", None)   # (B,) per-sample confidence
         outputs = model(**inputs)
         logits = outputs.logits
         probs = F.softmax(logits, dim=-1)
@@ -163,7 +179,11 @@ class FocalLossTrainer(Trainer):
         pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
         focal = (1.0 - pt) ** self.focal_gamma
         ce = F.cross_entropy(logits, labels, weight=self.class_weights.to(logits.device), reduction="none")
-        loss = (focal * ce).mean()
+        per_sample = focal * ce
+        # scale by per-sample confidence (down-weight unverified pseudo-labels)
+        if sample_weights is not None:
+            per_sample = per_sample * sample_weights.to(logits.device)
+        loss = per_sample.mean()
         return (loss, outputs) if return_outputs else loss
 
 # ---------------------------------------------------------------------------
@@ -176,11 +196,34 @@ def main(task: str):
 
     print(f"\n{'='*70}\nFINETUNE TASK: {task}\nbase: {cfg['base_model']}\nout:  {out_dir}\n{'='*70}\n")
 
-    # 3.1 data
-    rows = load_jsonl(cfg["data_file"])
-    print(f"Loaded {len(rows)} rows from {cfg['data_file']}")
+    # 3.1 data — load ENHANCED dataset and prepare rows for this task
+    all_rows = load_jsonl(cfg["data_file"])
+    print(f"Loaded {len(all_rows)} rows from {cfg['data_file']}")
     label2id = {l: i for i, l in enumerate(cfg["labels"])}
     id2label = {i: l for l, i in label2id.items()}
+    label_field = cfg.get("label_field", "label")
+    exclude_flags = cfg.get("exclude_flags", [])
+    filter_fn = cfg.get("filter")
+
+    # Filter + normalize: map enhanced rows to {premise, hypothesis, label, confidence}
+    rows = []
+    excluded = {"bad_flag": 0, "filter": 0}
+    for r in all_rows:
+        if r.get("context_flag") in exclude_flags:
+            excluded["bad_flag"] += 1
+            continue
+        if filter_fn and not filter_fn(r):
+            excluded["filter"] += 1
+            continue
+        rows.append({
+            "premise": r["premise"],
+            "hypothesis": r["hypothesis"],
+            "label": r[label_field],
+            "confidence": r.get("label_confidence", 0.5),
+            "label_source": r.get("label_source", "unknown"),
+            "row_index": r.get("row_index", -1),
+        })
+    print(f"After filter: {len(rows)} rows (excluded: {excluded})")
 
     train_rows, val_rows, test_rows = stratified_split(rows, "label", H.TRAIN_SPLIT, H.VAL_SPLIT)
     print(f"Split: train={len(train_rows)} val={len(val_rows)} test={len(test_rows)}")
@@ -190,6 +233,7 @@ def main(task: str):
     print("Train class balance:", dict(Counter(r["label"] for r in train_rows)))
     print("Val   class balance:", dict(Counter(r["label"] for r in val_rows)))
     print("Test  class balance:", dict(Counter(r["label"] for r in test_rows)))
+    print("Train label_source:", dict(Counter(r["label_source"] for r in train_rows)))
 
     # 3.2 tokenizer + model
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])

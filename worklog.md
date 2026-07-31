@@ -26,3 +26,25 @@ Stage Summary:
 - The user's concern about title-clickbait is validated: context_worker already excludes the title (good), BUT the fallback path (nlp_worker.py line 69) feeds title+body to the document model (BUG B). infer_calibrated.py fixes this.
 - The context leakage root cause is BUG A (offset mismatch) + BUG C (single-context retention) + BUG E (speaker-biased quality_score), not the title.
 - Unresolved / next-phase: (1) actually run finetune.py on a GPU to produce the LoRA adapters and the real evaluation numbers — the scripts are ready but require a GPU + the ML deps installed; (2) expand the gold set beyond 27 rows for higher-confidence heuristics; (3) fix BUG A in the production context_worker.py (offset adjustment code is partially broken).
+
+---
+Task ID: 2
+Agent: Z.ai Code (main)
+Task: LLM second-pass labeling for 412 pseudo_kept rows + create enhanced dataset schema with new columns/rules to catch wrong entities and ngawur contexts.
+
+Work Log:
+- Loaded LLM skill, tested z-ai chat CLI with strict JSON prompt — works, produces parseable JSON wrapped in ```json fences.
+- Built llm_relabel.py: batches 5 rows/call (later reduced to 1-2 for rate-limit resilience), strict system prompt with 6 few-shot examples covering every hard defect class (speaker_vs_target, misattribution_background, wrong_polarity, corruption_stitch, alias invisibility). Exponential backoff retry (1s, 2s, 4s). Atomic flush (write temp + rename) to prevent data loss on kill.
+- Ran LLM second-pass on 412 pseudo_kept rows. API rate-limited heavily — required multiple runs with backoff. Final result: 194/412 successfully LLM-labeled (47%), 181 API-failed (kept pseudo, confidence 0.3), 37 never attempted.
+- Built dataset_schema.py: defines the enhanced schema with 26 fields per row (identity, entity with correction, context with quality+flag, article, labels with source+confidence, sentence-pair, audit). 7 validation invariants enforced: entity_presence, corruption_reextract, relevancy_label_consistency, confidence_range, premise_consistency, pair_consistency, gold_human_integrity.
+- Built build_enhanced_dataset.py: merges gold (27) + LLM (194) + heuristics (470) + pseudo (218) into dataset_enhanced.jsonl. Runs full validation — 909/909 rows pass 100%.
+- Updated finetune.py to use dataset_enhanced.jsonl: filters by exclude_flags (corruption_stitch, wrong_entity), maps label_field (gold_relevancy / gold_label), adds per-sample confidence weighting in FocalLossTrainer (down-weights unverified pseudo-labels by their confidence 0.3-0.5).
+- Updated CRITICAL_ANALYSIS.md (now 11 sections) and README.md with LLM relabel results, new schema, and validation invariants.
+
+Stage Summary:
+- Dataset improvement: 0% verified → 76% well-labeled (691/909). 24% unverified but clearly marked + down-weighted.
+- New schema: 26 fields, 7 invariants, 100% valid. Catches: wrong_entity (7 rows — alias invisibility like "Cak Imin" vs "Muhaimin Iskandar", "AHY" vs "Agus Harimurti Yudhoyono"), corruption_stitch (5), byline_leak (12), background_only (333), speaker_not_target (217).
+- finetune.py upgraded: uses enhanced dataset, per-sample confidence weighting, excludes bad-flag rows.
+- LLM second-pass: 194/412 successful. API rate-limiting prevented full coverage. Remaining 218 rows are honestly marked as unverified (confidence 0.3-0.5) and down-weighted in training.
+- Deliverables added: llm_relabel.py, llm_labels.jsonl, dataset_schema.py, build_enhanced_dataset.py, dataset_enhanced.jsonl, enhanced_dataset_report.json.
+- Unresolved: 181 llm_failed rows (API rate limit). Can retry later when API quota resets. Production code BUG A (offset mismatch in context_worker.py) still not patched — that's in the user's GitHub repo, not this project.

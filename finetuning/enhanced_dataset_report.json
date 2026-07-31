@@ -1,0 +1,55 @@
+{
+  "total": 909,
+  "valid": 909,
+  "invalid": 0,
+  "validity_rate": 1.0,
+  "violation_type_counts": {},
+  "first_10_invalid": [],
+  "summary": {
+    "total": 909,
+    "label_sources": {
+      "gold_human": 27,
+      "llm_second_pass": 194,
+      "heuristic_background": 308,
+      "heuristic_speaker": 156,
+      "heuristic_corruption": 4,
+      "heuristic_polarity": 2,
+      "llm_failed": 181,
+      "pseudo_kept": 37
+    },
+    "context_flags": {
+      "clean": 154,
+      "background_only": 333,
+      "byline_leak": 12,
+      "corruption_stitch": 5,
+      "speaker_not_target": 217,
+      "wrong_entity": 7,
+      "llm_failed": 181
+    },
+    "gold_labels": {
+      "neutral": 768,
+      "positive": 90,
+      "negative": 51
+    },
+    "gold_relevancy": {
+      "relevant": 570,
+      "not_relevant": 339
+    },
+    "sentiment_labels_relevant": {
+      "neutral": 429,
+      "positive": 90,
+      "negative": 51
+    },
+    "well_labeled": 691,
+    "unverified": 218,
+    "entity_not_in_context": 29,
+    "entity_corrected": 0,
+    "needs_reextract": 282,
+    "pseudo_vs_gold_agreement": 0.713971397139714,
+    "quality_buckets": {
+      "0.8-1.0 (good)": 701,
+      "0.6-0.8 (ok)": 189,
+      "0.4-0.6 (poor)": 19
+    }
+  }
+}

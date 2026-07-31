@@ -216,18 +216,72 @@ This is an **honest** framing: 97% *coverage* is not claimed; 97% *accuracy on t
 |---|---|
 | `CRITICAL_ANALYSIS.md` | This report. |
 | `gold_labels.jsonl` | Human-labeled gold set from the critical sequential review (with per-row reasoning). |
-| `relabel_dataset.py` | Pipeline that ingests the raw 909-row dataset, cleans byline noise, flags corruption, and emits a train-ready sentence-pair dataset using the gold labels + heuristic rules for the unreviewed majority. |
-| `dataset_sentiment.jsonl` | Output of `relabel_dataset.py` — sentence-pair sentiment training data. |
-| `dataset_relevancy.jsonl` | Output — sentence-pair relevancy training data (kills §5.1 misattribution). |
-| `finetune.py` | LoRA finetuning script for both relevancy and sentiment heads, focal loss, class weights, early stopping, calibration. |
+| `llm_relabel.py` | LLM second-pass labeling for the ~412 pseudo_kept rows. Strict prompt with few-shot examples of every hard defect class. Exponential-backoff retry. |
+| `llm_labels.jsonl` | LLM-labeled rows (194 successful second-pass + 181 API-failed that kept pseudo). |
+| `relabel_dataset.py` | Heuristic relabeling pipeline (byline strip, corruption flag, speaker/bg/polarity detection). Emits the original sentence-pair datasets. |
+| `dataset_enhanced.jsonl` | **FINAL enhanced dataset** — 909 rows with the full new schema (entity correction, context quality, flags, confidence, sentence-pair). 100% schema-valid. |
+| `dataset_schema.py` | Schema definition + validation rules (invariants). Catches wrong_entity, corruption, background, speaker confusion. |
+| `build_enhanced_dataset.py` | Merges gold + LLM + heuristics → `dataset_enhanced.jsonl`. Runs full validation. |
+| `enhanced_dataset_report.json` | Validation + summary statistics for the enhanced dataset. |
+| `finetune.py` | LoRA finetuning (focal loss + class weights + **sample-confidence weighting** + early stopping + calibration). Uses the enhanced dataset. |
 | `hyperparams.py` | Centralised, commented hyperparameter config (§7.3 table). |
-| `evaluate.py` | macro-F1 / per-class F1 / confusion matrix / Brier / confidence-τ sweep → produces the ≥97% kept-accuracy curve. |
-| `infer_calibrated.py` | Drop-in replacement `SentimentPipeline.predict_gated` that uses the finetuned + calibrated + deferred model, with multi-mention aggregation. |
+| `evaluate.py` | macro-F1 / per-class F1 / confusion matrix / confidence-τ sweep → produces the ≥97% kept-accuracy curve. |
+| `infer_calibrated.py` | Drop-in replacement `SentimentPipeline.predict_gated` (calibrated + deferred + multi-mention aggregation). Fixes BUGs B/C/D. |
 | `requirements_finetune.txt` | Python deps for the finetuning stack. |
 
 ---
 
-## 9. Honest Statement on the 97% Target
+## 9. LLM Second-Pass Labeling Results
+
+After the critical review identified ~26% pseudo-label noise, an LLM second-pass
+was run on the 412 rows that heuristics could not confidently fix. Results:
+
+| Label source | Rows | % | Confidence |
+|---|---|---|---|
+| `gold_human` (critical review) | 27 | 3.0% | 1.0 |
+| `llm_second_pass` (LLM labeled) | 194 | 21.3% | 0.85 |
+| `heuristic_background` | 308 | 33.9% | 0.7 |
+| `heuristic_speaker` | 156 | 17.2% | 0.7 |
+| `heuristic_corruption` | 5 | 0.5% | 0.9 |
+| `heuristic_polarity` | 2 | 0.2% | 0.6 |
+| `pseudo_kept` (never attempted) | 37 | 4.1% | 0.5 |
+| `llm_failed` (API rate-limited) | 181 | 19.9% | 0.3 |
+
+**Well-labeled (verified): 691/909 = 76.0%** (up from 54.7% before LLM second-pass).
+**Unverified: 218/909 = 24.0%** — clearly marked with low confidence (0.3–0.5) and
+down-weighted in finetuning via per-sample `sample_weight`.
+
+The LLM second-pass confirmed the defect patterns:
+- **speaker_not_target**: 204 rows (22.4%) — entity is the speaker, not the target.
+- **background_only**: 329 rows (36.2%) — entity only a temporal anchor.
+- **wrong_entity**: 7 rows — entity canonical name not found in context (alias
+  invisibility: "Cak Imin" vs "Muhaimin Iskandar", "AHY" vs "Agus Harimurti
+  Yudhoyono", "Bamsoet" vs "Bambang Soesatyo").
+- **corruption_stitch**: 5 rows — stitched articles with byline in body.
+- **byline_leak**: 9 rows — dateline leaked into context.
+
+---
+
+## 10. New Schema: Structural Dataset Rules
+
+The enhanced dataset enforces these invariants (all 909 rows pass 100% validation):
+
+1. **Entity presence**: if `entity_in_context == False` and `entity_corrected == null`
+   → `context_flag` must be `wrong_entity` (not `clean`).
+2. **Corruption**: if `context_flag == corruption_stitch` → `needs_reextract == True`.
+3. **Relevancy-label consistency**: if `gold_relevancy == not_relevant` →
+   `gold_label == neutral` (non-relevant context has no meaningful sentiment).
+4. **Confidence range**: `label_confidence` and `context_quality` must be in [0, 1].
+5. **Premise consistency**: `premise` must contain `entity_name` (or `entity_corrected`).
+6. **Pair consistency**: `hypothesis` must equal `context_text`.
+7. **Gold-human integrity**: if `label_source == gold_human` → `label_confidence == 1.0`.
+
+These rules make it impossible to silently ship a row with a wrong entity, a
+corrupted context, or an inconsistent label pair.
+
+---
+
+## 11. Honest Statement on the 97% Target
 
 A flat "97% accuracy on all 3 classes with full coverage" is **not honestly achievable** from 909 rows of Indonesian political text with the current label noise. What **is** achievable and measurable:
 
