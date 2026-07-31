@@ -1,0 +1,15 @@
+{
+  "total": 909,
+  "byline_stripped": 32,
+  "corruption_flagged": 5,
+  "gold_overridden": 27,
+  "heuristic_speaker_vs_target": 156,
+  "heuristic_background": 308,
+  "heuristic_wrong_polarity": 2,
+  "kept_pseudo_low_conf": 412,
+  "relevancy_relevant": 593,
+  "relevancy_not_relevant": 316,
+  "sentiment_positive": 123,
+  "sentiment_neutral": 721,
+  "sentiment_negative": 65
+}

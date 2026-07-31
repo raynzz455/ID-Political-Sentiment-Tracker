@@ -1,0 +1,15 @@
+# Requirements for finetuning the ID-Political-Sentiment-Tracker base models.
+# These are NOT needed for the Next.js app; install in a separate venv.
+#
+#   python -m venv .venv-ft && source .venv-ft/bin/activate
+#   pip install -r finetuning/requirements_finetune.txt
+#
+torch>=2.1.0
+transformers>=4.40.0
+peft>=0.10.0
+datasets>=2.18.0
+accelerate>=0.29.0
+scikit-learn>=1.4.0
+numpy>=1.26.0
+sentencepiece>=0.2.0
+protobuf>=4.25.0
