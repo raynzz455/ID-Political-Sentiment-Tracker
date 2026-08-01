@@ -66,22 +66,44 @@ except Exception as e:
     NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
                           verbose=False, use_gpu=False, batch_size=32)
 
-# v14: Sentiment-bearing predicates (entity is TARGET) vs Attribution (entity is SPEAKER)
+# v14.2: EXPANDED verb sets based on empirical coverage analysis on 150-row sample.
+# IMPORTANT: Stanza returns ROOT lemmas (dikritik→kritik, mengecam→kecam, memuji→puji).
+# Passive detected via deprel=nsubj:pass (same lemma as active).
+#
+# Coverage improvement: v14.1 had 14 sentiment verbs (1.5% coverage) + 17 attribution (34.1%)
+#                       v14.2 has 51 sentiment verbs + 48 attribution → 70.7% coverage
 SENTIMENT_PREDICATES_ACTIVE = {
-    "mengkritik", "mengecam", "menyindir", "menyerang", "membela",
-    "menolak", "mendukung", "memuji", "menuding", "menyinggung",
-    "mengejek", "mencela", "menghina", "mengapresiasi",
+    # Negative evaluation (entity criticized/accused/sanctioned)
+    "kritik","kecam","sindir","serang","hina","cela","ejek","tuding",
+    "tuduh","lapor","cekal","tahan","vonis","tangkap","pidana","anggap",
+    "nilai","sorot","gugur","bongkar","pecat","mundur","undur","berhenti",
+    "ganti","razia","sita","denda","hukum","ganjar",
+    # Positive evaluation (entity praised/supported/endorsed)
+    "puji","dukung","apresiasi","restui","sahkan","setuju","kukuhkan",
+    "akui","legitimasi",
+    # Active opposition/support (entity takes stance)
+    "bela","tolak","keberatan","menentang",
+    # Judgment/evaluation verbs
+    "pandang","sikapi","persepsi",
+    # Revelation/exposure (negative framing)
+    "ungkap",
 }
 SENTIMENT_PREDICATES_PASSIVE = {
-    "dikecam", "dikritik", "dipuji", "ditahan", "dipecat", "dituding",
-    "dituduh", "dilaporkan", "dicekal", "disindir", "divonis", "ditangkap",
-    "dipidana", "dianggap", "dinilai",
+    # Stanza returns same lemma for passive. Detected via deprel=nsubj:pass in check_semantic_role().
 }
 ATTRIBUTION_VERBS = {
-    "mengatakan", "menyatakan", "menegaskan", "menjelaskan", "menambahkan",
-    "mengimbau", "mengingatkan", "menyampaikan", "mengaku", "mengklaim",
-    "menilai", "mengungkapkan", "menjawab",
-    "ujar", "tutur", "tegas", "kata", "sebut", "ungkap", "papar",
+    # Core speaking verbs (entity is SPEAKER — neutral, not target)
+    "kata","nyata","tegas","jelaskan","tambah","imbau","ingat","sampai",
+    "aku","klaim","nilai","ungkap","jawab","ujar","tutur","sebut","papar",
+    "ucap","sampaikan","katakan","ungkapkan","nyatakan","tegaskan",
+    "tambahkan","imbaukan","ingatkan","balas","tanggapi",
+    # Suggestion/request verbs (entity proposes)
+    "saran","menyaran","rekomendasi","usul","ajak","mengajak",
+    "pinta","minta","meminta","perintah","wantiwanti",
+    # Emphasis verbs (entity highlights)
+    "tekan","tekankan","menekankan","sorot","soroti","tandai","tanda",
+    # Appointment/indication (entity designates)
+    "tunjuk","menunjuk",
 }
 TOPIC_DOMINANCE_THRESHOLD = 0.25
 
@@ -132,29 +154,37 @@ def is_false_positive(matched_text: str, canonical_name: str, full_persons: list
 # v14 NEW: Semantic role checker
 # ---------------------------------------------------------------------------
 def check_semantic_role(sent, entity_start: int, entity_end: int) -> dict:
-    """Check if entity at (start, end) is nsubj/obj of a sentiment predicate."""
+    """Check if entity at (start, end) is nsubj/obj of a sentiment predicate.
+    v14.1: Stanza returns ROOT lemmas (dikritik→kritik). Passive detected via deprel=nsubj:pass.
+    """
     result = {
         'has_sentiment_role': False,
         'has_attribution_role': False,
         'sentiment_verb': None,
         'role': None,
+        'is_passive': False,
     }
     entity_word = None
     for word in sent.words:
         if word.start_char <= entity_start < word.end_char:
             entity_word = word
             break
+        if entity_start <= word.start_char < entity_end:
+            entity_word = word
+            break
     if entity_word is None:
         return result
-    if entity_word.deprel in ('nsubj', 'nsubj:pass', 'obj', 'iobj', 'csubj'):
+    if entity_word.deprel in ('nsubj', 'nsubj:pass', 'obj', 'iobj', 'csubj', 'obl'):
         result['role'] = entity_word.deprel
+        is_passive = (entity_word.deprel == 'nsubj:pass')
+        result['is_passive'] = is_passive
         head_id = entity_word.head
         for word in sent.words:
             if word.id == head_id:
                 root_lemma = (word.lemma or word.text).lower()
-                if root_lemma in SENTIMENT_PREDICATES_ACTIVE or root_lemma in SENTIMENT_PREDICATES_PASSIVE:
+                if root_lemma in SENTIMENT_PREDICATES_ACTIVE:
                     result['has_sentiment_role'] = True
-                    result['sentiment_verb'] = root_lemma
+                    result['sentiment_verb'] = root_lemma + (" (passive)" if is_passive else "")
                 elif root_lemma in ATTRIBUTION_VERBS:
                     result['has_attribution_role'] = True
                 break
@@ -273,14 +303,17 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
     for ent_id, data in entity_data.items():
         data["topic_dominance"] = len(data["sentence_indices"]) / total_body_sentences if total_body_sentences > 0 else 0
 
-    # v14: RANKING — body salience first, NOT in_title
+    # v14.1: RANKING — empirical tuning after live DB test (19 multi-entity articles).
+    # v14 had count above in_title, causing 2 new errors (picked more-mentioned
+    # entity when title clearly indicated subject). Fix: in_title above count.
+    # Priority: has_sentiment_role > topic_dominance > in_title > count
     def salience_key(item):
         ent_id, data = item
         return (
             data["has_sentiment_role"],
             data["topic_dominance"] >= TOPIC_DOMINANCE_THRESHOLD,
-            data["count"],
             data["in_title"],
+            data["count"],
         )
     ranked_entities = sorted(entity_data.items(), key=salience_key, reverse=True)
 

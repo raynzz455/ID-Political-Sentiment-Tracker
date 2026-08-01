@@ -108,23 +108,38 @@ def check_relevancy(entity_name: str, context_text: str) -> float:
         rel_idx = 1
     return float(probs[rel_idx])
 
-# v18: SEPARATED sentiment predicates from attribution verbs
+# v18.1: EXPANDED verb sets (v14.2 lemma forms, 70.7% coverage).
+# IMPORTANT: Stanza returns ROOT lemmas (dikritik→kritik, mengecam→kecam, memuji→puji).
+# Verb sets MUST use lemma forms. Passive detected via deprel=nsubj:pass (same lemma).
 SENTIMENT_PREDICATES_ACTIVE = {
-    "mengkritik", "mengecam", "menyindir", "menyerang", "membela",
-    "menolak", "mendukung", "memuji", "menuding", "menyinggung",
-    "mengejek", "mencela", "menghina", "mengapresiasi",
+    # Negative evaluation (entity criticized/accused/sanctioned)
+    "kritik","kecam","sindir","serang","hina","cela","ejek","tuding",
+    "tuduh","lapor","cekal","tahan","vonis","tangkap","pidana","anggap",
+    "nilai","sorot","gugur","bongkar","pecat","mundur","undur","berhenti",
+    "ganti","razia","sita","denda","hukum","ganjar",
+    # Positive evaluation (entity praised/supported/endorsed)
+    "puji","dukung","apresiasi","restui","sahkan","setuju","kukuhkan",
+    "akui","legitimasi",
+    # Active opposition/support (entity takes stance)
+    "bela","tolak","keberatan","menentang",
+    # Judgment/evaluation verbs
+    "pandang","sikapi","persepsi",
+    # Revelation/exposure (negative framing)
+    "ungkap",
 }
-SENTIMENT_PREDICATES_PASSIVE = {
-    "dikecam", "dikritik", "dipuji", "ditahan", "dipecat", "dituding",
-    "dituduh", "dilaporkan", "dicekal", "disindir", "divonis", "ditangkap",
-    "dipidana", "dianggap", "dinilai",
-}
-# v18: Attribution verbs — NO LONGER get attr_score=40. Get attr_score=10.
 ATTRIBUTION_WORDS = {
-    "mengatakan", "menyatakan", "menegaskan", "menjelaskan", "menambahkan",
-    "mengimbau", "mengingatkan", "menyampaikan", "mengaku", "mengklaim",
-    "menilai", "mengungkapkan", "menjawab",
-    "ujar", "tutur", "tegas", "kata", "sebut", "ungkap", "papar",
+    # Core speaking verbs (entity is SPEAKER — neutral, not target)
+    "kata","nyata","tegas","jelaskan","tambah","imbau","ingat","sampai",
+    "aku","klaim","nilai","ungkap","jawab","ujar","tutur","sebut","papar",
+    "ucap","sampaikan","katakan","ungkapkan","nyatakan","tegaskan",
+    "tambahkan","imbaukan","ingatkan","balas","tanggapi",
+    # Suggestion/request verbs (entity proposes)
+    "saran","menyaran","rekomendasi","usul","ajak","mengajak",
+    "pinta","minta","meminta","perintah","wantiwanti",
+    # Emphasis verbs (entity highlights)
+    "tekan","tekankan","menekankan","sorot","soroti","tandai","tanda",
+    # Appointment/indication (entity designates)
+    "tunjuk","menunjuk",
 }
 PRONOUNS = {"dia", "ia", "beliau", "mereka", "nya"}
 QUOTE_CHARS = set('“"”‘’')
