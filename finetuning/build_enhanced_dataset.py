@@ -54,7 +54,10 @@ rows = load_jsonl(RAW)
 gold = {g["row_index"]: g for g in load_jsonl(GOLD)}
 llm  = {l["row_index"]: l for l in load_jsonl(LLM)}
 
-print(f"Raw: {len(rows)} | Gold: {len(gold)} | LLM: {len(llm)}")
+# Load LLM-verified labels (from llm_verify_heuristics.py — 464 heuristic rows re-verified)
+LLM_VERIFIED = HERE / "llm_verified_labels.jsonl"
+llm_verified = {v["row_index"]: v for v in load_jsonl(LLM_VERIFIED)}
+print(f"Raw: {len(rows)} | Gold: {len(gold)} | LLM: {len(llm)} | LLM-verified: {len(llm_verified)}")
 
 # ---------------------------------------------------------------------------
 # Alias detection — find what surface form of the entity appears in context
@@ -92,6 +95,16 @@ def classify(idx, r):
         g = gold[idx]
         return ("gold_human", g["gold_label"], g["gold_relevancy"], 1.0,
                 g["defect_class"], g["reasoning"])
+    # 1b. LLM-verified heuristic labels (from llm_verify_heuristics.py — highest priority after gold)
+    if idx in llm_verified:
+        v = llm_verified[idx]
+        if v.get("label_source") == "llm_verified":
+            return ("llm_verified", v["gold_label"], v["gold_relevancy"], 0.85,
+                    "verified", v.get("reasoning", "LLM-verified heuristic label."))
+        elif v.get("label_source") == "llm_verify_failed":
+            # API failed, keep heuristic label but mark as failed
+            return ("llm_verify_failed", v["gold_label"], v["gold_relevancy"], 0.5,
+                    "llm_verify_failed", v.get("reasoning", "LLM verify API failed."))
     # 2. LLM second-pass (only if successful)
     if idx in llm and llm[idx].get("label_source") == "llm_second_pass":
         l = llm[idx]
