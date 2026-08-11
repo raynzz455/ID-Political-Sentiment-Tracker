@@ -1,0 +1,58 @@
+{
+  "M1_baseline": {
+    "accuracy": 0.84,
+    "macro_f1": 0.8078344419807836,
+    "ece": 0.12989029824733733,
+    "overconfidence_ratio": 0.0,
+    "brier": 0.17196923895997313,
+    "conf_stats": {
+      "mean_conf": 0.9422035217285156,
+      "pct_gt_0.9": 0.84,
+      "pct_gt_0.95": 0.82
+    },
+    "temperature": 1.0,
+    "label_smoothing": 0.0
+  },
+  "M4_focal_weights": {
+    "accuracy": 0.93,
+    "macro_f1": 0.9051851851851852,
+    "ece": 0.09162331998348236,
+    "overconfidence_ratio": 0.0,
+    "brier": 0.07398408885835986,
+    "conf_stats": {
+      "mean_conf": 0.9348182678222656,
+      "pct_gt_0.9": 0.85,
+      "pct_gt_0.95": 0.58
+    },
+    "temperature": 1.0,
+    "label_smoothing": 0.0
+  },
+  "M5_focal+smoothing_0.05+temp_1.3": {
+    "accuracy": 0.89,
+    "macro_f1": 0.8525686977299881,
+    "ece": 0.14919242024421692,
+    "overconfidence_ratio": 0.0,
+    "brier": 0.1315483987884214,
+    "conf_stats": {
+      "mean_conf": 0.8417655825614929,
+      "pct_gt_0.9": 0.23,
+      "pct_gt_0.95": 0.02
+    },
+    "temperature": 1.3,
+    "label_smoothing": 0.05
+  },
+  "M6_focal+smoothing_0.1+temp_1.5": {
+    "accuracy": 0.9,
+    "macro_f1": 0.8683760683760684,
+    "ece": 0.20284641593694686,
+    "overconfidence_ratio": 0.0,
+    "brier": 0.16341909587770106,
+    "conf_stats": {
+      "mean_conf": 0.7560899257659912,
+      "pct_gt_0.9": 0.02,
+      "pct_gt_0.95": 0.0
+    },
+    "temperature": 1.5,
+    "label_smoothing": 0.1
+  }
+}

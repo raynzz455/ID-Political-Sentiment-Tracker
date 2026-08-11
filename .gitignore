@@ -56,3 +56,9 @@ yarn-debug.log*
 yarn-error.log*
 
 git-commit-scheduler.ps1
+# Finetuning sensitive
+finetuning/runs/
+finetuning/__pycache__/
+finetuning/*.log
+*.env
+HF_TOKEN
