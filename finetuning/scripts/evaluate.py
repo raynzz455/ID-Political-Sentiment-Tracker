@@ -25,7 +25,15 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from peft import PeftModel
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classification_report
 
-import hyperparams as H
+import sys
+from pathlib import Path
+_script_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
+sys.path.insert(0, str(_script_dir))
+sys.path.insert(0, str(_script_dir.parent / 'configs'))
+try:
+    import hyperparams_optimized as H
+except ImportError:
+    import hyperparams as H
 
 TASK_CFG = {
     "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_relevancy.jsonl"},

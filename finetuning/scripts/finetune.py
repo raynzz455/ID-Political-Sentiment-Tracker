@@ -42,7 +42,18 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, TaskType
 
-import hyperparams as H
+import sys
+from pathlib import Path
+_script_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
+sys.path.insert(0, str(_script_dir))
+sys.path.insert(0, str(_script_dir.parent / 'configs'))
+
+try:
+    import hyperparams_optimized as H
+    print('[INFO] Using OPTIMIZED hyperparams (M5 anti-overconfidence)')
+except ImportError:
+    import hyperparams as H
+    print('[INFO] Using base hyperparams')
 
 # ---------------------------------------------------------------------------
 # 0. Reproducibility
