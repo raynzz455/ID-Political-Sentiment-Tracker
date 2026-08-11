@@ -106,3 +106,38 @@ NEXT STEPS:
   3. Deploy patches v14.2 + v18.1 + v15 to production
   4. Re-run pipeline on production data
   5. Re-label with LLM when API quota resets
+
+---
+Task ID: 16
+Agent: Z.ai Code (main)
+Task: Push finetuning pipeline + dataset to GitHub repo + setup HuggingFace upload.
+
+Work Log:
+- Cloned repo raynzz455/ID-Political-Sentiment-Tracker via GitHub token.
+- Created branch feature/finetuning-optimized.
+- Copied 18 files into finetuning/ directory:
+  - datasets/: 5 files (dataset_enhanced, dataset, gold_labels, llm_labels, llm_verified_labels)
+  - scripts/: 12 files (finetune.py, evaluate.py, upload_huggingface.py, build_enhanced_dataset.py, etc.)
+  - configs/: 1 file (hyperparams_optimized.py)
+  - README.md
+- Created optimized hyperparameters (hyperparams_optimized.py):
+  - LoRA r=32 (doubled from 16), alpha=64
+  - Focal gamma=2.5 (tuned from 2.0)
+  - Label smoothing 0.05
+  - SWA enabled (start epoch 10)
+  - Cosine warm restart scheduler
+  - Effective batch 64 (batch=16 × grad_accum=4)
+  - Confidence tau=0.80 for 97% target
+  - HuggingFace upload targets: raynzz455/id-political-sentiment-{sentiment,relevancy}-v1
+- Created upload_huggingface.py: merges LoRA, applies temperature, creates model card, uploads to HF Hub.
+- Security check: no tokens or keys leaked in committed files.
+- Committed and pushed to GitHub.
+- Created Pull Request #1: https://github.com/raynzz455/ID-Political-Sentiment-Tracker/pull/1
+
+Stage Summary:
+- PR #1 created with 18 files (5.0MB total).
+- Branch: feature/finetuning-optimized
+- Optimized hyperparameters target >=97% kept-accuracy.
+- HuggingFace upload script ready (requires HF_TOKEN).
+- Security verified: no secrets in files.
+- Next: user merges PR, runs finetune on Colab GPU, uploads model to HuggingFace.
