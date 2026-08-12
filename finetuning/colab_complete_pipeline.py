@@ -10,18 +10,17 @@ Set runtime ke GPU: Runtime -> Change runtime type -> T4 GPU.
 !git clone https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git
 %cd /content/ID-Political-Sentiment-Tracker
 
-# === CELL 2: Install dependencies ===
+# === CELL 2: Install dependencies (NUCLEAR OPTION) ===
 # Cell 2
-# CRITICAL FIX: torchvision breaks when torch is upgraded by torchao.
-# We don't need torchvision for NLP finetuning (only for image tasks).
-# Solution: uninstall torchvision first, then upgrade freely.
+# Colab pre-installs torch+torchvision+torchaudio as a matched triplet.
+# Upgrading ANY of them breaks the others (CUDA version mismatch cascade).
+# transformers v5 imports torchvision AND torchaudio lazily, causing crashes.
+# 
+# SOLUTION: Clean slate. Uninstall ALL torch packages, reinstall matched set.
 
-# Step 1: Uninstall torchvision (NOT needed for BERT text classification)
-!pip uninstall -y torchvision 2>/dev/null
-
-# Step 2: Now upgrade torchao + install deps freely (torch will match)
-!pip install -q --upgrade torchao
-!pip install -q transformers peft scikit-learn numpy
+!pip uninstall -y torch torchvision torchaudio torchao torchtext 2>/dev/null
+!pip install -q torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+!pip install -q torchao transformers peft scikit-learn numpy
 
 # Verify
 import torch, transformers, peft
