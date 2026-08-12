@@ -1,12 +1,13 @@
-# Requirements for finetuning — pinned versions for Colab/GitHub Actions compatibility
+# Requirements for finetuning — use LATEST versions
 # Install: pip install -r requirements_finetune.txt
-
-# CRITICAL: torchao must be >=0.16.0 or UNINSTALLED (peft crashes on incompatible version)
-# torchao is NOT needed for LoRA finetuning — peft only checks if it's available
-# Solution: don't install torchao, or install >=0.16.0
+#
+# IMPORTANT: Colab pre-installs torchao 0.10.0 which crashes peft.
+# Fix: upgrade torchao to latest with: pip install --upgrade torchao
+# Or just use the Colab script which handles this automatically.
 
 torch>=2.1.0
-transformers>=4.40.0,<5.0.0
+torchao>=0.16.0
+transformers>=4.40.0
 peft>=0.10.0
 scikit-learn>=1.4.0
 numpy>=1.26.0

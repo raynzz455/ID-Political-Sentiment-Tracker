@@ -58,23 +58,6 @@ except ImportError:
     print('[INFO] Using base hyperparams')
 
 # ---------------------------------------------------------------------------
-# -1. torchao compatibility fix
-# ---------------------------------------------------------------------------
-# PEFT checks torchao availability, but crashes if version < 0.16.0.
-# torchao is NOT needed for LoRA — it's only used for quantized models.
-# Fix: disable torchao import by making peft think it's not available.
-try:
-    import torchao
-    from packaging import version
-    if version.parse(torchao.__version__) < version.parse("0.16.0"):
-        import peft.import_utils
-        # Monkey-patch: make peft think torchao is not available
-        peft.import_utils.is_torchao_available = lambda: False
-        print(f"[INFO] torchao {torchao.__version__} < 0.16.0 — disabled (not needed for LoRA)")
-except ImportError:
-    pass  # torchao not installed — no problem
-
-# ---------------------------------------------------------------------------
 # 0. Reproducibility
 # ---------------------------------------------------------------------------
 set_seed(H.SEED)
