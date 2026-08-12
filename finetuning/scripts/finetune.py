@@ -340,8 +340,8 @@ def main(task: str):
         args=targs,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        # processing_class is the new name (transformers v5), tokenizer= is deprecated
-        **({"processing_class": tok} if "processing_class" in TrainingArguments.__init__.__code__.co_varnames else {"tokenizer": tok}),
+        # processing_class (transformers v5) vs tokenizer (v4) — check Trainer not TrainingArguments
+        **({"processing_class": tok} if "processing_class" in Trainer.__init__.__code__.co_varnames else {"tokenizer": tok}),
         compute_metrics=compute_metrics,
         class_weights=cw,
         focal_gamma=H.FOCAL_GAMMA,
