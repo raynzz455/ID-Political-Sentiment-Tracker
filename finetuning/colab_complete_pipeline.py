@@ -10,16 +10,17 @@ Set runtime ke GPU: Runtime -> Change runtime type -> T4 GPU.
 !git clone https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git
 %cd /content/ID-Political-Sentiment-Tracker
 
-# === CELL 2: Install dependencies (DO NOT upgrade torch!) ===
+# === CELL 2: Install dependencies ===
 # Cell 2
-# CRITICAL: Do NOT upgrade torch — Colab has torch+torchvision matched pair.
-# Upgrading torch breaks torchvision which breaks transformers.
-# Only upgrade torchao (Colab has 0.10.0, peft needs >=0.16.0).
+# CRITICAL FIX: torchvision breaks when torch is upgraded by torchao.
+# We don't need torchvision for NLP finetuning (only for image tasks).
+# Solution: uninstall torchvision first, then upgrade freely.
 
-# Step 1: Upgrade ONLY torchao (not torch)
+# Step 1: Uninstall torchvision (NOT needed for BERT text classification)
+!pip uninstall -y torchvision 2>/dev/null
+
+# Step 2: Now upgrade torchao + install deps freely (torch will match)
 !pip install -q --upgrade torchao
-
-# Step 2: Install other deps without touching torch
 !pip install -q transformers peft scikit-learn numpy
 
 # Verify
@@ -32,12 +33,8 @@ try:
     print(f"torchao: {torchao.__version__}")
 except:
     print("torchao: not installed")
-try:
-    import torchvision
-    print(f"torchvision: {torchvision.__version__}")
-except:
-    print("torchvision: not installed")
 print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE - aktifkan GPU!'}")
+print("torchvision: uninstalled (not needed for NLP)")
 
 # === CELL 3: Mount Google Drive ===
 # Cell 3
