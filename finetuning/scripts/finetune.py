@@ -117,16 +117,15 @@ class PairDataset(Dataset):
             truncation=True, max_length=self.max_len,
             padding="max_length", return_tensors="pt",
         )
-        return {
+        item = {
             "input_ids": enc["input_ids"][0],
             "attention_mask": enc["attention_mask"][0],
-            "token_type_ids": enc.get("token_type_ids", torch.zeros_like(enc["input_ids"][0]))[0]
-                if self.tokenizer.model_max_length and "token_type_ids" in enc
-                else torch.zeros(self.max_len, dtype=torch.long),
             "labels": torch.tensor(self.label2id[r["label"]], dtype=torch.long),
-            # per-sample confidence weight for loss scaling
             "sample_weight": torch.tensor(r.get("confidence", 0.5), dtype=torch.float),
         }
+        if "token_type_ids" in enc:
+            item["token_type_ids"] = enc["token_type_ids"][0]
+        return item
 
 def load_jsonl(path):
     rows = []
@@ -296,7 +295,8 @@ def main(task: str):
         warmup_steps=warmup_steps,
         lr_scheduler_type=H.SCHEDULER,
         fp16=H.FP16,
-        eval_strategy="epoch",
+        # eval_strategy works in transformers >=4.41, evaluation_strategy for older versions
+        **({"eval_strategy": "epoch"} if "eval_strategy" in TrainingArguments.__init__.__code__.co_varnames else {"evaluation_strategy": "epoch"}),
         save_strategy="epoch",
         save_total_limit=2,
         load_best_model_at_end=True,
@@ -324,7 +324,8 @@ def main(task: str):
         args=targs,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        tokenizer=tok,
+        # processing_class is the new name (transformers v5), tokenizer= is deprecated
+        **({"processing_class": tok} if "processing_class" in TrainingArguments.__init__.__code__.co_varnames else {"tokenizer": tok}),
         compute_metrics=compute_metrics,
         class_weights=cw,
         focal_gamma=H.FOCAL_GAMMA,
@@ -381,9 +382,15 @@ def calibrate_temperature(model, val_ds, tokenizer, device=None):
     model.eval().to(device)
     logits_all, labels_all = [], []
     for i in range(len(val_ds)):
-        item = {k: v.unsqueeze(0).to(device) for k, v in val_ds[i].items()}
-        labels_all.append(int(item.pop("labels").item()))
-        out = model(**item)
+        item = val_ds[i]
+        labels_all.append(int(item["labels"].item()))
+        # Prepare inputs (remove non-model keys)
+        model_inputs = {}
+        for k, v in item.items():
+            if k in ("labels", "sample_weight"):
+                continue
+            model_inputs[k] = v.unsqueeze(0).to(device)
+        out = model(**model_inputs)
         logits_all.append(out.logits.squeeze(0).cpu())
     logits = torch.stack(logits_all)
     labels = torch.tensor(labels_all)

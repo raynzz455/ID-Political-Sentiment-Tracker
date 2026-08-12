@@ -41,12 +41,14 @@ TASK_CFG = {
     "relevancy": {
         "labels": H.RELEVANCY_LABELS,
         "data": _DATA_FILE,
+        "base_model": H.RELEVANCY_BASE,
         "label_field": "gold_relevancy",
         "exclude_flags": ["corruption_stitch", "wrong_entity"],
     },
     "sentiment": {
         "labels": H.SENTIMENT_LABELS,
         "data": _DATA_FILE,
+        "base_model": H.SENTIMENT_BASE,
         "label_field": "gold_label",
         "filter": lambda r: r.get("gold_relevancy") == "relevant",
         "exclude_flags": ["corruption_stitch", "wrong_entity"],
@@ -81,7 +83,8 @@ def score_all(model, tok, rows, labels, device=None, max_len=H.MAX_SEQ_LENGTH):
     probs, golds = [], []
     for r in rows:
         enc = tok(r["premise"], r["hypothesis"], truncation=True,
-                  max_length=max_len, return_tensors="pt").to(device)
+                  max_length=max_len, return_tensors="pt")
+        enc = {k: v.to(device) for k, v in enc.items()}
         out = model(**enc)
         p = F.softmax(out.logits / 1.0, dim=-1)[0].cpu().numpy()
         probs.append(p)
@@ -104,7 +107,8 @@ def score_all_calibrated(model, tok, rows, labels, T, device=None, max_len=H.MAX
     probs, golds = [], []
     for r in rows:
         enc = tok(r["premise"], r["hypothesis"], truncation=True,
-                  max_length=max_len, return_tensors="pt").to(device)
+                  max_length=max_len, return_tensors="pt")
+        enc = {k: v.to(device) for k, v in enc.items()}
         out = model(**enc)
         p = F.softmax(out.logits / T, dim=-1)[0].cpu().numpy()
         probs.append(p)
@@ -146,7 +150,7 @@ def main(task, run_dir):
     print(f"Task: {task} | run_dir: {run_dir} | temperature: {T}")
 
     # load base + LoRA
-    base = cfg["base_model"] if task == "sentiment" else H.RELEVANCY_BASE
+    base = cfg["base_model"]
     tok = AutoTokenizer.from_pretrained(run_dir / "tokenizer")
     model = AutoModelForSequenceClassification.from_pretrained(base)
     model = PeftModel.from_pretrained(model, run_dir / "lora")
