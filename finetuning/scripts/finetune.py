@@ -320,7 +320,8 @@ def main(task: str):
         metric_for_best_model="macro_f1",
         greater_is_better=True,
         seed=H.SEED,
-        deterministic=H.DETERMINISTIC,
+        # deterministic algorithms (transformers uses use_deterministic_algorithms)
+        **({"use_deterministic_algorithms": True} if hasattr(H, "DETERMINISTIC") and H.DETERMINISTIC else {}),
         report_to="none",
         logging_steps=max(1, steps_per_epoch // 4),
     )
