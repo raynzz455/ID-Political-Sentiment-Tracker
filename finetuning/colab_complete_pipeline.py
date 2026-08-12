@@ -10,12 +10,20 @@ Set runtime ke GPU: Runtime -> Change runtime type -> T4 GPU.
 !git clone https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git
 %cd /content/ID-Political-Sentiment-Tracker
 
-# === CELL 2: Install dependencies ===
+# === CELL 2: Install dependencies (FIXED for torchao/peft compatibility) ===
 # Cell 2
-!pip install -q torch transformers peft scikit-learn numpy
+# FIX: torchao 0.10.0 incompatible dengan peft terbaru.
+# Solusi: uninstall torchao (peft tidak butuh torchao untuk LoRA standar)
+!pip uninstall -y torchao 2>/dev/null
 
-import torch
-print(f"PyTorch: {torch.__version__}")
+# Install deps dengan version yang compatible
+!pip install -q "torch>=2.1.0" "transformers>=4.40.0,<5.0.0" "peft>=0.10.0" scikit-learn numpy
+
+# Verify
+import torch, transformers, peft
+print(f"torch: {torch.__version__}")
+print(f"transformers: {transformers.__version__}")
+print(f"peft: {peft.__version__}")
 print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE - aktifkan GPU!'}")
 
 # === CELL 3: Mount Google Drive ===
@@ -44,7 +52,6 @@ for l in ['positive', 'neutral', 'negative']:
 
 # === CELL 5: Run finetune (GPU ~10 min) ===
 # Cell 5 — MAIN TRAINING
-# Base model download otomatis dari HF Hub (PUBLIC, no token needed)
 !python finetuning/scripts/finetune.py --task sentiment
 
 # === CELL 6: Run evaluation ===

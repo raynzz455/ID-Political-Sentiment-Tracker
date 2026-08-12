@@ -40,6 +40,16 @@ try:
 except ImportError:
     import hyperparams as H
 
+# torchao compatibility fix
+try:
+    import torchao
+    from packaging import version
+    if version.parse(torchao.__version__) < version.parse("0.16.0"):
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 

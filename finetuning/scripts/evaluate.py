@@ -35,6 +35,16 @@ try:
 except ImportError:
     import hyperparams as H
 
+# torchao compatibility fix (same as finetune.py)
+try:
+    import torchao
+    from packaging import version
+    if version.parse(torchao.__version__) < version.parse("0.16.0"):
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
+except ImportError:
+    pass
+
 _DATA_FILE = str(_script_dir.parent / "datasets" / "dataset_enhanced.jsonl")
 
 TASK_CFG = {
