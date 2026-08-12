@@ -45,6 +45,8 @@ WEIGHT_DECAY  = 0.01
 ADAM_EPSILON  = 1e-8
 ADAM_BETA1    = 0.9
 ADAM_BETA2    = 0.999
+ADAM_BETA1    = 0.9
+ADAM_BETA2    = 0.999
 MAX_GRAD_NORM = 1.0
 
 # Scheduler
@@ -79,6 +81,7 @@ RELEVANCY_LABELS = ["not_relevant", "relevant"]
 # === CALIBRATION (anti-overconfidence) ===
 TEMPERATURE    = 1.3   # KEY: softens softmax, reduces overconfidence
 CONFIDENCE_TAU = 0.70  # defer predictions below this confidence
+RELEVANCY_THRESHOLD = 0.5  # threshold for relevancy gate
 
 # HuggingFace
 HF_ORG          = "raynzz455"

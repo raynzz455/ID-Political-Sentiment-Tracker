@@ -56,6 +56,8 @@ LEARNING_RATE = 2e-5       # IndoBERT sweet spot. Higher (5e-5) destabilises
 WEIGHT_DECAY  = 0.01       # AdamW L2. Regularises the small dataset.
 ADAM_EPSILON  = 1e-8
 ADAM_BETA1    = 0.9
+ADAM_BETA2    = 0.999
+ADAM_BETA1    = 0.9
 ADAM_BETA2    = 0.999      # default; small datasets don't benefit from tuning.
 MAX_GRAD_NORM = 1.0        # gradient clipping — essential for LoRA stability.
 
@@ -104,7 +106,8 @@ RELEVANCY_LABELS = ["not_relevant", "relevant"]
 # ---------------------------------------------------------------------------
 TEMPERATURE     = 1.5      # temperature scaling on logits (Guo et al. 2017).
                            # Tuned on val set to make softmax a real prob.
-CONFIDENCE_TAU  = 0.75     # defer predictions with max-prob < tau to a
+CONFIDENCE_TAU  = 0.75
+RELEVANCY_THRESHOLD = 0.5     # defer predictions with max-prob < tau to a
                            # human/LLM second pass. Tuned on val to hit
                            # ≥97% accuracy on the kept set.
                            # See evaluate.py::confidence_threshold_sweep().
@@ -112,6 +115,12 @@ CONFIDENCE_TAU  = 0.75     # defer predictions with max-prob < tau to a
 # ---------------------------------------------------------------------------
 # Output dirs
 # ---------------------------------------------------------------------------
+# HuggingFace upload targets
+HF_ORG          = "raynzz455"
+HF_MODEL_PREFIX = "id-political-sentiment"
+HF_SENTIMENT_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-sentiment-v1"
+HF_RELEVANCY_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-relevancy-v1"
+
 OUT_DIR_RELEVANCY = "./runs/relevancy"
 OUT_DIR_SENTIMENT = "./runs/sentiment"
 
