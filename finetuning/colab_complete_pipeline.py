@@ -10,11 +10,17 @@ Set runtime ke GPU: Runtime -> Change runtime type -> T4 GPU.
 !git clone https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git
 %cd /content/ID-Political-Sentiment-Tracker
 
-# === CELL 2: Install dependencies (ALL LATEST VERSIONS) ===
+# === CELL 2: Install dependencies (DO NOT upgrade torch!) ===
 # Cell 2
-# Fix: torchao 0.10.0 (Colab default) incompatible dengan peft terbaru.
-# Solution: upgrade torchao to latest (>=0.16.0) instead of uninstalling.
-!pip install -q --upgrade torch torchao transformers peft scikit-learn numpy
+# CRITICAL: Do NOT upgrade torch — Colab has torch+torchvision matched pair.
+# Upgrading torch breaks torchvision which breaks transformers.
+# Only upgrade torchao (Colab has 0.10.0, peft needs >=0.16.0).
+
+# Step 1: Upgrade ONLY torchao (not torch)
+!pip install -q --upgrade torchao
+
+# Step 2: Install other deps without touching torch
+!pip install -q transformers peft scikit-learn numpy
 
 # Verify
 import torch, transformers, peft
@@ -25,7 +31,12 @@ try:
     import torchao
     print(f"torchao: {torchao.__version__}")
 except:
-    print("torchao: not installed (OK)")
+    print("torchao: not installed")
+try:
+    import torchvision
+    print(f"torchvision: {torchvision.__version__}")
+except:
+    print("torchvision: not installed")
 print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE - aktifkan GPU!'}")
 
 # === CELL 3: Mount Google Drive ===
