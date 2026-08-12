@@ -32,12 +32,19 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from peft import PeftModel
 
-import hyperparams as H
+import sys
+sys.path.insert(0, str(_script_dir))
+sys.path.insert(0, str(_script_dir.parent / "configs"))
+try:
+    import hyperparams_optimized as H
+except ImportError:
+    import hyperparams as H
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-RUNS_DIR = Path(__file__).parent / "runs"
+_script_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
+RUNS_DIR = _script_dir.parent / "runs"
 
 @dataclass
 class GatedResult:

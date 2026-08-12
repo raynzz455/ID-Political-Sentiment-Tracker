@@ -35,9 +35,22 @@ try:
 except ImportError:
     import hyperparams as H
 
+_DATA_FILE = str(_script_dir.parent / "datasets" / "dataset_enhanced.jsonl")
+
 TASK_CFG = {
-    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_relevancy.jsonl"},
-    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_sentiment.jsonl"},
+    "relevancy": {
+        "labels": H.RELEVANCY_LABELS,
+        "data": _DATA_FILE,
+        "label_field": "gold_relevancy",
+        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+    },
+    "sentiment": {
+        "labels": H.SENTIMENT_LABELS,
+        "data": _DATA_FILE,
+        "label_field": "gold_label",
+        "filter": lambda r: r.get("gold_relevancy") == "relevant",
+        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+    },
 }
 
 def load_jsonl(p):
@@ -140,7 +153,19 @@ def main(task, run_dir):
     model = model.merge_and_unload()  # merge LoRA for faster inference
 
     # data — reproduce the SAME stratified test split as finetune.py
-    rows = load_jsonl(cfg["data"])
+    all_rows = load_jsonl(cfg["data"])
+    # Filter rows for this task
+    label_field = cfg.get("label_field", "label")
+    exclude_flags = cfg.get("exclude_flags", [])
+    filter_fn = cfg.get("filter")
+    rows = []
+    for r in all_rows:
+        if r.get("context_flag") in exclude_flags:
+            continue
+        if filter_fn and not filter_fn(r):
+            continue
+        rows.append({"premise": r.get("premise",""), "hypothesis": r.get("hypothesis",""),
+                     "label": r.get(label_field, "neutral"), "row_index": r.get("row_index", -1)})
     _, _, test = stratified_split(rows)
     print(f"Test set: {len(test)} rows | balance: {dict(Counter(r['label'] for r in test))}")
 

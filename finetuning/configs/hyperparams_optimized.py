@@ -68,6 +68,7 @@ SWA_LR          = 1e-5
 SWA_ANNEAL_EPOCHS = 3
 
 # Split
+TRAIN_SPLIT = 0.70
 VAL_SPLIT  = 0.15
 TEST_SPLIT = 0.15
 SEED       = 42

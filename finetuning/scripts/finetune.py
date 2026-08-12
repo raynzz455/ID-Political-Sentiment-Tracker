@@ -48,6 +48,8 @@ _script_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
 sys.path.insert(0, str(_script_dir))
 sys.path.insert(0, str(_script_dir.parent / 'configs'))
 
+_DATA_FILE = str(_script_dir.parent / 'datasets' / 'dataset_enhanced.jsonl')
+
 try:
     import hyperparams_optimized as H
     print('[INFO] Using OPTIMIZED hyperparams (M5 anti-overconfidence)')
@@ -71,7 +73,7 @@ TASK_CFG = {
         #   - gold_relevancy field (relevant | not_relevant)
         #   - label_confidence for sample weighting
         #   - context_flag to exclude corruption_stitch / wrong_entity
-        "data_file": "dataset_enhanced.jsonl",
+        "data_file": _DATA_FILE,
         "label_field": "gold_relevancy",
         "base_model": H.RELEVANCY_BASE,
         "labels": H.RELEVANCY_LABELS,
@@ -80,7 +82,7 @@ TASK_CFG = {
     },
     "sentiment": {
         # Same enhanced dataset, filtered to gold_relevancy == "relevant"
-        "data_file": "dataset_enhanced.jsonl",
+        "data_file": _DATA_FILE,
         "label_field": "gold_label",
         "filter": lambda r: r.get("gold_relevancy") == "relevant",
         "base_model": H.SENTIMENT_BASE,
@@ -146,8 +148,10 @@ def stratified_split(rows, label_key, train_p, val_p, seed=H.SEED):
         items = list(items)
         rng.shuffle(items)
         n = len(items)
-        n_test = max(1, int(round(n * H.TEST_SPLIT)))
-        n_val  = max(1, int(round(n * H.VAL_SPLIT)))
+        test_split = getattr(H, "TEST_SPLIT", 0.15)
+        n_test = max(1, int(round(n * test_split)))
+        val_split = getattr(H, "VAL_SPLIT", 0.15)
+        n_val  = max(1, int(round(n * val_split)))
         n_train = n - n_test - n_val
         # guarantee at least 1 in train when class is tiny
         if n_train < 1:
@@ -236,7 +240,9 @@ def main(task: str):
         })
     print(f"After filter: {len(rows)} rows (excluded: {excluded})")
 
-    train_rows, val_rows, test_rows = stratified_split(rows, "label", H.TRAIN_SPLIT, H.VAL_SPLIT)
+    train_split = getattr(H, "TRAIN_SPLIT", 0.70)
+    val_split = getattr(H, "VAL_SPLIT", 0.15)
+    train_rows, val_rows, test_rows = stratified_split(rows, "label", train_split, val_split)
     print(f"Split: train={len(train_rows)} val={len(val_rows)} test={len(test_rows)}")
 
     # class balance report

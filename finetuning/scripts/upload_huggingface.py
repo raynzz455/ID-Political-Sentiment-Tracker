@@ -20,8 +20,13 @@ def upload_model(task, run_dir, hf_token):
     from peft import PeftModel
     import torch
 
-    sys.path.insert(0, str(Path(__file__).parent.parent / "configs"))
-    import hyperparams_optimized as H
+    _script_dir = Path(__file__).parent if '__file__' in dir() else Path('.')
+    sys.path.insert(0, str(_script_dir))
+    sys.path.insert(0, str(_script_dir.parent / "configs"))
+    try:
+        import hyperparams_optimized as H
+    except ImportError:
+        import hyperparams as H
 
     if task == "sentiment":
         base_model = H.SENTIMENT_BASE
