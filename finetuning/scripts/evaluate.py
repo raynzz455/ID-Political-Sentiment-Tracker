@@ -151,9 +151,9 @@ def main(task, run_dir):
 
     # load base + LoRA
     base = cfg["base_model"]
-    tok = AutoTokenizer.from_pretrained(run_dir / "tokenizer")
-    model = AutoModelForSequenceClassification.from_pretrained(base)
-    model = PeftModel.from_pretrained(model, run_dir / "lora")
+    tok = AutoTokenizer.from_pretrained(str((run_dir / "tokenizer").resolve()))
+    model = AutoModelForSequenceClassification.from_pretrained(str(base) if not str(base).startswith("/") else str(base))
+    model = PeftModel.from_pretrained(model, str((run_dir / "lora").resolve()))
     model = model.merge_and_unload()  # merge LoRA for faster inference
 
     # data — reproduce the SAME stratified test split as finetune.py
