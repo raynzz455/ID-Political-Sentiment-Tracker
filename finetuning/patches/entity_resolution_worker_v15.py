@@ -428,20 +428,15 @@ def process_single_article_entity(art, alias_map, entity_db_map, id_to_name,
             conf *= 0.8
 
         entity_info = data.get("entity_info", {})
+        # IMPORTANT: Only upsert fields that exist in DB schema (article_entity_map).
+        # DB columns: entity_id, is_main_entity, confidence, resolver_source
+        # Extra fields (has_sentiment_role, era_compatible, etc.) are NOT in DB schema.
+        # They are logged but NOT upserted to prevent PGRST204 errors.
         mappings.append({
             "entity_id": ent_id,
             "is_main_entity": is_main,
             "confidence": round(conf, 3),
             "resolver_source": data["src"],
-            "has_sentiment_role": data["has_sentiment"],
-            "has_attribution_role": data["has_attribution"],
-            "topic_dominance": round(data["topic_dominance"], 3),
-            "sentiment_verbs": list(set(data["sentiment_verbs"])),
-            "era_compatible": data["era_compatible"],
-            "detected_era": data["detected_era"],
-            "affiliation_match": data["affiliation_match"],
-            "entity_era": entity_info.get("era", []),
-            "entity_party": entity_info.get("party"),
         })
         for offset in data["offsets"]:
             mentions.append({
@@ -453,11 +448,14 @@ def process_single_article_entity(art, alias_map, entity_db_map, id_to_name,
             })
 
     if mappings:
-        main = mappings[0]
-        logger.info(f"Main: {id_to_name.get(main['entity_id'],'?')} "
-                    f"(sent={main['has_sentiment_role']}, dom={main['topic_dominance']}, "
-                    f"era={main['era_compatible']}, affil={main['affiliation_match']}, "
-                    f"conf={main['confidence']})")
+        main_ent_id = mappings[0]["entity_id"]
+        main_data = entity_data.get(main_ent_id, {})
+        logger.info(f"Main: {id_to_name.get(main_ent_id, '?')} "
+                    f"(sent={main_data.get('has_sentiment', False)}, "
+                    f"dom={main_data.get('topic_dominance', 0):.3f}, "
+                    f"era={main_data.get('era_compatible', True)}, "
+                    f"affil={main_data.get('affiliation_match', None)}, "
+                    f"conf={mappings[0]['confidence']})")
     else:
         logger.info("Resolved: 0 entities (Skipped)")
 

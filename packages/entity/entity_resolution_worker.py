@@ -347,15 +347,13 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
             conf = 0.6
         else:
             conf = 0.4
+        # Only upsert DB-compatible fields (article_entity_map schema)
+        # Extra fields are computed but NOT stored in DB to prevent PGRST204 errors
         mappings.append({
             "entity_id": ent_id,
             "is_main_entity": is_main,
             "confidence": conf,
             "resolver_source": data["src"],
-            "has_sentiment_role": data["has_sentiment_role"],
-            "has_attribution_role": data["has_attribution_role"],
-            "topic_dominance": round(data["topic_dominance"], 3),
-            "sentiment_verbs": list(set(data["sentiment_verbs"])),
         })
         for offset in data["offsets"]:
             mentions.append({
