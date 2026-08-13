@@ -261,7 +261,7 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         for word in anchor_sent["parsed"].words:
             if word.deprel == 'root':
                 root_word = (word.lemma or word.text).lower()
-                if root_word in SENTIMENT_PREDICATES_ACTIVE or root_word in SENTIMENT_PREDICATES_PASSIVE:
+                if root_word in SENTIMENT_PREDICATES_ACTIVE:
                     has_sentiment_predicate = True
                 if root_word in ATTRIBUTION_WORDS:
                     has_attribution = True
