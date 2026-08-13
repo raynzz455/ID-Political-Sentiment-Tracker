@@ -363,10 +363,12 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
             })
 
     if mappings:
-        main = mappings[0]
-        logger.info(f"ID: {art['id'][:8]} | Main: {id_to_name.get(main['entity_id'],'?')} "
-                    f"(sent_role={main['has_sentiment_role']}, dom={main['topic_dominance']}, "
-                    f"conf={main['confidence']}) | Total: {len(mappings)} entities")
+        main_ent_id = mappings[0]["entity_id"]
+        main_data = entity_data.get(main_ent_id, {})
+        logger.info(f"ID: {art['id'][:8]} | Main: {id_to_name.get(main_ent_id, '?')} "
+                    f"(sent_role={main_data.get('has_sentiment_role', False)}, "
+                    f"dom={main_data.get('topic_dominance', 0):.3f}, "
+                    f"conf={mappings[0]['confidence']}) | Total: {len(mappings)} entities")
     else:
         logger.info(f"ID: {art['id'][:8]} | Resolved: 0 entities (Skipped)")
 
