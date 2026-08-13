@@ -361,8 +361,7 @@ def main(task: str):
             "confusion_matrix": cm.tolist(),
             "labels": cfg["labels"],
             "temperature": temperature,
-            "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
-                            for k, v in vars(H).items() if k.isupper()},
+            "hyperparams": {k: str(v) for k, v in vars(H).items() if k.isupper() and not callable(v) and not isinstance(v, type)},
             "train_size": len(train_rows),
             "val_size": len(val_rows),
             "test_size": len(test_rows),
