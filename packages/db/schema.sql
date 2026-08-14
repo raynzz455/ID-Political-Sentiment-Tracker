@@ -336,6 +336,7 @@ RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN
                ROW_NUMBER() OVER (PARTITION BY ss.entity_id, CASE WHEN ss.label = 'positive' THEN 'positive' ELSE 'negative' END ORDER BY ss.confidence DESC, rt.published_at DESC NULLS LAST) AS rn
         FROM sentiment_scores ss JOIN raw_texts rt ON rt.id = ss.raw_text_id
         WHERE ss.confidence >= 0.7 AND ss.label IN ('positive','negative') AND rt.published_at >= NOW() - INTERVAL '30 days' AND rt.title IS NOT NULL
+        AND ss.entity_id IS NOT NULL
     ) ranked WHERE rn <= p_top_n
     ON CONFLICT (entity_id, raw_text_id) DO UPDATE SET confidence = EXCLUDED.confidence, score_positive = EXCLUDED.score_positive, score_negative = EXCLUDED.score_negative, curated_at = NOW();
 END;
