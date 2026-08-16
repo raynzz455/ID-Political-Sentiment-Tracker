@@ -48,7 +48,7 @@ from sklearn.model_selection import StratifiedKFold
 
 # Import hyperparams
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "configs"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "configs"))
 import hyperparams_v3 as H
 
 # ---------------------------------------------------------------------------
@@ -481,7 +481,7 @@ def main(task: str, kfold: int = 0):
     print(f"{'='*70}\n")
 
     # Load dataset
-    data_path = Path(__file__).resolve().parent.parent / "datasets" / cfg["data_file"]
+    data_path = Path(__file__).resolve().parent / "datasets" / cfg["data_file"]
     all_rows = load_jsonl(str(data_path))
     print(f"Loaded {len(all_rows)} rows from {cfg['data_file']}")
 
