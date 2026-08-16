@@ -1,0 +1,29 @@
+{
+  "output": "/home/z/my-project/finetuning/datasets/dataset_v9.jsonl",
+  "total_rows": 1378,
+  "verified_rows": 1301,
+  "need_verify_rows": 92,
+  "label_distribution": {
+    "positive": 243,
+    "neutral": 1026,
+    "negative": 109
+  },
+  "label_source_distribution": {
+    "llm_verified": 1059,
+    "llm_failed": 92,
+    "llm_second_pass": 170,
+    "gold_human": 14,
+    "oversampled": 34,
+    "llm_verified_v8": 9
+  },
+  "confidence_buckets": {
+    ">=0.85 (LLM/gold)": 374,
+    "0.55-0.69 (low)": 673,
+    "0.70-0.84 (trusted)": 96,
+    "<0.55 (unverified)": 235
+  },
+  "excluded": {
+    "not_relevant": 12
+  },
+  "duplicates_removed": 15
+}

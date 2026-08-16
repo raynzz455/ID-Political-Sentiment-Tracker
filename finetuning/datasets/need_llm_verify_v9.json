@@ -1,0 +1,830 @@
+[
+  {
+    "raw_text_id": "70ef9cca-09ca-4a7b-bb1d-c108c2d8564a",
+    "entity_name": "Khofifah Indar Parawansa",
+    "context_text": "produk guna memanfaatkan kesempatan emas ini untuk semakin mendunia Surabaya - Gubernur Jawa Timur Khofifah Indar Parawansa mendorong pelaku usaha mikro, kecil, dan menengah (UMKM) Jatim memperkuat jejaring internasional untuk memperluas akses pasar global saat mengunjungi Indo Market di Hong Kong. \"Kami mengajak seluruh",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "45daa46e-f87f-4917-9154-75455224b6ff",
+    "entity_name": "Ade Armando",
+    "context_text": "Sosok pengamat politik sekaligus dosen bernama Ade Armando diamankan oleh kepolisian setelah babak belur akibataksi demo di depan Gedung DPR/MPR RI, Senayan, Jakarta, Senin (11/4/2022) berakhir ricuh. Ade Armando dipukuli oleh oknum demonstran hingga babak b",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "5aff7022-9434-4b62-9af4-0ac4b3292b42",
+    "entity_name": "Bima Arya Sugiarto",
+    "context_text": "JAKARTA, KOMPAS.com - Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya Sugiarto memimpin upacara peringatan Hari Otonomi Daerah ke-30 di Plaza Kemendagri, Jakarta, Senin (27/4/2026). Pantauan Kompas.com di lokasi, upacara yang digelar pada pagi hari ini dihadiri sekitar 29 kepal",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "3f4d16fe-8efc-44b2-92e7-05b93c5e03f0",
+    "entity_name": "Rizal Ramli",
+    "context_text": "Amil zakat adalah bagian penting dalam sistem zakat yang diatur dalam Islam. Namun, sudahkah kita memahami siapa sebenarnya amil zakat dan apa peranannya dalam mengelola zakat? Dalam Islam, zakat memiliki mekanisme pengelolaan yang diamanahkan kepada orang-orang tertentu. Di sinilah peran amil zakat",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "fffb699c-4340-44c9-b191-5660fa178a29",
+    "entity_name": "Surya Paloh",
+    "context_text": "Di dunia politik, Surya Paloh pernah menjadi Ketua Dewan Penasihat TRIBUNJAMBI.COM - Profil dan biodata Surya Paloh, Ketua Umum Partai Nasional Demokrat atau NasDem. Bersama PKS dan Demokrat, NasDem akan deklarasikan Koalisi Peru",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "8010169b-9a7d-40c2-89cf-8c03381e9198",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "n sasaran usia 7 sampai 17 tahun. Cek kesehatan gratis adalah salah satu program quick win Presiden Prabowo Subianto. Selain di sekolah, CKG juga dilaksanakan untuk masyarakat umum di fasilitas-fasilitas kesehatan.",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "4dbe42ad-0cdd-4185-a2e5-4114431caf6e",
+    "entity_name": "Puan Maharani",
+    "context_text": "n peserta yang didominasi mahasiswa dari berbagai perguruan tinggi menerima buku biografi berjudul \"Puan Maharani: Darah Juang Politik\" dalam dialog publik RedTalks 2026 yang digelar di Malang Creative Center (MCC), Sabtu (25/7/2026). Pembagian buku ini bertujuan untuk mendorong literasi politik serta memperluas",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "9ea4c95c-adc6-4afd-a366-9d47fd766a4c",
+    "entity_name": "Bobby Nasution",
+    "context_text": "Gubernur Sumatera Utara (Sumut) Bobby Nasution buka suara terkait sikapnya yang meninggalkan ruangan (Walk Out) saat berlangsungnya Rapat Paripurna Pertanggungjawaban Pelaksanaan APBD Sumut Tahun Anggaran 2025 dengan DPRD Sumut. Menurutnya, ia be",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "1cfb902a-c462-49eb-b6b4-b9494bb083cb",
+    "entity_name": "Refly Harun",
+    "context_text": ", JAKARTA -- Kuasa hukum Roy Suryo dan dokter Tifa, Refly Harun, melayangkan protes keras terhadap tindakan penyidik Direktorat Reserse Kriminal Umum (Ditreskrimum) Polda Metro Jaya yang melakukan penangkapan dan penahanan terhadap kedua kliennya tersebut. Refly",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "604b31ef-5022-4def-b012-4a001a443737",
+    "entity_name": "Sufmi Dasco Ahmad",
+    "context_text": "Wakil Ketua DPR Sufmi Dasco Ahmad memimpin rapat bersama pimpinan BGN di Kompleks Parlemen, Senayan. Foto: Instagram @sufmi_dasco. Anggi Tondi Martaon • 30 June 2026 08:50 Jakarta: DPR menggelar rapat dengan pimpinan Badan Gizi Nasi",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "bbb1bf29-52b9-44f9-87c5-c2611c151bde",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "l dengan Kudatuli. Presiden ke-5 Republik Indonesia yang juga Ketua Umum DPP PDI Perjuangan (PDIP), Megawati Soekarnoputri masih ingat betul insiden yang mengakibatkan lima orang tewas, 149 luka-luka, dan 23 orang hilang. Megawati menyebut peristiwa Kudatuli sebagai simbol ketidakadilan dan tidak boleh lagi terulang. Dal",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "981af97b-ae97-4dd7-a282-9d55e1088abb",
+    "entity_name": "Joko Widodo",
+    "context_text": "Presiden ke-7 RI Joko Widodo (Jokowi) berkunjung ke rumah duka anggota DPR RI Fraksi NasDem Rachmat Gobel di Jalan Prof. Soepomo, Tebet, Jakarta Selatan, Jumat (10/7). Jokowi mengenang almarhum Rachmat Gobel sebagai sosok yang b",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "0385a2ed-8163-450d-b045-45a124491da7",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "PRESIDEN Prabowo Subianto belum menetapkan sosok yang akan menggantikan Perry Warjiyo sebagai Gubernur Bank Indonesia. Menteri Sekretaris Negara Prasetyo Hadi menyebut Presiden Prabowo baru menerima surat pengunduran diri Per",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "6cb2a0c6-1794-4149-a2ea-c79d12807825",
+    "entity_name": "Bambang Soesatyo",
+    "context_text": "ri SoundandMachine.com (Jakarta) - Ketua Majelis Permusyawaratan Rakyat Republik Indonesia (MPR-RI) Bambang Soesatyo baru-baru ini membeli lini terbaru MG yaitu MG 5 GT. Bagi Bamsoet, sapaan akrab Bambang Soesatyo, 5 GT bukan MG yang pertama dibeli, karena sebelumnya membeli HS. \"Saya sendiri sudah memakai model SU",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "51db804b-9347-4e12-92c4-c79a94d71f36",
+    "entity_name": "Ade Armando",
+    "context_text": "Rocky Gerung vs Ade Armando debat soal radikalisme dan kebijakan Menag Fachrul Razi hingga kondisi terkini Dylan Carr bisa Anda simak di sini. TRIBUNNEWS.COM - Dosen Ilmu Komunikasi Universitas Indonesia (UI) Ade Armando sempat",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "51db804b-9347-4e12-92c4-c79a94d71f36",
+    "entity_name": "Rocky Gerung",
+    "context_text": "Rocky Gerung vs Ade Armando debat soal radikalisme dan kebijakan Menag Fachrul Razi hingga kondisi terkini Dylan Carr bisa Anda simak di sini. TRIBUNNEWS.COM - Dosen Ilmu Komunikasi Universitas Indonesia (UI) Ade",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "51db804b-9347-4e12-92c4-c79a94d71f36",
+    "entity_name": "Mahfud MD",
+    "context_text": "i Indonesia. Sementara itu, Menteri Koordinator Bidang Politik, Hukum, dan Keamanan (Menkopolhukam) Mahfud MD sedang tertimpa masalah yang menyangkut putranya, Ikhwan Zein. Baru-baru ini beredar modus penipuan yang mengatasnamakan Ikhwan Zein. Di dunia selebriti, pesinetron Dylan Carr juga sedang tertimpa mu",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "51db804b-9347-4e12-92c4-c79a94d71f36",
+    "entity_name": "Joko Widodo",
+    "context_text": "ngan pengamat politik Rocky Gerung. Ade Armando dan Rocky Gerung mengomentari tentang visi Presiden Joko Widodo (Jokowi) untuk memberantas radikalisme di Indonesia. Sementara itu, Menteri Koordinator Bidang Politik, Hukum, dan Keamanan (Menkopolhukam) Mahfud MD sedang tertimpa masalah yang menyangkut putranya,",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2b63a316-1093-4a9d-b209-68c53867d373",
+    "entity_name": "Ade Armando",
+    "context_text": "amat politik Hendri Satrio mendukung aparat kepolisian mengusut tuntas kasus kekerasan yang dialami Ade Armando. Seperti diketahui, kejadian tersebut dialami pegiat media sosial dan akademisi Universitas Indonesia (UI) di tengah aksi demo 11 April di depan Gedung DPR/MPR pada Senin (11/4) sore. \"Itu biadab dan",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "26c4bf1f-2ff6-449f-be4f-536433a1759b",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Presiden Prabowo Subianto menggelar rapat terbatas (ratas) bersama sejumlah menteri dan kepala badan guna membahas berbagai isu strategis di Kompleks Istana Kepresidenan, Jakarta, Senin (27/7). Menteri Pendidikan Tinggi, Sain",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "00ce246e-ec07-4ae5-8651-36550936621f",
+    "entity_name": "Khofifah Indar Parawansa",
+    "context_text": "Surabaya - Gubernur Jawa Timur Khofifah Indar Parawansa optimistis komoditas kopi dan kakao Jatim mampu menembus pasar global melalui hilirisasi, penguatan ekosistem agroindustri, dan kolaborasi lintas sektor untuk meningkatkan daya saing serta kesejahter",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "5ca8902e-3ebc-4214-8ba7-bad9c665139b",
+    "entity_name": "Tito Karnavian",
+    "context_text": "Menteri Dalam Negeri (Mendagri) Muhammad Tito Karnavian menyampaikan optimisme bahwa gelaran Piala Presiden 2026 dapat menjadi hiburan bagi masyarakat, serta memberikan dampak positif terhadap perekonomian. Hal itu disampaikan Tito saat menghadiri pembuka",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "c23e8a41-798d-4697-bb68-0279f7cf0d33",
+    "entity_name": "Joko Widodo",
+    "context_text": "Jakarta, EDITOR.ID,- Kapolri Jenderal Polisi Listyo Sigit Prabowo merotasi dan memutasi puluhan perwira menengah hingga perwira tinggi di jajaran Mabes Polri. Sejumlah perwira menengah berpangkat Kombes mendapat promosi menduduki jabatan baru dan naik pangkat menjadi bintang satu atau Brigadir Jende",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "6bce70f4-1b21-4a9c-b168-d16c5cb71d0b",
+    "entity_name": "Ganjar Pranowo",
+    "context_text": ", SURABAYA, - Mantan Gubernur Jawa Tengah Ganjar Pranowo meminta partai politik untuk memperkuat kedekatan dengan masyarakat melalui kader yang responsif terhadap persoalan publik. Hal ini ia sampaikan merujuk pada temuan dalam disertasi doktor Pengamat Po",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "dc68a28e-b3cc-4bd4-9fc5-2754d8d3884d",
+    "entity_name": "Tito Karnavian",
+    "context_text": "Program Pendidikan Profesi Kepamongprajaan. Wisuda dihadiri langsung Menteri Dalam Negeri Muhammad Tito Karnavian. Dalam sambutannya Tito mengatakan momen wisuda ini tak hanya membahagiakan bagi wisudawan, tetapi juga IPDN. Pasalnya, IPDN yang merupakan bagian dari Kemendagri berhasil melahirkan ilmuwan di bidan",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "425479e3-42be-4871-a3d8-2a7ac92f6b03",
+    "entity_name": "Hasto Kristiyanto",
+    "context_text": "Sekjen PDIP, Hasto Kristiyanto meminta pemerintah untuk kembali membuka penyelidikan yustisial dan pengadilan koneksitas untuk mengungkap dalang peristiwa Kudatuli. Hal itu disampaikan Hasto dalam acara peringatan 30 tahun peristi",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "f6dbbe19-3d6e-4aca-9156-a238699a6f4f",
+    "entity_name": "Ganjar Pranowo",
+    "context_text": "SURABAYA - Mantan Gubernur Jawa Tengah (Jateng) Ganjar Pranowo meminta partai politik memperkuat kedekatan dengan masyarakat melalui kader yang responsif terhadap persoalan publik, merujuk temuan dalam disertasi doktor Pengamat Politik sekaligus pendiri Voxpol C",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "18b9763e-121c-4168-914f-159d78405916",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "026. Menurut dia, kehadiran Jembatan Garuda Suci ini pun sebagai bukti nyata kepedulian Presiden RI Prabowo Subianto kepada rakyat. Hal itu termasuk berbagai program prioritas lainnya, seperti Koperasi Desa Kelurahan Merah Putih (KDKMP), Makan Bergizi Gratis (MBG), hingga sekolah rakyat. \"Banyak program pak Prabowo",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "7f30fa01-726b-4476-b433-b74b367be205",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Presiden RI Prabowo Subianto akan memimpin upacara pelantikan Prasetya Perwira TNI-Polri 2026 di Istana Merdeka, Jakarta, Rabu (21/7) pagi. \"Besok sesuai dengan agenda, Bapak Presiden akan memimpin upacara Prasetya Perwira TNI d",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "70ee246a-84d2-45ee-adcf-f6e09d720446",
+    "entity_name": "Ade Armando",
+    "context_text": "ndukung pengamat politik, Rocky Gerung mengundang reaksi dari politisi PSI dan pegiat media sosial, Ade Armando. Melalui akun Twitter pribadinya, @adearmando61, Ade mengungkapkan keprihatinannya atas insiden saling serang yang melibatkan Noviana Kurniati dan pendukung Rocky Gerung. Dia menginginkan agar tradis",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "70ee246a-84d2-45ee-adcf-f6e09d720446",
+    "entity_name": "Rocky Gerung",
+    "context_text": "Kasus kader PDIP, Noviana Kurniati alias Novi Bule dipersekusi oknum pendukung pengamat politik, Rocky Gerung mengundang reaksi dari politisi PSI TRIBUN-TIMUR.COM - Kasus kader PDIP, Noviana Kurniati alias Novi Bule dipersekusi oknum pendukung pengamat politik, Rocky Gerung mengundang reaksi dari politisi PS",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "70ee246a-84d2-45ee-adcf-f6e09d720446",
+    "entity_name": "Ganjar Pranowo",
+    "context_text": "asan ini!\" tulis Ade. Sebelumnya, Ade Armando juga menyoroti seruan dari bakal calon presiden PDIP, Ganjar Pranowo, yang mengajak untuk bersaing dengan gagasan positif daripada saling memupuk kebencian. \"Seruan penting dari Ganjar Pranowo sendiri. Kami berharap tim kampanye Ganjar for President memahami pesannya,",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "70ee246a-84d2-45ee-adcf-f6e09d720446",
+    "entity_name": "Joko Widodo",
+    "context_text": "erung telah dipanggil kembali oleh Bareskrim Polri terkait kasus ujaran kebencian terhadap Presiden Joko Widodo (Jokowi) pada hari Rabu. Sementara itu, Noviana Kurniati yang dikenal sebagai perempuan berbaju putih dalam video viral yang menghadang Rocky Gerung di Mabes Polri mengungkapkan bahwa dia telah mener",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "f99db8ce-6b46-4f64-a478-a5aa3e1c82bb",
+    "entity_name": "Wiranto",
+    "context_text": "Tentang Kami PT HK Realtindo merupakan Anak Perusahaan dari PT Hutama Karya (Persero) yang bergerak dibidang properti Sejarah Perusahaan Visi & Misi Struktur Organisasi Pesan Direktur Manajemen Anak Perusahaan Penghargaan Bisnis Kami Kegiatan usaha yang bergerak dibidang Perumahan, Apartemen, Hotel,",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2bdf2beb-2a10-49eb-b34d-2749d4fcac9e",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "lola dan penajaman sasaran penerima manfaat. Wakil Kepala BGN Agustina Arumsari mengatakan Presiden Prabowo Subianto memberikan waktu satu bulan kepada mereka untuk menyempurnakan tata kelola program sebelum menetapkan besaran anggaran final. Pilihan Arumsari mengatakan anggaran MBG sebelumnya direncanakan sebesar",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "6783643b-0568-4691-83f9-c6a09b943f0c",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "angan Feri Amsari mengatakan kabinet bayangan berencana membuat rapor kinerja pemerintahan Presiden Prabowo Subianto di tiga tahun menjabat. Rapor itu berisi perspektif check and balances yang dilakukan Kabinet Bayangan. Rapor itu disertai data dan bukti. \"Mudah-mudahan mereka terlecut dan tersadar dan melakukan ke",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "9ecc12da-873f-42d4-aeb3-30cf13e00e99",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "INFO TEMPO - Ketua Umum Partai Demokrasi Indonesia Perjuangan Megawati Soekarnoputri menekankan bahwa Negara Kesatuan Republik Indonesia dibangun dengan air mata, darah, dan keringat. Hal itu disampaikan dalam peresmian Monumen Peristiwa Kudatuli pada Senin, 27 Juli 2026. \"Bahwa yang",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "18ba6b45-c146-4f78-8f78-58c86beea4d2",
+    "entity_name": "Dedi Mulyadi",
+    "context_text": "ional (Kompolnas) Gufron Mabruri mengatakan jika sayembara perburuan begal oleh Gubernur Jawa Barat Dedi Mulyadi berpotensi menimbulkan persepsi bahwa negara mendelegasikan sebagian fungsi penegakan hukum kepada masyarakat. Gufron mengatakan penggunaan kekuatan secara sah dalam negara hukum pada prinsipnya meru",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "18ba6b45-c146-4f78-8f78-58c86beea4d2",
+    "entity_name": "Yusril Ihza Mahendra",
+    "context_text": "empatan terpisah, Menteri Koordinator Bidang Hukum, Hak Asasi Manusia, Imigrasi, dan Pemasyarakatan Yusril Ihza Mahendra khawatir jika sayembara tersebut mendorong masyarakat untuk main hakim sendiri terhadap begal dan pencuri. \"Dalam kondisi ekonomi sulit, dikasih (janji) Rp 5 juta atau Rp 10 juta saja sudah siap bawa",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "62fb3f26-65ef-4205-ae9a-e90245bb7497",
+    "entity_name": "Abdurrahman Wahid",
+    "context_text": "n, sebagai Kepala Daerah Inspiratif dalam Gerakan Peduli Anak Pekerja Migran Indonesia di Aula K.H. Abdurrahman Wahid, Kantor Kementerian Pelindungan Pekerja Migran Indonesia (KP2MI), Jakarta, Senin, 27 Juli 2026. Penghargaan tersebut diberikan atas dedikasi dan upaya Bupati Yani dalam memberikan hak dan perlindunga",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "1e58146d-9dfd-4294-8e5f-83e31a9258b2",
+    "entity_name": "Pramono Anung",
+    "context_text": "GUBERNUR DKI Jakarta Pramono Anung menemui Sekretaris Kabinet Teddy Indra Wijaya di Gedung Sekretariat Kabinet, Jakarta Pusat, pada Senin, 27 Juli 2026. Keduanya membahas mengenai kolaborasi antara Pemerintah DKI Jakarta dengan Pemeri",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "9686dfaa-3530-440a-b6e2-786807a1c37d",
+    "entity_name": "Puan Maharani",
+    "context_text": "n anggota legislatif (caleg) di daerah pemilihan (dapil) Jawa Tengah V yang menjadi dapil Ketua DPR Puan Maharani. Bestari mengungkapkan rencana pencalonan telah lama disampaikan Kaesang akhir Januari 2026 lalu. Kala itu, kata Bestari, Kaesang meminta kader PSI yang akan maju di Pileg 2029 segera menentukan dapi",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "ea6d51cf-51c3-41f3-a862-eb4442f095c8",
+    "entity_name": "Erick Thohir",
+    "context_text": "Erick Thohir yang belum lama ini dilantik sebagai Menpora RI, dipastikan akan tetap menjadi Ketua Umum PSSI. Kepastian tersebut diketahui dari surat FIFA yang diterima pada Senin (22/9/2025) pagi WIB. Seiring sur",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "cd965cfe-4be2-454d-86dd-e68167bd045b",
+    "entity_name": "Rizal Ramli",
+    "context_text": "Golongan ketiga: amil zakat Amil zakat tidak disyaratkan termasuk miskin. Karena amil zakat mendapat bagian zakat disebabkan pekerjaannya. Dalam sebuah hadits disebutkan, لاَ تَحِلُّ الصَّدَقَةُ لِغَنِىٍّ إِلاَّ لِخَمْسَةٍ لِغَازٍ فِى سَبِيلِ اللَّهِ أَوْ لِعَامِلٍ عَلَيْهَا أَوْ لِغَارِمٍ أَوْ لِرَ",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2ced2198-d01e-4ea2-b1f5-cbf2980c3101",
+    "entity_name": "Rizal Ramli",
+    "context_text": "Apakah kamu tahu siapa yang bertugas mengumpulkan dan mendistribusikan zakat? Orang yang mengumpulkan zakat disebut amil zakat. Namun, apa yang dimaksud dengan amil zakat sebenarnya, dan apa saja syarat serta tugas yang harus dijalankannya? Amil zakat adalah orang yang mengumpulkan, mengelola, dan m",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "0715389f-fdfd-44ac-a587-ee71196a8faf",
+    "entity_name": "Hasto Kristiyanto",
+    "context_text": "JAKARTA, KOMPAS.com - Nama Hasto Kristiyanto kembali ditunjuk Megawati Soekarnoputri sebagai Sekretaris Jenderal Partai Demokrasi Indonesia Perjuangan (PDI-P). Hasto menjadi Sekretaris Jenderal PDI-P untuk periode 2025-2030. Artinya, ia menempa",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "0715389f-fdfd-44ac-a587-ee71196a8faf",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "JAKARTA, KOMPAS.com - Nama Hasto Kristiyanto kembali ditunjuk Megawati Soekarnoputri sebagai Sekretaris Jenderal Partai Demokrasi Indonesia Perjuangan (PDI-P). Hasto menjadi Sekretaris Jenderal PDI-P untuk periode 2025-2030. Artinya, ia menempati posisi tersebut selama tiga periode.",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "97102f93-7311-4f9b-a4bf-a32aede5038c",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "aligus mengikuti rekomendasi rekan terkait fasilitas kesehatan di negara tersebut. Nanik mengatakan Presiden Prabowo telah menyetujui keputusan pengunduran dirinya tersebut. Dia berujar kepala negara prihatin dan mempertimbangkan kesehatannya. \"Namun saya diminta tetap ikut mengawasi BGN,\" ucap Nanik. Dia menuturka",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "a6fefdba-1646-418d-b189-70ede5c7b7e2",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Kemala Taruna Bhayangkara (LP-KTB), sebagai bukti komitmen Polri mendukung penuh Asta Cita Presiden Prabowo Subianto, khususnya dalam memperkuat pembangunan Sumber Daya Manusia (SDM) unggul. SMA Kemala Taruna Bhayangkara merupakan sekolah berasrama berstandar internasional yang dirintis atas inisiatif Kapolri Jende",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "67bf5a8c-3217-4cac-b8c8-6a93b214b743",
+    "entity_name": "Ridwan Kamil",
+    "context_text": "k walikota Bandung yang akrab dipanggil Kang Emil oleh para masyarakat Bandung. Ridwan Kamil merupakan walikota Bandung yang terpilih lewat pemilu yang diadakan pada tahun 2013 lalu. Sosok walikkota ini terkenal dikalangan masyarakat Badunng sebagai pemimpin yang membawa perubahan pesat pada",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "fcdb71b8-ec80-4a31-b71d-ec4fca1e6664",
+    "entity_name": "Ade Armando",
+    "context_text": "Pengamat politik sekaligus dosen Universitas Indonesia (UI), Ade Armando menanggapi polemik kasus siswi nonmuslim di SMKN 2 Padang yang dipaksa berjilbab. Ade Armando beranggapan bahwa wanita muslim alias muslimah di Indonesia baru berjilbab sejak adanya paham wahabi, hin",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "b60608ed-9be7-452c-ad12-388208378aab",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Pernyataan Presiden Prabowo Subianto soal 'Londo Ireng' terkait lembaga swadaya masyarakat (LSM) hingga jurnalis mengundang kritik. Pernyataan itu disampaikan Prabowo saat berpidato dalam acara Harlah ke-28 Partai Kebangkitan Bangsa (PK",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "31b680fb-f6ba-491c-bdd4-d58b15637ead",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "PERNYATAAN Presiden Prabowo Subianto yang melabeli pengkritik pemerintah sebagai 'londo ireng' dinilai salah alamat. Direktur Eksekutif Indonesia Political Opinion Dedi Kurnia Syah berpendapat, semestinya pelabelan londo ireng disematka",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "30eeaa72-409c-48a3-a49e-2cac0c126ba6",
+    "entity_name": "Hasto Kristiyanto",
+    "context_text": "iden Pertama Mohammad Hatta, pematung Dolorosa Sinaga, serta Sekretaris Jenderal DPP PDI Perjuangan Hasto Kristiyanto. Usai prosesi tabur bunga, Megawati bersama para tamu yang hadir mengangkat salam perjuangan \"Merdeka\" sebagai penegasan semangat menjaga nilai-nilai demokrasi yang diperjuangkan dalam Peristiwa 27 J",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "30eeaa72-409c-48a3-a49e-2cac0c126ba6",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "INFO TEMPO - Ketua Umum PDI Perjuangan (PDIP) Megawati Soekarnoputri menaburkan bunga di depan Monumen Peristiwa 27 Juli 1996 di Kantor DPP PDIP, Jakarta, Senin, 27 Juli 2026. Prosesi tersebut menjadi bagian dari rangkaian peresmian monumen untuk memperingati 30 tahun",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2ae7a76a-d57d-4932-85e5-23feb2ddd8b5",
+    "entity_name": "Yusril Ihza Mahendra",
+    "context_text": "Menko Kumham Imipas Yusril Ihza Mahendra berpendapat UU No. 31 Tahun 1997 tentang Peradilan Militer harus direvisi. Ia menyampaikan itu dalam merespons pertanyaan tentang perkembangan kasus teror penyiraman air keras terhadap aktivis Kontra",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "12bcb1a7-d09c-4554-8620-c019d96b5923",
+    "entity_name": "Yusril Ihza Mahendra",
+    "context_text": "eri Koordinator Bidang Hukum, Hak Asasi Manusia, Imigrasi, dan Pemasyarakatan (Menko Kumham Imipas) Yusril Ihza Mahendra buka suara soal 5 WNI ditangkap tentara Israel. Yusril menyebut pihaknya mengalami kesulitan menghubungi para WNI. Yusril menambahkan kesulitan itu karena Indonesia tak punya hubungan diplomatik deng",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "9156e42d-8211-4c3f-956d-57797395c0f3",
+    "entity_name": "Pramono Anung",
+    "context_text": "PT AIMS Indo Investama Tbk. memberikan penjelasan resmi menanggapi surat Bursa Efek Indonesia (BEI) terkait permohonan Penundaan Kewajiban Pembayaran Utang (PKPU) yang diajukan mantan Direktur Utama, Ramono Sukadis, dengan nomor perkara 233/Pdt.Sus-PKPU/2025/PN Niaga Jakarta Pusat. Corporate Secreta",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2c62c45f-879b-4d72-884e-88010ff0bc7c",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "INFO TEMPO - Presiden Kelima RI sekaligus Ketua Umum DPP PDI Perjuangan (PDIP) Megawati Soekarnoputri mengutip ajaran Satyam Eva Jayate saat meresmikan Monumen Peristiwa 27 Juli 1996 di halaman Kantor DPP PDIP, Jalan Diponegoro Nomor 58, Menteng, Jakarta Pusat, Senin, 27 Juli 2026. Megawati mengataka",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "f0d8c558-41ca-4a36-a337-2491722d7a7a",
+    "entity_name": "Pramono Anung",
+    "context_text": "Gubernur DKI Jakarta Pramono Anung mendorong keberadaan jalur bawah tanah yang menghubungkan pusat perbelanjaan Senayan City dan Plaza Senayan untuk dilalui warga. Hal itu untuk memperkuat konektivitas pejalan kaki dan mengurangi kema",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "ea962c15-90d2-410b-b472-f6ce0aaa4be6",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "INFO TEMPO - Ketua Umum Partai Demokrasi Indonesia (PDI) Perjuangan, Megawati Soekarnoputri, menekankan pentingnya menjaga demokrasi di Indonesia. Pesan tersebut disampaikan dalam pidatonya saat peringatan Peristiwa Kerusuhan Dua Puluh Tujuh Juli atau Kudatuli yang terjadi 30 tahun silam di",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "5592e379-dfc0-457e-aeaf-491a2399bb7c",
+    "entity_name": "Pramono Anung",
+    "context_text": "GUBERNUR DKI Jakarta Pramono Anung mengimbau masyarakat untuk tetap tenang usai bentrokan yang terjadi di Jalan Matraman Dalam yang merembet hingga Jalan Tambak, Menteng, Jakarta pada Ahad, 26 Juli 2026. Ia mengatakan satuan telah dik",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "ea6854c9-312f-4e9b-9e1c-40f03612ed2f",
+    "entity_name": "Ahmad Syaikhu",
+    "context_text": "5-26 Juli, yang dihadiri seluruh anggota Majelis Syuro, termasuk Ketuanya Mohamad Sohibul Iman, dan Presiden PKS Al Muzammil Yusuf. Al Muzammil membeberkan, empat putusan Musyawarah pertama yakni, menegaskan dukungan terhadap kebijakan ekonomi pemerintah. PKS, kata dia, mendukung arah kebijakan ekonomi sesuai a",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "ca4233e8-9a3a-4201-adbf-4cbc57ce7a97",
+    "entity_name": "Megawati Soekarnoputri",
+    "context_text": "atan 30 tahun Kudatuli di kantor DPP PDIP, Menteng 58, Jakarta Pusat, Senin (27/7). Ketua Umum PDIP Megawati Soekarnoputri turut hadir dalam acara tersebut didampingi putra keduanya yang juga Ketua DPP PDIP, Muhammad Prananda Prabowo. Menurut Andi, pada pokoknya peringatan Kudatuli hanya membawa satu pesan, yakni agar te",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "60a3f94b-bf27-4df2-a03c-b10d19344035",
+    "entity_name": "Pramono Anung",
+    "context_text": "INFO TEMPO - Gubernur DKI Jakarta Pramono Anung menghadiri Open House yang diselenggarakan Sekolah Rakyat Menengah Atas 10 Jakarta Selatan pada Jumat, 3 Juli 2026. Kegiatan ini diperuntukkan bagi orang tua dan calon siswa Sekolah Rakyat. Pramono t",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "60a3f94b-bf27-4df2-a03c-b10d19344035",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "menjadi anak-anak yang tangguh,\" kata Pramono. Sekolah Rakyat, kata dia, merupakan ide gagasan dari Presiden Prabowo dan kini menjadi harapan bagi keluarga tidak mampu untuk mendapatkan akses pendidikan yang berkualitas. \"Mudah-mudahan ini menjadi investasi jangka panjang bagi anak-anak Bapak Ibu Saudara-saudara se",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "565fcb88-d04a-4a14-b7b3-259440baf809",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Presiden RI Prabowo Subianto resmi melantik Marsekal (Purn) Donny Ermawan Taufanto sebagai Gubernur Universitas Republik Indonesia. Prabowo juga melantik Yos Sunitiyoso sebagai Wakil Gubernur Universitas Republik Indonesia. Pela",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2c5dada4-8cac-49b8-8b12-1ad50c9799bc",
+    "entity_name": "Refly Harun",
+    "context_text": "Kuasa hukum korban berinisial VLC, Refly Harun berharap seluruh fakta yang bergulir di meja hijau dapat membongkar secara terang tindakan intimidasi dan pemerasan yang dialami kliennya. \"Hari ini perkara mulai disidangkan. Kami berharap seluruh f",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "f51c390a-9c81-4fe8-b41f-2ca365750826",
+    "entity_name": "Joko Widodo",
+    "context_text": "ah V. Menurut Saleh, pernyataan Kaesang menunjukkan kesiapan dini putra bungsu Presiden ketujuh RI, Joko Widodo itu. Dia menilai Kaesang telah berhitung banyak aspek sebelum mendeklarasikan untuk maju. \"Mungkin sudah dihitung dari banyak aspek. Kalau maju dari situ, sudah sangat yakin akan lolos bersaing denga",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "8615b6c8-570a-4591-856b-428d33eae5a2",
+    "entity_name": "Gibran Rakabuming Raka",
+    "context_text": "WAKIL Presiden Gibran Rakabuming Raka tengah menghadapi gugatan perdata di Pengadilan Negeri Jakarta Pusat mengenai keabsahan syarat pendidikan saat pencalonan dalam Pemilu 2024. Gugatan itu dilayangkan oleh seorang advokat bernama Subha",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "8615b6c8-570a-4591-856b-428d33eae5a2",
+    "entity_name": "Joko Widodo",
+    "context_text": "ri polemik tersebut, berikut deretan fakta mengenai riwayat pendidikan putra sulung mantan presiden Joko Widodo: Lulus dari SMPN 1 Surakarta Sebelum melanjutkan pendidikan ke luar negeri, Gibran menempuh sekolah menengah pertama di SMP Negeri 1 Surakarta. Setelah lulus, Jokowi sebagai ayahnya yang kala itu mas",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "63de4b81-ad28-45ea-8108-d33b128fb017",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "PRESIDEN Prabowo Subianto meresmikan pendirian tujuh kejaksaan negeri atau kejari baru. Prabowo mengesahkan pembentukan kantor-kantor kejaksaan tingkat kabupaten/kota itu lewat Peraturan Presiden (Perpres) Nomor 40 Tahun 2026",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "d8e5ab96-06b6-4f08-99f6-4b53b3b8dcb0",
+    "entity_name": "Faisal Basri",
+    "context_text": "DOI:: Learning Interest, Educaplay, Civics (PPKn)Abstract Minat belajar yang rendah dapat menjadi kendala dalam mencapai tujuan pembelajaran secara maksimal. Berdasarkan hasil observasi di kelas IX.4 SMP Negeri 30 Palembang, diketahui bahwa sebagian besar peserta didik menunjukkan minat yang kurang",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "e7c97bbe-10b1-47e3-998a-39766c572b1c",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "PRESIDEN Prabowo Subianto menggelar rapat terbatas di Istana Kepresidenan Jakarta pada Selasa, 28 Juli 2026. Rapat yang dihadiri para menteri dan pimpinan lembaga itu membahas antisipasi cuaca ekstrem akibat fenomena El Nino",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "92f0413d-fd62-4ed8-bf6a-945cb4d1ddde",
+    "entity_name": "Pramono Anung",
+    "context_text": "Gubernur DKI Jakarta Pramono Anung menegaskan Jakarta merupakan kota yang terbuka bagi seluruh lapisan masyarakat tanpa memandang latar belakang etnis. Menurutnya, keberagaman yang selama ini menjadi ciri khas ibu kota harus terus dij",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "2df5e85e-127e-4ca8-9bc4-6c8696e71fef",
+    "entity_name": "Tito Karnavian",
+    "context_text": "Menteri Dalam Negeri Muhammad Tito Karnavian selaku Ketua Satuan Tugas (Kasatgas) Percepatan Rehabilitasi dan Rekonstruksi (PRR) Pascabencana Sumatera mengingatkan pemerintah kabupaten dan kota di Aceh agar menyesuaikan penetapan tahapan penang",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "b1239140-c33f-489e-b4fe-93eebc7e0039",
+    "entity_name": "Hasto Kristiyanto",
+    "context_text": "Sekretaris Jenderal (Sekjen) PDIP, Hasto Kristiyanto angkat suara soal rencana Ketua Umum PSI Kaesang Pangarep maju di Pemilihan Legislatif (Pileg) 2029 lewat daerah pemilihan (Dapil) Jawa Tengah. Hasto menilai rencana pencalonan dalam politik elektora",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "b1239140-c33f-489e-b4fe-93eebc7e0039",
+    "entity_name": "Puan Maharani",
+    "context_text": "ananya akan maju lewat Dapil Jateng V yang juga menjadi dapil Ketua DPP PDIP sekaligus Ketua DPR RI Puan Maharani. Dapil itu meliputi sejumlah wilayah keresidenan Surakarta, meliputi Solo, Boyolali, Klaten, dan Sukoharjo. Pada Pileg 2024, Jateng V memperebutkan total delapan kursi dengan perolehan suara terbanya",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "4735b744-d586-4514-ba4d-de59bf128d81",
+    "entity_name": "Ganjar Pranowo",
+    "context_text": "Ganjar Pranowo, menjadi sorotan publik saat mengikuti kategori Half Marathon dalam ajang Jakarta International Marathon 2026, Minggu (14/6/2026). TRIBUNJAKARTA.COM - Mantan Gubernur Jawa Tengah sekaligus mantan cal",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "d734760f-eefa-4ae4-942a-50fb12d9d0a8",
+    "entity_name": "Bima Arya Sugiarto",
+    "context_text": "Wakil Menteri Dalam Negeri (Wamendagri) RI Bima Arya Sugiarto merespons sayembara warga tangkap begal yang digelar Gubernur Jabar Dedi Mulyadi (KDM). Ia menekankan pentingnya kepala daerah untuk tetap tunduk pada koridor hukum dalam berinovasi mengatasi suatu m",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "d734760f-eefa-4ae4-942a-50fb12d9d0a8",
+    "entity_name": "Dedi Mulyadi",
+    "context_text": "mendagri) RI Bima Arya Sugiarto merespons sayembara warga tangkap begal yang digelar Gubernur Jabar Dedi Mulyadi (KDM). Ia menekankan pentingnya kepala daerah untuk tetap tunduk pada koridor hukum dalam berinovasi mengatasi suatu masalah. \"Saya kira teman-teman kepala daerah harus memastikan bahwa semua berjala",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "38a4d09e-8b5c-4074-88ec-da8b830d77c6",
+    "entity_name": "Hatta Rajasa",
+    "context_text": "gis dalam membangun peradaban Islam. Sejarah mencatat peranan ICMI sangat luar biasa.\" Ir. Muhammad Hatta Rajasa adalah Mantan Menteri Koordinator Bidang Perekonomian Indonesia yang menjabat dari 22 Oktober 2009 hingga 13 Mei 2014. Ia lahir pada tanggal 18 Desember 1953 di Palembang, Sumatera Selatan. Sebelumny",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "e370acc0-cb35-4c95-8a85-a1c408c50c9e",
+    "entity_name": "Budiman Sudjatmiko",
+    "context_text": ", Jakarta - Nama aktivis 98 sekaligus eks politikus PDIP Budiman Sudjatmiko tidak ada dalam daftar wakil menteri yang diumumkan Presiden Prabowo Subianto pada Ahad malam, 20 Oktober 2024. Dia buka suara ihwal tidak ada namanya di susunan Kabinet Merah Putih tersebut. Dia men",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "e370acc0-cb35-4c95-8a85-a1c408c50c9e",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "eks politikus PDIP Budiman Sudjatmiko tidak ada dalam daftar wakil menteri yang diumumkan Presiden Prabowo Subianto pada Ahad malam, 20 Oktober 2024. Dia buka suara ihwal tidak ada namanya di susunan Kabinet Merah Putih tersebut. Dia mengatakan, Prabowo memang tidak menugaskannya sebagai wakil menteri. \"Setahu say",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "3ec4f8a3-0a78-4f49-868a-11d8aef746ad",
+    "entity_name": "Jusuf Kalla",
+    "context_text": "Alasan Erwin Aksa pilih berlawanan dengan Jusuf Kalla pamannya di Pilpres 2019. Wapres RI, Jusuf Kalla kini sedang dalam posisi s. Wapres RI, Jusuf Kalla kini sedang dalam posisi sebagai Ketua Dewan Pengarah Tim Kampanye Nasional ( TKN) pasangan Capres",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "3ec4f8a3-0a78-4f49-868a-11d8aef746ad",
+    "entity_name": "Sandiaga Uno",
+    "context_text": "in Aksa ponakannya, memilih mengampanyekan rival Jokowi - Maruf Amin, pasangan Prabowo Subianto dan Sandiaga Uno. Keponakan Jusuf Kalla, Erwin Aksa (44), mengklaim arah dukungan jaringan saudagar dan komunitas perantau Bugis-Makassar di momen Pilpres 2019 ini sudah tidak lagi mengikuti patron 3 momen Pilpres la",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "3ec4f8a3-0a78-4f49-868a-11d8aef746ad",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "Amin. Sementara, Erwin Aksa ponakannya, memilih mengampanyekan rival Jokowi - Maruf Amin, pasangan Prabowo Subianto dan Sandiaga Uno. Keponakan Jusuf Kalla, Erwin Aksa (44), mengklaim arah dukungan jaringan saudagar dan komunitas perantau Bugis-Makassar di momen Pilpres 2019 ini sudah tidak lagi mengikuti patron 3",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "074ec92d-0969-4b85-a016-705c5da2be6d",
+    "entity_name": "Hatta Rajasa",
+    "context_text": "ecelakaan yang terjadi di tol Jagorawi, tadi pagi, Rasyid Amrullah, putra bungsu Menko Perekonomian Hatta Rajasa, dalam kondisi tertekan. Rasyid mengalami trauma psikologis. Kondisi terakhir Rasyid disampaikan Hatta dalam jumpa pers di kediamannya di Fatmawati, Jakarta Selatan,beberapa menit lalu (Selasa, 1/1).",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "97fffe67-7f91-4556-a8a3-436477e6f433",
+    "entity_name": "Muhaimin Iskandar",
+    "context_text": "Jakarta (KABARIN) - Menteri Koordinator Bidang Pemberdayaan Masyarakat (Menko PM) Abdul Muhaimin Iskandar alias Cak Imin melepas sekitar 175 lulusan SMA dan MA Unggulan Bertaraf Internasional serta SMK Unggulan Pesantren Bina Insan Mulia (BIMA), Cirebon, Jawa Barat, yang siap kuliah ke China hingga Tunis",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "ab24b947-cc86-495c-a05c-8acef2babe84",
+    "entity_name": "Prabowo Subianto",
+    "context_text": "PRESIDEN Prabowo Subianto akan menerima kunjungan Perdana Menteri India Narendra Modi pekan depan. Modi bakal berada di Indonesia pada Senin hingga Rabu, 6-8 Juli 2026. Pilihan Duta Besar India untuk Indonesia Sandeep Chakra",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "b19cf899-8682-427b-b7c4-947ebda2d438",
+    "entity_name": "Sufmi Dasco Ahmad",
+    "context_text": "JAKARTA - Wakil Ketua DPR RI Sufmi Dasco Ahmad langsung merespons aksi yang digelar sejumlah elemen mahasiswa di depan Gedung DPR/MPR Jakarta pada Jumat, 19 Juni 2026. Dasco dan pimpinan DPR lain menerima, mendengar, hingga merespons langsung tun",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  },
+  {
+    "raw_text_id": "06301943-de05-4529-9672-663571d80972",
+    "entity_name": "Puan Maharani",
+    "context_text": "Puan Maharani meminta kepada pemerintah untuk menyediakan tempat penitipan anak atau daycare yang aman guna mencegah kasus kekerasan terhadap anak seperti yang terjadi di sebuah daycare di Yogyakarta. Menurut dia,",
+    "pseudo_label": "",
+    "current_label": "neutral",
+    "current_source": "llm_failed",
+    "current_confidence": 0.5
+  }
+]
