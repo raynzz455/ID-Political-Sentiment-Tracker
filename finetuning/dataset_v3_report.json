@@ -8,26 +8,23 @@
   "excluded_not_relevant": 29,
   "merge_stats": {
     "already_trusted": 434,
-    "label_flipped": 187,
+    "label_flipped": 190,
     "llm_verified_not_relevant": 29,
-    "label_confirmed": 115,
-    "pending_low_confidence": 12
+    "label_confirmed": 124
   },
   "final_label_distribution": {
     "negative": 138,
-    "positive": 228,
-    "neutral": 382
+    "positive": 231,
+    "neutral": 379
   },
   "final_label_source_distribution": {
     "oversampled": 207,
-    "llm_verified": 344,
+    "llm_verified": 356,
     "llm_second_pass": 162,
-    "gold_human": 23,
-    "llm_verify_pending": 12
+    "gold_human": 23
   },
   "final_confidence_buckets": {
     "0.70-0.84 (trusted)": 151,
-    ">=0.85 (LLM/gold)": 585,
-    "<0.55 (pending)": 12
+    ">=0.85 (LLM/gold)": 597
   }
 }
