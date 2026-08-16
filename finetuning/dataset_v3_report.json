@@ -1,0 +1,33 @@
+{
+  "input": "/home/z/my-project/finetuning/datasets/dataset_v2.jsonl",
+  "llm_verified_file": "/home/z/my-project/finetuning/llm_verified_v3.jsonl",
+  "output": "/home/z/my-project/finetuning/datasets/dataset_v3.jsonl",
+  "total_rows_v2": 777,
+  "total_rows_v3": 777,
+  "sentiment_relevant_rows": 748,
+  "excluded_not_relevant": 29,
+  "merge_stats": {
+    "already_trusted": 434,
+    "label_flipped": 187,
+    "llm_verified_not_relevant": 29,
+    "label_confirmed": 115,
+    "pending_low_confidence": 12
+  },
+  "final_label_distribution": {
+    "negative": 138,
+    "positive": 228,
+    "neutral": 382
+  },
+  "final_label_source_distribution": {
+    "oversampled": 207,
+    "llm_verified": 344,
+    "llm_second_pass": 162,
+    "gold_human": 23,
+    "llm_verify_pending": 12
+  },
+  "final_confidence_buckets": {
+    "0.70-0.84 (trusted)": 151,
+    ">=0.85 (LLM/gold)": 585,
+    "<0.55 (pending)": 12
+  }
+}
