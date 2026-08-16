@@ -390,7 +390,8 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     steps_per_epoch = max(1, len(train_ds) // (H.BATCH_SIZE * H.GRAD_ACCUM_STEPS))
     warmup_steps = int(H.WARMUP_RATIO * steps_per_epoch * H.NUM_EPOCHS)
 
-    targs = TrainingArguments(
+    # Build TrainingArguments dict (compatible with transformers 4.40+)
+    train_args_dict = dict(
         output_dir=str(out_dir),
         num_train_epochs=H.NUM_EPOCHS,
         per_device_train_batch_size=H.BATCH_SIZE,
@@ -403,17 +404,23 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         warmup_steps=warmup_steps,
         lr_scheduler_type=H.SCHEDULER,
         fp16=H.FP16,
-        eval_strategy="epoch",
         save_strategy="epoch",
         save_total_limit=1,
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
         seed=H.SEED,
-        deterministic=H.DETERMINISTIC,
         report_to="none",
         logging_steps=max(1, steps_per_epoch // 4),
     )
+    # eval_strategy: renamed in 4.46+ (try new name, fallback to old)
+    try:
+        train_args_dict["eval_strategy"] = "epoch"
+        targs = TrainingArguments(**train_args_dict)
+    except TypeError:
+        # Old transformers (< 4.46) uses evaluation_strategy
+        train_args_dict["evaluation_strategy"] = "epoch"
+        targs = TrainingArguments(**train_args_dict)
 
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
@@ -429,7 +436,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         args=targs,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        tokenizer=tok,
+        processing_class=tok,
         compute_metrics=compute_metrics,
         class_weights=cw,
         focal_gamma=H.FOCAL_GAMMA,
