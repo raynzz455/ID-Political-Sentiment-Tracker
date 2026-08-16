@@ -55,7 +55,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v18.3_noun_framing"
+CONTEXT_VERSION = "v19.1_max_token"
 MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
 logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
@@ -180,7 +180,15 @@ CLAUSE_SPLIT_RE = re.compile(
     re.IGNORECASE,
 )
 
-MAX_CONTEXT_WORDS = 180
+# v19: TOKEN-OPTIMIZED — target 90% utilization (230 tokens of 256)
+# Indonesian: 1 token ≈ 3.5 chars. 230 tokens ≈ 800 chars ≈ 160 words.
+# Old v18.3: MAX_CONTEXT_WORDS=180 but actual output only 50 words (32% utilization).
+# v19: increase surrounding sentences + target 160 words per context.
+MAX_CONTEXT_WORDS = 160
+# v19: TARGET_CHARS for quality control (800 chars = ~230 tokens)
+MAX_CONTEXT_CHARS = 850
+# v19: how many surrounding sentences to include (was effectively 1-2)
+CONTEXT_WINDOW_SENTENCES = 3  # anchor ± 1-2 surrounding sentences
 DEFAULT_DAYS_BACK = 30
 
 def get_paragraph_index(text: str, offset: int) -> int:
@@ -319,33 +327,74 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
                 anchor_text_for_context = local_clause
                 used_local_clause = True
 
+        # v19: TOKEN-OPTIMIZED context extraction
+        # Goal: fill context to ~800 chars (230 tokens) for max model signal
         context_parts = []
-        if has_attribution and not used_local_clause and anchor_idx > 0:
-            context_parts.append(sentences[anchor_idx - 1]["text"])
-            if anchor_idx > 1 and any(qc in sentences[anchor_idx - 1]["text"] for qc in QUOTE_CHARS):
-                context_parts.insert(0, sentences[anchor_idx - 2]["text"])
+        # Always include anchor sentence
         context_parts.append(anchor_text_for_context)
-        if not used_local_clause:
-            if is_main_actor and has_sentiment_predicate and anchor_idx + 1 < len(sentences):
-                next_sent = sentences[anchor_idx + 1]
-                first_word = next_sent["parsed"].words[0].text.lower()
-                if first_word in PRONOUNS or any(qc in next_sent["text"][:5] for qc in QUOTE_CHARS):
+        # v19: add surrounding sentences (prev first, then next) to fill token budget
+        prev_idx = anchor_idx - 1
+        next_idx = anchor_idx + 1
+        prev_added = 0
+        next_added = 0
+        max_each_side = 4  # v19.1: take up to 4 prev + 4 next = 9 sentences max
+
+        # First: if attribution, prioritize prev sentence (quote context)
+        if has_attribution and not used_local_clause and prev_idx >= 0:
+            context_parts.insert(0, sentences[prev_idx]["text"])
+            prev_added += 1
+            prev_idx -= 1
+            # Check if prev prev also has quote chars (continued quote)
+            if prev_idx >= 0 and any(qc in sentences[prev_idx + 1]["text"] for qc in QUOTE_CHARS):
+                context_parts.insert(0, sentences[prev_idx]["text"])
+                prev_added += 1
+                prev_idx -= 1
+
+        # Then: add more surrounding sentences to fill token budget
+        while (prev_added + next_added) < (max_each_side * 2):
+            current_chars = len(" ".join(context_parts))
+            if current_chars >= MAX_CONTEXT_CHARS:
+                break
+
+            # Alternate: add next sentence if available and adds value
+            added_this_round = False
+            if next_idx < len(sentences) and next_added < max_each_side:
+                next_sent = sentences[next_idx]
+                # Skip if very short or unrelated (e.g., different paragraph jump)
+                if len(next_sent["text"]) > 20:
                     context_parts.append(next_sent["text"])
-            elif not has_sentiment_predicate and not has_attribution and anchor_idx + 1 < len(sentences):
-                context_parts.append(sentences[anchor_idx + 1]["text"])
+                    next_added += 1
+                    next_idx += 1
+                    added_this_round = True
+
+            if prev_idx >= 0 and prev_added < max_each_side:
+                prev_sent = sentences[prev_idx]
+                if len(prev_sent["text"]) > 20:
+                    context_parts.insert(0, prev_sent["text"])
+                    prev_added += 1
+                    prev_idx -= 1
+                    added_this_round = True
+
+            if not added_this_round:
+                break
 
         ctx_text = " ".join(context_parts)
-        words_list = ctx_text.split()
-        if len(words_list) > MAX_CONTEXT_WORDS:
+        # v19: truncate by CHARS (not words) for precise token control
+        if len(ctx_text) > MAX_CONTEXT_CHARS:
+            # Keep anchor in middle, truncate surrounding
             anchor_text = anchor_text_for_context
-            anchor_len = len(anchor_text.split())
-            if anchor_len >= MAX_CONTEXT_WORDS:
-                ctx_text = " ".join(anchor_text.split()[:MAX_CONTEXT_WORDS])
+            anchor_start = ctx_text.find(anchor_text)
+            if anchor_start >= 0:
+                # Keep anchor + balanced surrounding
+                anchor_end = anchor_start + len(anchor_text)
+                remaining = MAX_CONTEXT_CHARS - len(anchor_text)
+                left_budget = remaining // 2
+                right_budget = remaining - left_budget
+                left_part = ctx_text[:anchor_start][-left_budget:].strip()
+                right_part = ctx_text[anchor_end:][:right_budget].strip()
+                ctx_text = (left_part + " " + anchor_text + " " + right_part).strip()
             else:
-                remaining_space = MAX_CONTEXT_WORDS - anchor_len
-                other_text = " ".join([c for c in context_parts if c != anchor_text])
-                other_text = " ".join(other_text.split()[:remaining_space])
-                ctx_text = other_text + " " + anchor_text if context_parts[0] != anchor_text else anchor_text + " " + other_text
+                ctx_text = ctx_text[:MAX_CONTEXT_CHARS]
 
         para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
 

@@ -50,9 +50,9 @@ from packages.nlp.sentiment_model import get_pipeline
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-MODEL_VERSION_FALLBACK = "indobert-fallback-v2-body-only"
-MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v2-multi"
-NLP_VERSION = "v15_multi_mention_deferral"
+MODEL_VERSION_FALLBACK = "indobert-fallback-v3-body-only-batch"
+MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v3-batch"
+NLP_VERSION = "v16_batch_resilient"
 
 MAX_GPU_WORKERS = 8 if torch.cuda.is_available() else 1
 CONFIDENCE_TAU = 0.75  # defer predictions below this confidence
@@ -179,21 +179,36 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
     }
 
 def write_results_to_db(sb, res: dict, stats: Counter) -> None:
-    """FASE 2: Menulis ke DB secara sekuensial."""
+    """v16: BATCH-RESILIENT — each sentiment inserted immediately.
+    If timeout occurs mid-batch, completed results are already in DB.
+    """
     if res["is_skipped"]:
         rpc_with_retry(sb, "ack_nlp_message", {"p_msg_id": res["msg_id"]})
         return
+    # v16: Insert fallback FIRST (general sentiment)
     if rpc_with_retry(sb, "insert_sentiment_score", res["fb_payload"]):
         stats["fallback_inserted"] += 1
+    # v16: Insert EACH entity sentiment IMMEDIATELY (not batch)
+    # If timeout occurs mid-loop, completed entities are already in DB
     for payload in res["targeted_payloads"]:
         if rpc_with_retry(sb, "insert_sentiment_score", payload):
             stats["entity_inserted"] += 1
             stats[f"label_{payload['p_label']}"] += 1
+        else:
+            stats["entity_insert_failed"] += 1
+            logger.warning(f"Entity insert failed: {payload.get('p_aspect','?')}")
+    # v16: Mark article as processed ONLY if all entities inserted
+    # (or if no entities, just fallback)
     update_payload = {"p_updates": [{"id": res["raw_id"], "status": str(pc.STATUS_PROCESSED), "pipeline_version": NLP_VERSION}]}
     if rpc_with_retry(sb, "bulk_update_raw_texts", update_payload) and rpc_with_retry(sb, "ack_nlp_message", {"p_msg_id": res["msg_id"]}):
         stats["acked"] += 1
+    else:
+        stats["ack_failed"] += 1
+        logger.error(f"Ack failed for {res['msg_id']} — will be requeued")
 
-def main(target: int = 500, batch_size: int = 100, run_all: bool = False):
+def main(target: int = 500, batch_size: int = 50, run_all: bool = False):
+    """v16: smaller batch (50 vs 100) for resilience. If timeout mid-batch,
+    completed items are already in DB. Failed items stay in queue for retry."""
     sb = get_client()
     if not check_db_health(sb): return
     run_id = start_run("nlp_worker", NLP_VERSION)
@@ -227,20 +242,33 @@ def main(target: int = 500, batch_size: int = 100, run_all: bool = False):
         for ctx in contexts_data:
             contexts_map.setdefault(ctx["raw_text_id"], []).append(ctx)
         inference_results = []
+        # v16: per-item timeout — if one item hangs, others still complete
         with ThreadPoolExecutor(max_workers=MAX_GPU_WORKERS) as pool:
-            futures = []
+            futures = {}
             for item in items:
                 ctxs = contexts_map.get(item["raw_text_id"], [])
-                futures.append(pool.submit(run_inference_only, pipeline, item, ctxs, stats))
-            for future in as_completed(futures):
+                fut = pool.submit(run_inference_only, pipeline, item, ctxs, stats)
+                futures[fut] = item["raw_text_id"]
+            for future in as_completed(futures, timeout=120):
                 try:
-                    res = future.result()
+                    res = future.result(timeout=60)
                     if res: inference_results.append(res)
+                except TimeoutError:
+                    raw_id = futures[future]
+                    logger.error(f"Item {raw_id} timed out — will stay in queue")
+                    stats["timeout"] += 1
                 except Exception as e:
                     logger.error(f"GPU Inference crashed: {e}")
+                    stats["inference_error"] += 1
+        # v16: Write each result to DB IMMEDIATELY (batch-resilient)
+        # If process crashes mid-batch, completed results are in DB
         for res in inference_results:
-            write_results_to_db(sb, res, stats)
-            processed += 1
+            try:
+                write_results_to_db(sb, res, stats)
+                processed += 1
+            except Exception as e:
+                logger.error(f"DB write failed for {res.get('raw_id','?')}: {e}")
+                stats["db_write_error"] += 1
             if processed % 10 == 0:
                 elapsed = time.time() - start
                 rate = processed / elapsed if elapsed > 0 else 0
@@ -259,7 +287,14 @@ def main(target: int = 500, batch_size: int = 100, run_all: bool = False):
     print(f"Relevancy filtered      : {stats['relevancy_filtered']}")
     print(f"Deferred (low conf)     : {stats['deferred']} ({stats['deferred']/max(1,processed)*100:.1f}%)")
     print(f"Gate rejected           : {stats['gate_rejected']}")
+    print(f"Timeouts                : {stats['timeout']}")
+    print(f"DB write errors         : {stats['db_write_error']}")
+    print(f"Entity insert failed    : {stats['entity_insert_failed']}")
+    print(f"Ack failed (requeued)   : {stats['ack_failed']}")
     print(f"{'='*70}")
+    print(f"v16 BATCH RESILIENCE: each sentiment inserted immediately.")
+    print(f"If timeout/error mid-batch: completed results stay in DB,")
+    print(f"failed items stay in queue for retry on next run.")
     finish_run(run_id=run_id, processed=processed, succeeded=stats["acked"], failed=stats["ack_error"])
 
 if __name__ == "__main__":

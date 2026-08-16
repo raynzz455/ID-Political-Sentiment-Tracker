@@ -180,8 +180,8 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 185,
-      "context_preview": "Budiman Sudjatmiko bahkan bermimpi pemimpin Indonesia tiru kebijakan Venezuela era Hugo Chavez untuk menyejahterakan rakyat. Nasionalisme dalam diri H..."
+      "context_len": 677,
+      "context_preview": "Hugo Chavez, namanya. Presiden Venezuela era 1999 hingga 2013 itu dianggap perwujudan sempurna pemimpin pro rakyat. Hasil bumi dari Venezuela digunaka..."
     },
     {
       "sample_id": 1,
@@ -193,7 +193,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 303,
+      "context_len": 522,
       "context_preview": "Ketua Harian Dewan Kerajinan Nasional (Dekranas) Tri Tito Karnavian mendorong para perajin dan pelaku Usaha Mikro, Kecil, dan Menengah (UMKM) untuk me..."
     },
     {
@@ -206,7 +206,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 191,
+      "context_len": 489,
       "context_preview": "Ketua DPR RI Puan Maharani menyempatkan diri berfoto dengan anggota dewan fraksi PDIP setelah sidang tahunan 2022 selesai. Saat foto bersama, para ang..."
     },
     {
@@ -219,7 +219,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 369,
+      "context_len": 550,
       "context_preview": "Sekjen PAN Eddy Soeparno menceritakan mengenai arah PAN yang sebetulnya ingin bergabung ke koalisi Jokowi-Ma'ruf Amin saat Pilpres 2019 namun dijegal ..."
     },
     {
@@ -232,8 +232,8 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 126,
-      "context_preview": "Viral di media sosial potongan video Menteri Keuangan Sri Mulyani Indrawati yang disebut menyatakan guru sebagai beban negara."
+      "context_len": 576,
+      "context_preview": "Viral di media sosial potongan video Menteri Keuangan Sri Mulyani Indrawati yang disebut menyatakan guru sebagai beban negara. Kementerian Keuangan (K..."
     },
     {
       "sample_id": 5,
@@ -245,7 +245,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 351,
+      "context_len": 815,
       "context_preview": "KOALISI masyarakat sipil yang terdiri dari aktivis dan akademikus membentuk tandingan Kabinet Merah Putih pemerintahan Presiden Prabowo Subianto yang ..."
     },
     {
@@ -258,7 +258,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 210,
+      "context_len": 773,
       "context_preview": "Jakarta, AFU ID â Wakil Ketua Umum Partai Golkar, Ahmad Doli Kurnia Tanjung, mengkritisi sikap Ketua DPR RI Puan Maharani yang dinilai kurang tegas da..."
     },
     {
@@ -271,7 +271,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 227,
+      "context_len": 579,
       "context_preview": "Politikus PDIP Budiman Sudjatmiko tak mau berandai-andai soal nasibnya di PDIP usai mendukung bakal capres Gerindra, Prabowo Subianto. Dia mengaku bak..."
     },
     {
@@ -284,8 +284,8 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 70,
-      "context_preview": "Ketua DPR RI Puan Maharani menyoroti peringatan HUT ke-80 Bhayangkara."
+      "context_len": 752,
+      "context_preview": "Ketua DPR RI Puan Maharani menyoroti peringatan HUT ke-80 Bhayangkara. Menurutnya, memasuki usia ke-80, Polri harus terus membuktikan komitmennya seba..."
     },
     {
       "sample_id": 9,
@@ -297,7 +297,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 334,
+      "context_len": 537,
       "context_preview": ", Jakarta - Ma'ruf Amin, Wakil Presiden RI ke-13 bersama Presiden Joko Widodo atau Jokowi berhasil memenangi Pemilu 2019 mengalahkan pasangan Prabowo ..."
     },
     {
@@ -310,7 +310,7 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 200,
+      "context_len": 783,
       "context_preview": "WAKIL Menteri Sekretaris Negara Juri Ardiantoro menegaskan Presiden Prabowo Subianto mengetahui rangkaian kegiatan dan hasil kunjungan Wakil Presiden ..."
     },
     {
@@ -323,8 +323,8 @@
       "span_count": 1,
       "used_local_clause": false,
       "entity_in_context": true,
-      "context_len": 484,
-      "context_preview": "Karena di Kopdes nanti kan ada gerai-gerai salah satunya gerai dari Bank Himbara (Himpunan Bank Milik Negara),\" kata Gus Ipul usai rapat terbatas deng..."
+      "context_len": 829,
+      "context_preview": "h (KDMP). Terdapat dua bansos yang disalurkan melalui Kementerian Sosial (Kemensos) yaitu Bantuan Pangan Non Tunai (BPNT) dan bantuan tunai bersyarat ..."
     }
   ],
   "entity_stats": {
