@@ -31,9 +31,15 @@ import json
 import random
 import argparse
 import numpy as np
+import logging
 from pathlib import Path
+logger = logging.getLogger(__name__)
 from dataclasses import asdict
 from collections import Counter
+
+# v3.1: Set CUDA memory allocator config BEFORE torch import
+# Helps prevent OOM by using expandable segments (less fragmentation)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import torch.nn.functional as F
@@ -175,6 +181,12 @@ class FocalLossTrainerV3(Trainer):
         self.class_weights = class_weights
         self.focal_gamma = focal_gamma
         self.label_smoothing = label_smoothing
+        # v3.1: Auto-disable adversarial on low-memory GPUs (< 12GB) to prevent OOM
+        if adversarial and torch.cuda.is_available():
+            gpu_mem_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            if gpu_mem_gb < 12:
+                logger.warning(f"GPU memory {gpu_mem_gb:.1f}GB < 12GB — disabling adversarial training (OOM prevention)")
+                adversarial = False
         self.adversarial = adversarial
         self.mixup = mixup
 
@@ -186,7 +198,10 @@ class FocalLossTrainerV3(Trainer):
         # NOTE: HuggingFace Trainer passes `model` param to compute_loss.
         # We use `model.training` to check if we're in train mode.
         is_training = model.training
-        outputs = model(**inputs, output_hidden_states=True)
+        # v3.1: NEVER use output_hidden_states=True (saves ~2.8GB GPU memory)
+        # Adversarial training uses model.get_input_embeddings() directly,
+        # NOT output_hidden_states — so we don't need it at all.
+        outputs = model(**inputs)
         logits = outputs.logits
         probs = F.softmax(logits, dim=-1)
 
@@ -338,6 +353,11 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
         fold_results.append(metrics)
         print(f"  metrics: {metrics}")
 
+    # v3.1: Clear GPU memory after each fold
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
     # Aggregate
     print(f"\n{'='*70}")
     print(f"K-FOLD RESULTS (k={k})")
@@ -395,7 +415,10 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         output_dir=str(out_dir),
         num_train_epochs=H.NUM_EPOCHS,
         per_device_train_batch_size=H.BATCH_SIZE,
-        per_device_eval_batch_size=H.BATCH_SIZE * 2,
+        per_device_eval_batch_size=H.BATCH_SIZE,  # v3.1: reduced from *2 (OOM fix)
+        # v3.1: OOM prevention settings
+        dataloader_pin_memory=False,  # saves pinned memory
+        gradient_checkpointing=False,
         gradient_accumulation_steps=H.GRAD_ACCUM_STEPS,
         learning_rate=H.LEARNING_RATE,
         weight_decay=H.WEIGHT_DECAY,
@@ -446,6 +469,10 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     )
 
     trainer.train()
+    # v3.1: Clear cache before eval to prevent OOM
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
     val_metrics = trainer.evaluate(val_ds, metric_key_prefix="val")
 
     # Temperature calibration

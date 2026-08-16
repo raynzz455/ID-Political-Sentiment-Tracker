@@ -74,8 +74,8 @@ SCHEDULER_NUM_CYCLES = 2     # 2 restarts over training
 # ---------------------------------------------------------------------------
 # Batch / epochs
 # ---------------------------------------------------------------------------
-BATCH_SIZE        = 16
-GRAD_ACCUM_STEPS  = 4         # UPGRADED from 2. Effective batch = 64 (was 32)
+BATCH_SIZE        = 8         # v3.1: reduced from 16 (OOM fix for T4 15GB)
+GRAD_ACCUM_STEPS  = 8         # v3.1: increased from 4. Effective batch = 64 (same)
                               # Larger batch = more stable gradients
 NUM_EPOCHS        = 20        # UPGRADED from 15. More data supports more epochs.
 EARLY_STOP_PATIENCE = 5       # UPGRADED from 4. More patience for 20-epoch training.
