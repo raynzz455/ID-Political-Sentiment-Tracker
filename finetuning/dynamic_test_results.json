@@ -1,0 +1,343 @@
+{
+  "entity_results": [
+    {
+      "sample_id": 0,
+      "expected": "Budiman Sudjatmiko",
+      "expected_label": "positive",
+      "main_found": "Budiman Sudjatmiko",
+      "all_found": [
+        "Budiman Sudjatmiko"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 1,
+      "expected": "Tito Karnavian",
+      "expected_label": "positive",
+      "main_found": "Tito Karnavian",
+      "all_found": [
+        "Tito Karnavian"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 2,
+      "expected": "Puan Maharani",
+      "expected_label": "positive",
+      "main_found": "Puan Maharani",
+      "all_found": [
+        "Puan Maharani"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 3,
+      "expected": "Ma'ruf Amin",
+      "expected_label": "positive",
+      "main_found": "Ma'ruf Amin",
+      "all_found": [
+        "Ma'ruf Amin"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 4,
+      "expected": "Sri Mulyani Indrawati",
+      "expected_label": "negative",
+      "main_found": "Sri Mulyani Indrawati",
+      "all_found": [
+        "Sri Mulyani Indrawati"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 5,
+      "expected": "Prabowo Subianto",
+      "expected_label": "negative",
+      "main_found": "Prabowo Subianto",
+      "all_found": [
+        "Prabowo Subianto"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 6,
+      "expected": "Puan Maharani",
+      "expected_label": "negative",
+      "main_found": "Puan Maharani",
+      "all_found": [
+        "Puan Maharani"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 7,
+      "expected": "Budiman Sudjatmiko",
+      "expected_label": "negative",
+      "main_found": "Budiman Sudjatmiko",
+      "all_found": [
+        "Budiman Sudjatmiko"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.85,
+      "n_entities": 1,
+      "n_mentions": 2
+    },
+    {
+      "sample_id": 8,
+      "expected": "Puan Maharani",
+      "expected_label": "neutral",
+      "main_found": "Puan Maharani",
+      "all_found": [
+        "Puan Maharani"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 9,
+      "expected": "Ma'ruf Amin",
+      "expected_label": "neutral",
+      "main_found": "Ma'ruf Amin",
+      "all_found": [
+        "Ma'ruf Amin"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.85,
+      "n_entities": 1,
+      "n_mentions": 3
+    },
+    {
+      "sample_id": 10,
+      "expected": "Gibran Rakabuming Raka",
+      "expected_label": "neutral",
+      "main_found": "Prabowo Subianto",
+      "all_found": [
+        "Prabowo Subianto"
+      ],
+      "is_main_correct": false,
+      "expected_in_mappings": false,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    },
+    {
+      "sample_id": 11,
+      "expected": "Prabowo Subianto",
+      "expected_label": "neutral",
+      "main_found": "Prabowo Subianto",
+      "all_found": [
+        "Prabowo Subianto"
+      ],
+      "is_main_correct": true,
+      "expected_in_mappings": true,
+      "confidence": 0.5,
+      "n_entities": 1,
+      "n_mentions": 1
+    }
+  ],
+  "context_results": [
+    {
+      "sample_id": 0,
+      "entity": "Budiman Sudjatmiko",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 185,
+      "context_preview": "Budiman Sudjatmiko bahkan bermimpi pemimpin Indonesia tiru kebijakan Venezuela era Hugo Chavez untuk menyejahterakan rakyat. Nasionalisme dalam diri H..."
+    },
+    {
+      "sample_id": 1,
+      "entity": "Tito Karnavian",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 303,
+      "context_preview": "Ketua Harian Dewan Kerajinan Nasional (Dekranas) Tri Tito Karnavian mendorong para perajin dan pelaku Usaha Mikro, Kecil, dan Menengah (UMKM) untuk me..."
+    },
+    {
+      "sample_id": 2,
+      "entity": "Puan Maharani",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 191,
+      "context_preview": "Ketua DPR RI Puan Maharani menyempatkan diri berfoto dengan anggota dewan fraksi PDIP setelah sidang tahunan 2022 selesai. Saat foto bersama, para ang..."
+    },
+    {
+      "sample_id": 3,
+      "entity": "Ma'ruf Amin",
+      "quality_score": 50,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": false,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 369,
+      "context_preview": "Sekjen PAN Eddy Soeparno menceritakan mengenai arah PAN yang sebetulnya ingin bergabung ke koalisi Jokowi-Ma'ruf Amin saat Pilpres 2019 namun dijegal ..."
+    },
+    {
+      "sample_id": 4,
+      "entity": "Sri Mulyani Indrawati",
+      "quality_score": 100,
+      "has_sentiment": true,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 126,
+      "context_preview": "Viral di media sosial potongan video Menteri Keuangan Sri Mulyani Indrawati yang disebut menyatakan guru sebagai beban negara."
+    },
+    {
+      "sample_id": 5,
+      "entity": "Prabowo Subianto",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 351,
+      "context_preview": "KOALISI masyarakat sipil yang terdiri dari aktivis dan akademikus membentuk tandingan Kabinet Merah Putih pemerintahan Presiden Prabowo Subianto yang ..."
+    },
+    {
+      "sample_id": 6,
+      "entity": "Puan Maharani",
+      "quality_score": 100,
+      "has_sentiment": true,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 210,
+      "context_preview": "Jakarta, AFU ID â Wakil Ketua Umum Partai Golkar, Ahmad Doli Kurnia Tanjung, mengkritisi sikap Ketua DPR RI Puan Maharani yang dinilai kurang tegas da..."
+    },
+    {
+      "sample_id": 7,
+      "entity": "Budiman Sudjatmiko",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 227,
+      "context_preview": "Politikus PDIP Budiman Sudjatmiko tak mau berandai-andai soal nasibnya di PDIP usai mendukung bakal capres Gerindra, Prabowo Subianto. Dia mengaku bak..."
+    },
+    {
+      "sample_id": 8,
+      "entity": "Puan Maharani",
+      "quality_score": 100,
+      "has_sentiment": true,
+      "has_attribution": true,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 70,
+      "context_preview": "Ketua DPR RI Puan Maharani menyoroti peringatan HUT ke-80 Bhayangkara."
+    },
+    {
+      "sample_id": 9,
+      "entity": "Ma'ruf Amin",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 334,
+      "context_preview": ", Jakarta - Ma'ruf Amin, Wakil Presiden RI ke-13 bersama Presiden Joko Widodo atau Jokowi berhasil memenangi Pemilu 2019 mengalahkan pasangan Prabowo ..."
+    },
+    {
+      "sample_id": 10,
+      "entity": "Gibran Rakabuming Raka",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": true,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 200,
+      "context_preview": "WAKIL Menteri Sekretaris Negara Juri Ardiantoro menegaskan Presiden Prabowo Subianto mengetahui rangkaian kegiatan dan hasil kunjungan Wakil Presiden ..."
+    },
+    {
+      "sample_id": 11,
+      "entity": "Prabowo Subianto",
+      "quality_score": 70,
+      "has_sentiment": false,
+      "has_attribution": false,
+      "is_main_actor": true,
+      "span_count": 1,
+      "used_local_clause": false,
+      "entity_in_context": true,
+      "context_len": 484,
+      "context_preview": "Karena di Kopdes nanti kan ada gerai-gerai salah satunya gerai dari Bank Himbara (Himpunan Bank Milik Negara),\" kata Gus Ipul usai rapat terbatas deng..."
+    }
+  ],
+  "entity_stats": {
+    "total": 12,
+    "entities_found": 12,
+    "mentions_found": 15,
+    "main_correct": 11,
+    "main_wrong_not_found": 1
+  },
+  "context_stats": {
+    "total": 12,
+    "is_main_actor": 11,
+    "has_sentiment": 3,
+    "has_attribution": 2
+  }
+}

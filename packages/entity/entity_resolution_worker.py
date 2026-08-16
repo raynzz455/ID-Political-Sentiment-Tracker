@@ -53,7 +53,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-RESOLVER_VERSION = "v15_intuitive_validation"
+RESOLVER_VERSION = "v15.1_expanded_verbs"
 DEFAULT_DAYS_BACK = 30
 MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
@@ -74,6 +74,15 @@ SENTIMENT_PREDICATES_ACTIVE = {
     "tuduh","lapor","cekal","tahan","vonis","tangkap","pidana","anggap",
     "nilai","sorot","gugur","bongkar","pecat","mundur","undur","berhenti",
     "ganti","razia","sita","denda","hukum","ganjar",
+    # v15.1: EXPANDED negative framing verbs (from dynamic test findings)
+    "duga","dugaan","diduga","terduga","tersangkut","terlibat","didakwa",
+    "tuduh","menuduh","tuding","menuding","curiga","dicurigai",
+    "skandal","kontroversi","viral",
+    "korupsi","suap","pungli","gratifikasi","penyelewengan",
+    "pelanggar","melanggar","menyimpang","penyimpangan",
+    "salah","salahgunakan","penyalahgunaan",
+    "beban","merugikan","rugi","kerugian",
+    "bukti","terbukti","buktikan","membuktikan",
     # Positive evaluation (entity praised/supported/endorsed)
     "puji","dukung","apresiasi","restui","sahkan","setuju","kukuhkan",
     "akui","legitimasi",

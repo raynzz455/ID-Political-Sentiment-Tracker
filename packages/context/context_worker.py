@@ -55,7 +55,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v18_precision_multi"
+CONTEXT_VERSION = "v18.3_noun_framing"
 MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
 logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
@@ -117,6 +117,15 @@ SENTIMENT_PREDICATES_ACTIVE = {
     "tuduh","lapor","cekal","tahan","vonis","tangkap","pidana","anggap",
     "nilai","sorot","gugur","bongkar","pecat","mundur","undur","berhenti",
     "ganti","razia","sita","denda","hukum","ganjar",
+    # v18.2: EXPANDED negative framing verbs (from dynamic test findings)
+    "duga","dugaan","diduga","terduga","tersangkut","terlibat","didakwa",
+    "tuduh","menuduh","tuding","menuding","curiga","dicurigai",
+    "skandal","kontroversi","viral",
+    "korupsi","suap","pungli","gratifikasi","penyelewengan",
+    "pelanggar","melanggar","menyimpang","penyimpangan",
+    "salah","salahgunakan","penyalahgunaan",
+    "beban","merugikan","rugi","kerugian",
+    "bukti","terbukti","buktikan","membuktikan",
     # Positive evaluation (entity praised/supported/endorsed)
     "puji","dukung","apresiasi","restui","sahkan","setuju","kukuhkan",
     "akui","legitimasi",
@@ -141,6 +150,27 @@ ATTRIBUTION_WORDS = {
     # Appointment/indication (entity designates)
     "tunjuk","menunjuk",
 }
+# v18.3: NOUN-based negative framing detection
+# These are nouns (not verbs) that indicate entity is TARGET of negative framing.
+# Stanza lemmatizes "dugaan" -> "dugaan" (noun), "korupsi" -> "korupsi" (noun).
+# Without this, "dugaan keterlibatan AHY" won't trigger sentiment detection.
+NEGATIVE_FRAMING_NOUNS = {
+    "dugaan", "terduga", "tersangka", "tersangkut",
+    "korupsi", "suap", "pungli", "gratifikasi", "penyelewengan",
+    "skandal", "kontroversi", "polemik",
+    "kasus", "perkara", "tuntutan", "tuntutan",
+    "pelanggaran", "penyimpangan", "penyalahgunaan",
+    "rugi", "kerugian", "beban",
+    "vonis", "hukuman", "pidana", "dakwaan",
+    "bukti", "ketahuan", "terbukti",
+}
+# v18.3: POSITIVE framing nouns (entity praised)
+POSITIVE_FRAMING_NOUNS = {
+    "pujian", "apresiasi", "dukungan", "restu", "persetujuan",
+    "prestasi", "pencapaian", "kesuksesan", "sukses",
+    "penghargaan", "pengakuan", "legitimasi",
+}
+
 PRONOUNS = {"dia", "ia", "beliau", "mereka", "nya"}
 QUOTE_CHARS = set('“"”‘’')
 MIN_LOCAL_CLAUSE_WORDS = 4
@@ -258,13 +288,25 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         root_word = ""
         has_sentiment_predicate = False
         has_attribution = False
+        has_negative_noun = False
+        has_positive_noun = False
         for word in anchor_sent["parsed"].words:
+            lemma = (word.lemma or word.text).lower()
             if word.deprel == 'root':
-                root_word = (word.lemma or word.text).lower()
+                root_word = lemma
                 if root_word in SENTIMENT_PREDICATES_ACTIVE:
                     has_sentiment_predicate = True
                 if root_word in ATTRIBUTION_WORDS:
                     has_attribution = True
+            # v18.3: check for negative/positive framing NOUNS anywhere in sentence
+            if word.upos in ('NOUN', 'PROPN'):
+                if lemma in NEGATIVE_FRAMING_NOUNS:
+                    has_negative_noun = True
+                elif lemma in POSITIVE_FRAMING_NOUNS:
+                    has_positive_noun = True
+        # v18.3: nouns can also trigger sentiment predicate (for framing detection)
+        if has_negative_noun or has_positive_noun:
+            has_sentiment_predicate = True
 
         used_local_clause = False
         anchor_text_for_context = anchor_sent["text"]
@@ -325,6 +367,8 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             "exclusivity_score": exclusivity_score,
             "has_sentiment_predicate": has_sentiment_predicate,
             "has_attribution": has_attribution,
+            "has_negative_noun": has_negative_noun,
+            "has_positive_noun": has_positive_noun,
             "is_main_actor": is_main_actor,
             "used_local_clause": used_local_clause,
             "para_idx": para_idx,
