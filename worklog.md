@@ -508,3 +508,71 @@ Stage Summary:
 - Workflow file created with cron schedule + manual dispatch
 - Singkirkan finetuning dari GH Actions spec (butuh GPU, pakai Colab)
 - Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
+
+---
+Task ID: 36
+Agent: Z.ai Code (main)
+Task: User asked to fetch workers for review + verify MoE updates pushed to packages/.
+
+Work Log:
+- Fetched latest from GitHub repo (clone fresh):
+  entity_resolution_worker.py: v15.1 (NOT v16)
+  context_worker.py: v19.1 (NOT v20)
+  entity_resolution_moe.py: NOT in packages/
+  context_extraction_moe.py: NOT in packages/
+  preprocessing-pipeline.yml: NOT in .github/workflows/
+  
+- CONFIRMED: My local updates (v16/v20 + MoE + workflow) NOT pushed to GitHub
+  Root cause: GitHub credentials expired, push fails with "could not read Username"
+  
+- Local repo /tmp/idpst_repo_v2 HAS all updates (committed, ready to push):
+  - packages/entity/entity_resolution_worker.py v16_moe_enabled ✅
+  - packages/context/context_worker.py v20_moe_enabled ✅
+  - packages/entity/entity_resolution_moe.py (1168 lines) ✅
+  - packages/context/context_extraction_moe.py (979 lines) ✅
+  - .github/workflows/preprocessing-pipeline.yml (216 lines) ✅
+
+- Created manual deployment artifacts (since push fails):
+  1. finetuning/scripts/apply_moe_updates.sh — one-click apply script
+     - Copies MoE files to packages/
+     - Applies git patches for v15.1→v16, v19.1→v20
+     - Creates GH Actions workflow
+     - Reports changes + next steps
+  
+  2. finetuning/patches/entity_v16.patch — git patch (164 lines)
+     - Diff: v15.1 → v16 (adds USE_MOE config + main_moe function)
+  
+  3. finetuning/patches/context_v20.patch — git patch (161 lines)
+     - Diff: v19.1 → v20 (adds USE_MOE config + main_moe function)
+
+- All committed to local repo /tmp/idpst_repo_v2 (4 commits ahead of origin/main)
+
+DEPLOYMENT OPTIONS for user:
+  Option A (recommended): User pushes local repo to GitHub
+    cd /tmp/idpst_repo_v2
+    git push origin main  # (with credentials)
+  
+  Option B: User applies patches manually
+    cd /path/to/ID-Political-Sentiment-Tracker
+    git pull origin main
+    bash finetuning/scripts/apply_moe_updates.sh
+    git add -A && git commit -m "feat: MoE workers"
+    git push origin main
+
+STATUS SUMMARY:
+  | Component                    | GitHub (public) | Local (idpst_repo_v2) | Status
+  |------------------------------|-----------------|---------------------|--------
+  | entity_resolution_worker.py  | v15.1           | v16 (MoE)           | ❌ not pushed
+  | context_worker.py            | v19.1           | v20 (MoE)           | ❌ not pushed
+  | entity_resolution_moe.py     | (not exist)     | ✅ 1168 lines       | ❌ not pushed
+  | context_extraction_moe.py    | (not exist)     | ✅ 979 lines        | ❌ not pushed
+  | preprocessing-pipeline.yml   | (not exist)     | ✅ 216 lines        | ❌ not pushed
+  | apply_moe_updates.sh         | (not exist)     | ✅ created          | ❌ not pushed
+  | entity_v16.patch             | (not exist)     | ✅ 164 lines        | ❌ not pushed
+  | context_v20.patch            | (not exist)     | ✅ 161 lines        | ❌ not pushed
+
+Stage Summary:
+- Updates are LOCAL only — user needs to push manually (credentials issue)
+- All artifacts ready: apply script + patches + full files
+- User can choose: push local repo OR apply patches in fresh clone
+- Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
