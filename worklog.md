@@ -576,3 +576,73 @@ Stage Summary:
 - All artifacts ready: apply script + patches + full files
 - User can choose: push local repo OR apply patches in fresh clone
 - Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
+
+---
+Task ID: 37
+Agent: Z.ai Code (main)
+Task: Push all updates + cleanup unused scripts. User will extract new dataset.
+
+Work Log:
+- Cloned fresh from GitHub (idpst_final)
+- Applied ALL updates:
+  1. entity_resolution_worker.py v15.1 → v16 (MoE-enabled, USE_MOE=0 default)
+  2. context_worker.py v19.1 → v20 (MoE-enabled, USE_MOE=0 default)
+  3. Copied entity_resolution_moe.py to packages/entity/ (6 experts)
+  4. Copied context_extraction_moe.py to packages/context/ (5 experts)
+  5. Created .github/workflows/preprocessing-pipeline.yml (GH Actions free tier)
+  6. Copied finetune_v3.py, evaluate_v3.py, colab_complete_pipeline_v3.py
+  7. Copied dataset_v3.jsonl, dataset_v9.jsonl, test scripts
+
+- CLEANUP (15 files deleted, ~9.8MB saved):
+  Datasets: v2, v4, v5, v6, v7, enhanced, v8_merged (superseded by v3/v9)
+  Scripts: build_v2/v8, verify_v2/v8, test_workers_quality, cleanup_repo
+  Patches: entity_resolution_worker_v15_deployed (already in packages/)
+  Old colab: colab_complete_pipeline.py (replaced by v3)
+  Intermediate: need_llm_verify_v9, overconfidence_test_results
+
+- Syntax verified all files OK
+- Committed locally: all changes staged
+
+PUSH STATUS:
+  ❌ Push failed — GitHub credentials expired
+  ✅ Git bundle created: /home/z/my-project/idpst-updates.bundle (4.9MB)
+  ✅ Push script created: /home/z/my-project/push_updates.sh
+
+FINAL FILE STRUCTURE (clean):
+  finetuning/
+    datasets/ (5 files: v3, v9, gold, llm_verified_v3, llm_verified_v9)
+    scripts/ (11 files: build_v3/v9, verify_v9, test_moe, test_dynamic, etc.)
+    configs/ (3 files: hyperparams v2, v3, optimized)
+    patches/ (1 file: sentiment_model_v5_lora)
+    finetune_v3.py, evaluate_v3.py, colab_complete_pipeline_v3.py
+  packages/
+    entity/ (3 files: worker v16, moe, __init__)
+    context/ (4 files: worker v20, moe, readiness, __init__)
+    nlp/ (3 files: sentiment_model, nlp_worker, __init__)
+  .github/workflows/ (6 files including new preprocessing-pipeline.yml)
+
+USER NEXT STEPS:
+  1. Push to GitHub (use bundle or manual copy):
+     git clone https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git
+     cd ID-Political-Sentiment-Tracker
+     git fetch /home/z/my-project/idpst-updates.bundle
+     git merge FETCH_HEAD --allow-unrelated-histories
+     git push origin main
+  
+  2. Set GitHub Secrets:
+     SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+  
+  3. Extract new dataset (user will do this):
+     python devtools/dataset/export_finetune_dataset.py --limit 20000
+     → User will tell me which folder the new dataset is in
+  
+  4. LLM verify new dataset
+  5. Rebuild dataset_v10 (target 3000+ rows)
+  6. Retrain v4 with larger dataset
+
+Stage Summary:
+- All updates applied to fresh clone (idpst_final)
+- 15 unused files deleted (9.8MB saved)
+- Commit ready locally
+- Git bundle + push script created for user to push manually
+- Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
