@@ -361,3 +361,76 @@ Stage Summary:
 - All spaCy references removed (0 remaining)
 - Ready for Colab testing with correct tech stack
 - Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
+
+---
+Task ID: 34
+Agent: Z.ai Code (main)
+Task: User asked about GitHub Actions free tier feasibility for all modules.
+
+Work Log:
+- Analyzed GitHub Actions free tier limits:
+  - Public repo: UNLIMITED minutes ✅
+  - Private repo: 2,000 minutes/month
+  - Runner: 2-core CPU, 7GB RAM, 14GB SSD, NO GPU
+  - Job timeout: 6 hours max
+
+- Module-by-module analysis:
+  Modules 1-7 (ingestion → readiness): ✅ FIT free tier (RAM < 2GB)
+  Module 8 (NLP worker v16): ⚠️ MARGINAL (1.8GB RAM, fits but slow on CPU)
+  Module 9 (Entity MoE 6 experts): ❌ NO (4-6GB RAM, exceeds 7GB with deps)
+  Module 10 (Context MoE 5 experts): ❌ NO (3-5GB RAM)
+  Module 11 (LLM Hybrid): ⚠️ MARGINAL (2GB, API calls)
+  Module 12 (Finetune v3): ❌ NO (needs GPU, 8GB+ RAM)
+
+- ALTERNATIVES identified (all FREE):
+  1. HuggingFace Spaces (16GB RAM, 50GB disk) — BEST for NLP + MoE
+  2. Google Colab (T4 GPU, 12GB RAM) — for finetuning
+  3. Kaggle Kernels (T4 x2 GPU, 16GB) — for finetuning
+  4. Railway.app ($5 free credit) — for long-running workers
+  5. Cloud Run ($2M free tier) — for on-demand inference
+  6. Self-hosted (Raspberry Pi/laptop) — unlimited
+
+- RECOMMENDED ARCHITECTURE (Hybrid):
+  GitHub Actions (free, public repo):
+    → Run lightweight workers (ingestion, prep, entity, context, readiness)
+    → Trigger NLP/MoE via API to HuggingFace Spaces
+  
+  HuggingFace Spaces (free, 16GB RAM):
+    → Run NLP Worker v16 (3 models, 1.8GB)
+    → Run Entity MoE (6 experts, 4-6GB)
+    → Run Context MoE (5 experts, 3-5GB)
+  
+  Google Colab (free, GPU):
+    → Run Finetune v3 (manual, ~40 min per session)
+    → Run MoE test (test_moe_workers.py)
+  
+  Supabase (free):
+    → Database + queue (pgmq)
+
+- Created 2 files:
+  1. pipeline-free-tier.yml — GitHub Actions workflow
+     - 6 jobs: ingestion, prep, nlp, moe, status, finetune (manual)
+     - Cron: every 6h (ingestion), daily 2AM (prep), daily 4AM (nlp)
+     - Free tier usage: ~900 min/month (well under limit)
+  
+  2. hf_spaces_nlp_worker.py — HuggingFace Spaces FastAPI app
+     - Endpoints: /api/nlp/run, /api/moe/run, /api/status, /api/health
+     - Lazy loading (models load on first request, not startup)
+     - Async background jobs (non-blocking)
+     - Handles NLP + Entity MoE + Context MoE
+
+EXPECTED FREE TIER USAGE (monthly):
+  GitHub Actions: ~900 min (limit: 2000 for private, UNLIMITED for public) ✅
+  HuggingFace Spaces: free, 16GB RAM ✅
+  Google Colab: free, T4 GPU (manual for finetune) ✅
+  Supabase: free tier (500MB DB, 5GB bandwidth) ✅
+
+COST: $0/month for full pipeline automation!
+
+Stage Summary:
+- GitHub Actions free tier: FITS for lightweight workers (modules 1-7)
+- HuggingFace Spaces: FITS for NLP + MoE (16GB RAM > 7GB GH Actions)
+- Google Colab: FITS for finetuning (GPU, manual)
+- Hybrid architecture: GitHub Actions → HF Spaces → Colab
+- All FREE, no cost for production automation
+- Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
