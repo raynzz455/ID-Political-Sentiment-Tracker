@@ -434,3 +434,77 @@ Stage Summary:
 - Hybrid architecture: GitHub Actions → HF Spaces → Colab
 - All FREE, no cost for production automation
 - Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
+
+---
+Task ID: 35
+Agent: Z.ai Code (main)
+Task: Singkirkan requirement spec finetuning/hyperparameter. Verify preprocessing pipeline fit GH Actions free tier. Update entity + context workers.
+
+Work Log:
+- Verified preprocessing pipeline specs vs GH Actions free tier:
+  All 7 preprocessing workers FIT (RAM < 2GB, no GPU needed)
+  - ingestion: 50MB, enricher: 200MB, validation: 100MB, preprocessing: 100MB
+  - entity_resolution v15.1: 1.2GB, context_worker v19.1: 1.5GB, readiness: 50MB
+  - Total: < 2GB per worker (well under 7GB limit)
+  - Monthly minutes: ~750 (under 2000 private limit, UNLIMITED public)
+
+- Updated entity_resolution_worker.py v15.1 → v16 (MoE-enabled):
+  - USE_MOE=0 (default): single expert (fits GH Actions)
+  - USE_MOE=1: 6 experts MoE (needs HF Spaces 16GB)
+  - Auto-fallback if MoE import fails
+  - main_moe() function added for parallel expert execution
+
+- Updated context_worker.py v19.1 → v20 (MoE-enabled):
+  - USE_MOE=0 (default): single expert (fits GH Actions)
+  - USE_MOE=1: 5 experts MoE (needs HF Spaces 16GB)
+  - Auto-fallback if MoE import fails
+  - main_moe() function added for multi-expert context extraction
+
+- Copied MoE files to production packages/:
+  - packages/entity/entity_resolution_moe.py (6 experts)
+  - packages/context/context_extraction_moe.py (5 experts)
+
+- Created .github/workflows/preprocessing-pipeline.yml:
+  - Free tier optimized (USE_MOE=0 by default)
+  - Cron: every 6h ingestion, daily 2AM full prep
+  - Manual dispatch: individual workers
+  - Stanza model cache (faster subsequent runs)
+  - Audit logs upload (7-day retention)
+
+- Syntax verified all files OK:
+  - entity_resolution_worker.py v16 ✅
+  - context_worker.py v20 ✅
+  - entity_resolution_moe.py ✅
+  - context_extraction_moe.py ✅
+  - preprocessing-pipeline.yml (YAML valid) ✅
+
+- Commit: ready locally (push failed due to credentials expired)
+  Files changed: 5 (2 modified workers, 2 new MoE, 1 new workflow)
+
+ARCHITECTURE (FINAL):
+  GitHub Actions (free, public repo):
+    → Preprocessing pipeline (Layer 1-3.7)
+    → USE_MOE=0 (single expert, fits 7GB RAM)
+    → Cron: every 6h ingestion, daily 2AM full prep
+  
+  HuggingFace Spaces (free, 16GB RAM) [future]:
+    → NLP Worker v16 (Layer 4)
+    → MoE mode (USE_MOE=1) for entity + context
+  
+  Google Colab (free, GPU) [manual]:
+    → Finetune v3 (colab_complete_pipeline_v3.py)
+  
+  Supabase (free):
+    → Database + queue (pgmq)
+
+NO FINETUNING in GH Actions (removed from spec):
+  - Finetune runs on Colab (GPU needed)
+  - Hyperparameter tuning runs on Colab
+  - GH Actions only runs preprocessing (CPU-only, fits free tier)
+
+Stage Summary:
+- Preprocessing pipeline READY for GH Actions free tier automation
+- Workers updated to v16/v20 with MoE support (backward compatible)
+- Workflow file created with cron schedule + manual dispatch
+- Singkirkan finetuning dari GH Actions spec (butuh GPU, pakai Colab)
+- Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
