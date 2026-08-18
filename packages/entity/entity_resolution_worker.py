@@ -323,11 +323,23 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
     if not body or len(body) < 50:
         return None
 
+    # FIX: Stanza crash should NOT discard regex matches!
+    # If Stanza fails, fallback to regex-only (entity still detected)
+    doc = None
     try:
         doc = NLP(body)
     except Exception as e:
-        logger.error(f"ID: {art['id'][:8]} | Stanza Error: {e}")
-        return None
+        logger.warning(f"ID: {art['id'][:8]} | Stanza Error (fallback ke regex-only): {e}")
+        # Try reload Stanza for next article
+        global NLP
+        try:
+            NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
+                                  verbose=False, use_gpu=False, batch_size=16)
+            doc = NLP(body)
+            logger.info(f"ID: {art['id'][:8]} | Stanza reloaded successfully")
+        except Exception as e2:
+            logger.error(f"ID: {art['id'][:8]} | Stanza reload failed: {e2}")
+            # Continue with doc=None — regex still works!
 
     persons = []
     current_person = []
@@ -399,16 +411,23 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
             entity_data[ent_id]["count"] += 1
             entity_data[ent_id]["offsets"].append({"start": start, "end": end, "text": matched_text})
 
-            for sidx, s in enumerate(sentences):
-                if s["start"] <= start < s["end"]:
-                    entity_data[ent_id]["sentence_indices"].add(sidx)
-                    role = check_semantic_role(s["parsed"], start, end)
-                    if role["has_sentiment_role"]:
-                        entity_data[ent_id]["has_sentiment_role"] = True
-                        entity_data[ent_id]["sentiment_verbs"].append(role["sentiment_verb"])
-                    if role["has_attribution_role"]:
-                        entity_data[ent_id]["has_attribution_role"] = True
-                    break
+            # FIX: Only check semantic role if Stanza doc is available
+            if doc is not None:
+                for sidx, s in enumerate(sentences):
+                    if s["start"] <= start < s["end"]:
+                        entity_data[ent_id]["sentence_indices"].add(sidx)
+                        role = check_semantic_role(s["parsed"], start, end)
+                        if role["has_sentiment_role"]:
+                            entity_data[ent_id]["has_sentiment_role"] = True
+                            entity_data[ent_id]["sentiment_verbs"].append(role["sentiment_verb"])
+                        if role["has_attribution_role"]:
+                            entity_data[ent_id]["has_attribution_role"] = True
+                        break
+            else:
+                # Stanza failed — estimate sentence index from offset
+                text_before = body[:start]
+                est_sidx = text_before.count('.') + text_before.count('!') + text_before.count('?')
+                entity_data[ent_id]["sentence_indices"].add(est_sidx)
         last_end = end
 
     if configured_entity_id and configured_entity_id not in entity_data:
