@@ -629,7 +629,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts").select(
-                "id, title, text, metadata, ingested_month"
+                "id, title, text, metadata, ingested_month, content_hash"
             ).eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").is_(
                 "entity_resolved_at", "null"
             ).gte("ingested_at", time_filter).limit(current_limit).execute()
@@ -641,6 +641,35 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         articles = res.data or []
         if not articles:
             break
+
+        # FIX: Dedup guard — skip duplicate articles (same content_hash, different ID)
+        seen_hashes = set()
+        deduped_articles = []
+        dedup_skipped = 0
+        for art in articles:
+            ch = art.get("content_hash")
+            if ch and ch in seen_hashes:
+                dedup_skipped += 1
+                try:
+                    sb.table("raw_texts").update({
+                        "entity_resolved_at": datetime.now(timezone.utc).isoformat(),
+                        "resolver_version": "skipped_duplicate"
+                    }).eq("id", art["id"]).execute()
+                except:
+                    pass
+                continue
+            if ch:
+                seen_hashes.add(ch)
+            deduped_articles.append(art)
+        
+        if dedup_skipped > 0:
+            logger.info(f"Skipped {dedup_skipped} duplicate articles (same content_hash)")
+        
+        articles = deduped_articles
+        if not articles:
+            logger.info("All articles in batch were duplicates. Next batch...")
+            batch_num += 1
+            continue
 
         logger.info(f"Batch {batch_num}: Memproses {len(articles)} artikel dengan Intuitive Validation...")
         batch_results = process_articles_batch(
