@@ -481,10 +481,12 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts") \
-                    .select("id, title, text, ingested_month") \
+                    .select("id, title, text, ingested_month, content_type") \
                     .eq("status", pc.STATUS_VALIDATED) \
                     .not_.is_("entity_resolved_at", "null") \
                     .is_("context_extracted_at", "null") \
+                    .neq("text", "") \
+                    .neq("content_type", "SNIPPET") \
                     .gte("ingested_at", time_filter) \
                     .limit(current_limit) \
                     .execute()

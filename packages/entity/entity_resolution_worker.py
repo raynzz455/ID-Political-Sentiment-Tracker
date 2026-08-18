@@ -602,10 +602,12 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts").select(
-                "id, title, text, metadata, ingested_month"
+                "id, title, text, metadata, ingested_month, content_type"
             ).eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").is_(
                 "entity_resolved_at", "null"
-            ).gte("ingested_at", time_filter).limit(current_limit).execute()
+            ).neq("text", "").neq("content_type", "SNIPPET").gte(
+                "ingested_at", time_filter
+            ).limit(current_limit).execute()
         except Exception as e:
             logger.warning(f"DB Query Timeout/Error: {e}. Menunggu 10s...")
             time.sleep(10)
@@ -614,6 +616,9 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         articles = res.data or []
         if not articles:
             break
+
+        # DEBUG: log batch info
+        logger.info(f"Batch {batch_num}: {len(articles)} articles (filtered: text!='' AND content_type!='SNIPPET')")
 
         logger.info(f"Batch {batch_num}: Memproses {len(articles)} artikel dengan Intuitive Validation...")
         batch_results = process_articles_batch(
