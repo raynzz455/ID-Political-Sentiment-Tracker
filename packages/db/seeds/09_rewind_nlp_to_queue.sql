@@ -40,7 +40,7 @@ BEGIN
         EXCEPTION WHEN OTHERS THEN
             -- Skip jika sudah ada di queue
             NULL;
-        END IF;
+        END;
     END LOOP;
     RAISE NOTICE 'Re-enqueued % articles to PGMQ', count;
 END $$;
