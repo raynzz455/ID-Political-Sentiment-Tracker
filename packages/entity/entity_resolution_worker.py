@@ -342,28 +342,46 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
             # Continue with doc=None — regex still works!
 
     persons = []
-    current_person = []
-    for sent in doc.sentences:
-        for word in sent.words:
-            if word.upos == 'PROPN':
-                current_person.append(word.text)
-            else:
-                if current_person:
-                    persons.append(" ".join(current_person))
-                    current_person = []
-        if current_person:
-            persons.append(" ".join(current_person))
-    full_persons = persons
+    # FIX: Build sentences list with Stanza fallback
+    if doc is not None:
+        # Normal: Stanza parsed
+        current_person = []
+        for sent in doc.sentences:
+            for word in sent.words:
+                if word.upos == 'PROPN':
+                    current_person.append(word.text)
+                else:
+                    if current_person:
+                        persons.append(" ".join(current_person))
+                        current_person = []
+            if current_person:
+                persons.append(" ".join(current_person))
+        full_persons = persons
 
-    sentences = []
-    for sent in doc.sentences:
-        if len(sent.text.strip()) > 10:
-            sentences.append({
-                "text": sent.text,
-                "start": sent.tokens[0].start_char if sent.tokens else 0,
-                "end": sent.tokens[-1].end_char if sent.tokens else 0,
-                "parsed": sent,
-            })
+        sentences = []
+        for sent in doc.sentences:
+            if len(sent.text.strip()) > 10:
+                sentences.append({
+                    "text": sent.text,
+                    "start": sent.tokens[0].start_char if sent.tokens else 0,
+                    "end": sent.tokens[-1].end_char if sent.tokens else 0,
+                    "parsed": sent,
+                })
+    else:
+        # FIX: Stanza failed — fallback to basic sentence splitting
+        full_persons = []  # no PROPN detection without Stanza
+        sentences = []
+        import re as _re
+        for m in _re.finditer(r'[^.!?]+[.!?]', body):
+            sent_text = m.group().strip()
+            if len(sent_text) > 10:
+                sentences.append({
+                    "text": sent_text,
+                    "start": m.start(),
+                    "end": m.end(),
+                    "parsed": None,
+                })
+    
     if not sentences:
         return None
     total_sents = len(sentences)
