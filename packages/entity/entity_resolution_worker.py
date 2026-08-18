@@ -325,13 +325,13 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
 
     # FIX: Stanza crash should NOT discard regex matches!
     # If Stanza fails, fallback to regex-only (entity still detected)
+    global NLP  # declare global FIRST (before any use)
     doc = None
     try:
         doc = NLP(body)
     except Exception as e:
         logger.warning(f"ID: {art['id'][:8]} | Stanza Error (fallback ke regex-only): {e}")
         # Try reload Stanza for next article
-        global NLP
         try:
             NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
                                   verbose=False, use_gpu=False, batch_size=16)
