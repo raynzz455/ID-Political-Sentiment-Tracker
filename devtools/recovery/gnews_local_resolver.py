@@ -35,6 +35,16 @@ except ImportError as e:
     sys.exit(1)
 
 from packages.shared import constants as pc
+import random
+
+# Anti-ban: Rotating user agents
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+]
 
 # Setup Clean Logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -126,6 +136,8 @@ async def process_url(context, art: dict, semaphore: asyncio.Semaphore, timeout:
         }
         
     async with semaphore:
+        # Anti-ban: Small random delay before page load
+        await asyncio.sleep(random.uniform(0.5, 2.0))
         page = await context.new_page()
         resolved_url = None
         html_content = None
@@ -246,10 +258,16 @@ async def async_main(sb, args):
             headless=not args.visible,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
         )
+        # Anti-ban: Random user agent per session
+        selected_ua = random.choice(USER_AGENTS)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+            user_agent=selected_ua,
             viewport={"width": 1920, "height": 1080},
-            locale="id-ID"
+            locale="id-ID",
+            extra_http_headers={
+                "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            }
         )
         
         while True:
@@ -313,18 +331,33 @@ async def async_main(sb, args):
                 else:
                     updates.append(result)
                         
-            # --- CHUNKED RPC UPDATE (Agar pasti masuk DB) ---
+            # --- CHUNKED RPC UPDATE with RETRY (prevent DB timeout) ---
             if updates:
-                CHUNK_SIZE = 25
-                try:
-                    for i in range(0, len(updates), CHUNK_SIZE):
-                        chunk = updates[i:i + CHUNK_SIZE]
-                        sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
-                except Exception as e: 
-                    logger.error(f"DB Bulk Update Error: {e}")
+                CHUNK_SIZE = 20  # smaller chunks = less likely to timeout
+                for i in range(0, len(updates), CHUNK_SIZE):
+                    chunk = updates[i:i + CHUNK_SIZE]
+                    for attempt in range(3):  # 3 retries
+                        try:
+                            sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
+                            break
+                        except Exception as e:
+                            if attempt < 2:
+                                wait = 3 * (attempt + 1)
+                                logger.warning(f"  DB Update retry {attempt+1}/3: {str(e)[:60]}, wait {wait}s...")
+                                await asyncio.sleep(wait)
+                            else:
+                                logger.error(f"  DB Update GAGAL setelah 3 retry: {str(e)[:80]}")
+                                # Save failed updates for later retry
+                                for u in chunk:
+                                    stats["db_update_failed"] += 1
                 
             total_processed += len(articles)
             batch_num += 1
+            
+            # Anti-ban: Random delay between batches (2-5 seconds)
+            delay = random.uniform(2, 5)
+            logger.info(f"  [ANTI-BAN] Delay {delay:.1f}s sebelum batch berikutnya...")
+            await asyncio.sleep(delay)
             
         await context.close()
         await browser.close()
@@ -355,6 +388,7 @@ async def async_main(sb, args):
     logger.info(f"    - Text Too Short : {stats['text_too_short']}")
     logger.info(f"    - Invalid URL    : {stats['invalid_url']}")
     logger.info(f"    - Task Crash     : {stats['crash']}")
+    logger.info(f"    - DB Update Fail : {stats['db_update_failed']}")
     logger.info("=" * 60)
 
 def main(args) -> None:
@@ -363,9 +397,9 @@ def main(args) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Local GNews Playwright Resolver (Expert)")
-    parser.add_argument("--limit", type=int, default=20, help="Jumlah row per batch (default 20)")
+    parser.add_argument("--limit", type=int, default=50, help="Jumlah row per batch (default 20)")
     parser.add_argument("--max-total", type=int, default=0, help="Batas total proses (0 = unlimited)")
-    parser.add_argument("--concurrency", type=int, default=3, help="Jumlah tab diproses bersamaan (default 3)")
+    parser.add_argument("--concurrency", type=int, default=5, help="Jumlah tab diproses bersamaan (default 3)")
     parser.add_argument("--timeout", type=int, default=15, help="Timeout tunggu redirect dalam detik (default 15)")
     parser.add_argument("--visible", action="store_true", help="Tampilkan browser di layar (headless=False)")
     parser.add_argument("--url", type=str, help="Test resolve 1 URL GNews secara manual")
