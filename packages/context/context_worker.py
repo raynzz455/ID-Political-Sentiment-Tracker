@@ -527,7 +527,25 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                     sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
                 except Exception as e:
                     logger.error(f"RPC Error: {e}")
-        logger.info(f"{len(articles)} diproses ({len(succeeded_art_ids)} ditandai selesai). {len(context_inserts)} contexts dibuat.")
+        # OBSERVABILITY: Detailed batch summary
+        failed_ctx = len(articles) - len(succeeded_art_ids)
+        total_spans = sum(len(c.get("metadata", {}).get("all_spans", [])) for c in context_inserts)
+        relevant_count = sum(1 for c in context_inserts if c.get("metadata", {}).get("is_relevant", True))
+        avg_quality = sum(c.get("metadata", {}).get("quality_score", 0) for c in context_inserts) / max(1, len(context_inserts))
+        
+        logger.info(f"{'='*60}")
+        logger.info(f"BATCH {batch_num} CONTEXT SUMMARY")
+        logger.info(f"{'='*60}")
+        logger.info(f"  Articles processed:  {len(articles)}")
+        logger.info(f"  ✅ Succeeded:         {len(succeeded_art_ids)}")
+        logger.info(f"  ❌ Failed/Skipped:     {failed_ctx}")
+        logger.info(f"  📝 Contexts created:  {len(context_inserts)}")
+        logger.info(f"  📍 Total spans:      {total_spans}")
+        logger.info(f"  ✅ Relevant:          {relevant_count}")
+        logger.info(f"  🎯 Avg quality:       {avg_quality:.1f}")
+        if failed_ctx > 0:
+            logger.warning(f"  ⚠️ {failed_ctx} articles failed — see SKIP/ERROR logs above")
+        logger.info(f"{'='*60}")
         total_processed += len(articles)
         total_success += len(context_inserts)
         batch_num += 1

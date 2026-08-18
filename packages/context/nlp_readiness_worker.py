@@ -30,7 +30,7 @@ READINESS_VERSION = "v8_threaded_enqueue"
 MIN_CONTEXT_LEN = 50
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
-MAX_WORKERS = 10  # Thread untuk PGMQ Enqueue paralel
+MAX_WORKERS = 3  # FIX: reduce from 10 to 3 (Supabase free tier ~5 connections)
 
 def normalize_title(title: str) -> str:
     if not title: return ""
@@ -40,13 +40,25 @@ def normalize_title(title: str) -> str:
     return title
 
 def enqueue_worker(sb, art_id: str) -> tuple[str, bool]:
-    """Worker function untuk ThreadPoolExecutor (PGMQ Enqueue)"""
-    try:
-        sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
-        return art_id, True
-    except Exception as e:
-        logger.error(f"Gagal enqueue PGMQ (ID: {art_id}): {e}")
-        return art_id, False
+    """Worker function untuk ThreadPoolExecutor (PGMQ Enqueue)
+    FIX: Added retry logic for 'Server disconnected' error.
+    """
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            sb.rpc("enqueue_nlp_message", {"p_raw_text_id": art_id}).execute()
+            return art_id, True
+        except Exception as e:
+            err_msg = str(e)
+            if "disconnected" in err_msg.lower() or "timeout" in err_msg.lower():
+                logger.warning(f"Retry {attempt+1}/{max_retries} (ID: {art_id[:8]}): {err_msg[:60]}")
+                time.sleep(2 * (attempt + 1))  # backoff: 2s, 4s, 6s
+                continue
+            else:
+                logger.error(f"Gagal enqueue PGMQ (ID: {art_id[:8]}): {err_msg[:80]}")
+                return art_id, False
+    logger.error(f"Gagal enqueue PGMQ setelah {max_retries} retry (ID: {art_id[:8]})")
+    return art_id, False
 
 def main(limit: int = 100, max_total: int = 0):
     sb = get_client()
