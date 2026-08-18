@@ -321,12 +321,20 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
     ingested_month = art.get("ingested_month")
 
     if not body or len(body) < 50:
+        # DEBUG: log kenapa skip
+        body_len = len(body) if body else 0
+        body_preview = (body[:80] + "...") if body else "None/empty"
+        logger.warning(f"ID: {art['id'][:8]} | SKIP: body kosong/pendek (len={body_len}) | preview: {body_preview}")
         return None
 
     try:
         doc = NLP(body)
     except Exception as e:
-        logger.error(f"ID: {art['id'][:8]} | Stanza Error: {e}")
+        # DEBUG: log detail Stanza error untuk identifikasi root cause
+        logger.error(f"ID: {art['id'][:8]} | Stanza Error: {type(e).__name__}: {e}")
+        logger.error(f"  body length: {len(body) if body else 0}")
+        logger.error(f"  body preview: {body[:100] if body else 'None'}...")
+        logger.error(f"  NLP type: {type(NLP).__name__}")
         return None
 
     persons = []
@@ -353,6 +361,8 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
                 "parsed": sent,
             })
     if not sentences:
+        # DEBUG: log kenapa sentences kosong
+        logger.warning(f"ID: {art['id'][:8]} | SKIP: sentences kosong (body_len={len(body)}, doc={type(doc).__name__})")
         return None
     total_sents = len(sentences)
 
@@ -550,7 +560,9 @@ def process_articles_batch(articles: list, alias_map: dict, entity_db_map: dict,
                 if res:
                     results.append(res)
             except Exception as e:
-                logger.error(f"Entity resolver thread crashed: {e}")
+                logger.error(f"Entity resolver thread crashed: {type(e).__name__}: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()[:300]}")
     return results
 
 
