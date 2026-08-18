@@ -55,9 +55,7 @@ logging.getLogger("stanza").setLevel(logging.WARNING)
 
 RESOLVER_VERSION = "v15.1_expanded_verbs"
 DEFAULT_DAYS_BACK = 30
-# FIX: Stanza is NOT thread-safe! Multiple threads corrupt pipeline.
-# Threading crash = root cause of 0 mappings after batch 1.
-MAX_NLP_WORKERS = 1
+MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
 logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
 try:
@@ -325,65 +323,35 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
     if not body or len(body) < 50:
         return None
 
-    # FIX: Stanza crash should NOT discard regex matches!
-    # If Stanza fails, fallback to regex-only (entity still detected)
-    global NLP  # declare global FIRST (before any use)
-    doc = None
     try:
         doc = NLP(body)
     except Exception as e:
-        logger.warning(f"ID: {art['id'][:8]} | Stanza Error (fallback ke regex-only): {e}")
-        # Try reload Stanza for next article
-        try:
-            NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
-                                  verbose=False, use_gpu=False, batch_size=16)
-            doc = NLP(body)
-            logger.info(f"ID: {art['id'][:8]} | Stanza reloaded successfully")
-        except Exception as e2:
-            logger.error(f"ID: {art['id'][:8]} | Stanza reload failed: {e2}")
-            # Continue with doc=None — regex still works!
+        logger.error(f"ID: {art['id'][:8]} | Stanza Error: {e}")
+        return None
 
     persons = []
-    # FIX: Build sentences list with Stanza fallback
-    if doc is not None:
-        # Normal: Stanza parsed
-        current_person = []
-        for sent in doc.sentences:
-            for word in sent.words:
-                if word.upos == 'PROPN':
-                    current_person.append(word.text)
-                else:
-                    if current_person:
-                        persons.append(" ".join(current_person))
-                        current_person = []
-            if current_person:
-                persons.append(" ".join(current_person))
-        full_persons = persons
+    current_person = []
+    for sent in doc.sentences:
+        for word in sent.words:
+            if word.upos == 'PROPN':
+                current_person.append(word.text)
+            else:
+                if current_person:
+                    persons.append(" ".join(current_person))
+                    current_person = []
+        if current_person:
+            persons.append(" ".join(current_person))
+    full_persons = persons
 
-        sentences = []
-        for sent in doc.sentences:
-            if len(sent.text.strip()) > 10:
-                sentences.append({
-                    "text": sent.text,
-                    "start": sent.tokens[0].start_char if sent.tokens else 0,
-                    "end": sent.tokens[-1].end_char if sent.tokens else 0,
-                    "parsed": sent,
-                })
-    else:
-        # FIX: Stanza failed — fallback to basic sentence splitting
-        full_persons = []  # no PROPN detection without Stanza
-        sentences = []
-        import re as _re
-        for m in _re.finditer(r'[^.!?]+[.!?]', body):
-            sent_text = m.group().strip()
-            if len(sent_text) > 10:
-                sentences.append({
-                    "text": sent_text,
-                    "start": m.start(),
-                    "end": m.end(),
-                    "parsed": None,
-                })
-    
+    sentences = []
+    for sent in doc.sentences:
+        if len(sent.text.strip()) > 10:
+            sentences.append({
+                "text": sent.text,
+                "start": sent.tokens[0].start_char if sent.tokens else 0,
+                "end": sent.tokens[-1].end_char if sent.tokens else 0,
+                "parsed": sent,
+            })
     if not sentences:
         return None
     total_sents = len(sentences)
@@ -431,23 +399,16 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
             entity_data[ent_id]["count"] += 1
             entity_data[ent_id]["offsets"].append({"start": start, "end": end, "text": matched_text})
 
-            # FIX: Only check semantic role if Stanza doc is available
-            if doc is not None:
-                for sidx, s in enumerate(sentences):
-                    if s["start"] <= start < s["end"]:
-                        entity_data[ent_id]["sentence_indices"].add(sidx)
-                        role = check_semantic_role(s["parsed"], start, end)
-                        if role["has_sentiment_role"]:
-                            entity_data[ent_id]["has_sentiment_role"] = True
-                            entity_data[ent_id]["sentiment_verbs"].append(role["sentiment_verb"])
-                        if role["has_attribution_role"]:
-                            entity_data[ent_id]["has_attribution_role"] = True
-                        break
-            else:
-                # Stanza failed — estimate sentence index from offset
-                text_before = body[:start]
-                est_sidx = text_before.count('.') + text_before.count('!') + text_before.count('?')
-                entity_data[ent_id]["sentence_indices"].add(est_sidx)
+            for sidx, s in enumerate(sentences):
+                if s["start"] <= start < s["end"]:
+                    entity_data[ent_id]["sentence_indices"].add(sidx)
+                    role = check_semantic_role(s["parsed"], start, end)
+                    if role["has_sentiment_role"]:
+                        entity_data[ent_id]["has_sentiment_role"] = True
+                        entity_data[ent_id]["sentiment_verbs"].append(role["sentiment_verb"])
+                    if role["has_attribution_role"]:
+                        entity_data[ent_id]["has_attribution_role"] = True
+                    break
         last_end = end
 
     if configured_entity_id and configured_entity_id not in entity_data:
@@ -629,7 +590,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         try:
             time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
             res = sb.table("raw_texts").select(
-                "id, title, text, metadata, ingested_month, content_hash"
+                "id, title, text, metadata, ingested_month"
             ).eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").is_(
                 "entity_resolved_at", "null"
             ).gte("ingested_at", time_filter).limit(current_limit).execute()
@@ -642,35 +603,6 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         if not articles:
             break
 
-        # FIX: Dedup guard — skip duplicate articles (same content_hash, different ID)
-        seen_hashes = set()
-        deduped_articles = []
-        dedup_skipped = 0
-        for art in articles:
-            ch = art.get("content_hash")
-            if ch and ch in seen_hashes:
-                dedup_skipped += 1
-                try:
-                    sb.table("raw_texts").update({
-                        "entity_resolved_at": datetime.now(timezone.utc).isoformat(),
-                        "resolver_version": "skipped_duplicate"
-                    }).eq("id", art["id"]).execute()
-                except:
-                    pass
-                continue
-            if ch:
-                seen_hashes.add(ch)
-            deduped_articles.append(art)
-        
-        if dedup_skipped > 0:
-            logger.info(f"Skipped {dedup_skipped} duplicate articles (same content_hash)")
-        
-        articles = deduped_articles
-        if not articles:
-            logger.info("All articles in batch were duplicates. Next batch...")
-            batch_num += 1
-            continue
-
         logger.info(f"Batch {batch_num}: Memproses {len(articles)} artikel dengan Intuitive Validation...")
         batch_results = process_articles_batch(
             articles, alias_map, entity_db_map, id_to_name, id_to_entity, regex_patterns
@@ -679,7 +611,17 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         all_mappings = []
         all_mentions = []
         now_iso = datetime.now(timezone.utc).isoformat()
+        
+        # FIX: Mark ALL articles as resolved (even failed ones)
+        # BUG ORIGINAL: articles yang return None tidak masuk batch_results
+        # → tidak ditandai resolved → diambil lagi batch berikutnya → infinite loop
+        # Sekarang: ALL articles ditandai resolved, supaya tidak diulang
+        all_art_ids = {a["id"] for a in articles}
         succeeded_ids = {r["raw_text_id"] for r in batch_results}
+        failed_ids = all_art_ids - succeeded_ids
+        
+        if failed_ids:
+            logger.info(f"{len(failed_ids)} articles gagal (Stanza/error) — ditandai resolved supaya tidak diulang")
 
         for result in batch_results:
             if result["mappings"]:
@@ -701,8 +643,12 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                                                    on_conflict="raw_text_id,entity_id,start_offset")
         succeeded_ids -= mention_fail_ids
 
+        # Mark ALL articles as resolved (success + failed)
+        # Failed articles get resolver_version="failed_no_entity" for tracking
         resolved_updates = [{"id": rid, "entity_resolved_at": now_iso,
                             "resolver_version": RESOLVER_VERSION} for rid in succeeded_ids]
+        resolved_updates.extend([{"id": rid, "entity_resolved_at": now_iso,
+                                 "resolver_version": "failed_no_entity"} for rid in failed_ids])
         if resolved_updates:
             for i in range(0, len(resolved_updates), 25):
                 try:

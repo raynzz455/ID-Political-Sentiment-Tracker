@@ -228,21 +228,11 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
     clean_text = body  # title excluded (v17 fix preserved)
     if not clean_text: return []
 
-    # FIX: Stanza crash should NOT discard all work!
-    global NLP  # declare global FIRST (before any use)
-    doc = None
     try:
         doc = NLP(clean_text)
     except Exception as e:
-        logger.warning(f"ID: {art_id[:8]} | Stanza Error (fallback basic): {e}")
-        try:
-            NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
-                                  verbose=False, use_gpu=False, batch_size=16)
-            doc = NLP(clean_text)
-            logger.info(f"ID: {art_id[:8]} | Stanza reloaded")
-        except Exception as e2:
-            logger.error(f"ID: {art_id[:8]} | Stanza reload failed: {e2}")
-            # Continue with doc=None — basic sentence splitting
+        logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
+        return []
 
     sentences = []
     for sent in doc.sentences:
