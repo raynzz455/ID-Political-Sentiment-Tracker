@@ -184,21 +184,27 @@ def write_results_to_db(sb, res: dict, stats: Counter) -> None:
     """
     if res["is_skipped"]:
         rpc_with_retry(sb, "ack_nlp_message", {"p_msg_id": res["msg_id"]})
+        stats["skipped"] += 1
         return
     # v16: Insert fallback FIRST (general sentiment)
     if rpc_with_retry(sb, "insert_sentiment_score", res["fb_payload"]):
         stats["fallback_inserted"] += 1
+        # FIX: count fallback label in stats too!
+        label = res["fb_payload"].get("p_label", "neutral")
+        stats[f"label_{label}"] += 1
+    else:
+        stats["fallback_insert_failed"] += 1
+        logger.error(f"Fallback insert failed for {res['raw_id'][:8]}")
     # v16: Insert EACH entity sentiment IMMEDIATELY (not batch)
-    # If timeout occurs mid-loop, completed entities are already in DB
     for payload in res["targeted_payloads"]:
         if rpc_with_retry(sb, "insert_sentiment_score", payload):
             stats["entity_inserted"] += 1
-            stats[f"label_{payload['p_label']}"] += 1
+            label = payload.get("p_label", "neutral")
+            stats[f"label_{label}"] += 1
         else:
             stats["entity_insert_failed"] += 1
             logger.warning(f"Entity insert failed: {payload.get('p_aspect','?')}")
-    # v16: Mark article as processed ONLY if all entities inserted
-    # (or if no entities, just fallback)
+    # v16: Mark article as processed
     update_payload = {"p_updates": [{"id": res["raw_id"], "status": str(pc.STATUS_PROCESSED), "pipeline_version": NLP_VERSION}]}
     if rpc_with_retry(sb, "bulk_update_raw_texts", update_payload) and rpc_with_retry(sb, "ack_nlp_message", {"p_msg_id": res["msg_id"]}):
         stats["acked"] += 1
