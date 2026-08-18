@@ -1,12 +1,17 @@
 """
-nlp_readiness_worker.py v8 — Threaded Enqueue & I/O Optimized
+nlp_readiness_worker.py v9 — Sequential Enqueue (FIX: Server disconnected)
 ====================================================================
-FIX v8:
-  1. THREADED ENQUEUE: Menggunakan ThreadPoolExecutor untuk memparalelkan 
-     PGMQ enqueue. Mengatasi bottleneck Network I/O saat memasukkan ratusan 
-     artikel ke antrian.
-  2. I/O BATCHING: Menaikkan chunk size untuk DB updates (25 -> 50).
-  3. GC COLLECTION: Menambah garbage collection.
+FIX v9:
+  1. SEQUENTIAL ENQUEUE: Removed ThreadPoolExecutor.
+     Root cause of 'Server disconnected': supabase-py uses ONE httpx session
+     internally. Multiple threads calling sb.rpc() on same session = race condition
+     → HTTP session corrupted → 'Server disconnected'.
+     
+     Fix: Sequential processing (no threading). Slower but 100% reliable.
+     
+  2. RETRY LOGIC: 3 retries with backoff for network errors.
+  3. I/O BATCHING: Chunk size 50 for DB updates.
+  4. GC COLLECTION: Garbage collection between batches.
 """
 
 import re
@@ -15,7 +20,6 @@ import time
 import logging
 import argparse
 from datetime import datetime, timezone, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from packages.shared.db_client import get_client
 from packages.shared.logger import start_run, finish_run
@@ -26,11 +30,10 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-READINESS_VERSION = "v8_threaded_enqueue"
+READINESS_VERSION = "v9_sequential_enqueue"
 MIN_CONTEXT_LEN = 50
 MIN_QUALITY_SCORE = 20
 MIN_FULLTEXT_LEN = 150
-MAX_WORKERS = 3  # FIX: reduce from 10 to 3 (Supabase free tier ~5 connections)
 
 def normalize_title(title: str) -> str:
     if not title: return ""
@@ -39,9 +42,11 @@ def normalize_title(title: str) -> str:
     title = re.sub(r'\s+', ' ', title)
     return title
 
-def enqueue_worker(sb, art_id: str) -> tuple[str, bool]:
-    """Worker function untuk ThreadPoolExecutor (PGMQ Enqueue)
-    FIX: Added retry logic for 'Server disconnected' error.
+def enqueue_single(sb, art_id: str) -> tuple[str, bool]:
+    """Sequential PGMQ enqueue with retry logic.
+    
+    FIX: No threading. supabase-py uses single httpx session internally.
+    Multiple threads on same session = 'Server disconnected'.
     """
     max_retries = 3
     for attempt in range(max_retries):
@@ -51,13 +56,14 @@ def enqueue_worker(sb, art_id: str) -> tuple[str, bool]:
         except Exception as e:
             err_msg = str(e)
             if "disconnected" in err_msg.lower() or "timeout" in err_msg.lower():
-                logger.warning(f"Retry {attempt+1}/{max_retries} (ID: {art_id[:8]}): {err_msg[:60]}")
-                time.sleep(2 * (attempt + 1))  # backoff: 2s, 4s, 6s
+                wait = 2 * (attempt + 1)  # 2s, 4s, 6s
+                logger.warning(f"Retry {attempt+1}/{max_retries} (ID: {art_id[:8]}): disconnected, wait {wait}s...")
+                time.sleep(wait)
                 continue
             else:
-                logger.error(f"Gagal enqueue PGMQ (ID: {art_id[:8]}): {err_msg[:80]}")
+                logger.error(f"Enqueue failed (ID: {art_id[:8]}): {err_msg[:80]}")
                 return art_id, False
-    logger.error(f"Gagal enqueue PGMQ setelah {max_retries} retry (ID: {art_id[:8]})")
+    logger.error(f"Enqueue failed after {max_retries} retries (ID: {art_id[:8]})")
     return art_id, False
 
 def main(limit: int = 100, max_total: int = 0):
@@ -70,7 +76,7 @@ def main(limit: int = 100, max_total: int = 0):
     total_duplicates = 0
     batch_num = 1
 
-    logger.info(f"[NLP_READINESS v8] Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[NLP_READINESS v9] Sequential | Limit: {limit}/batch | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
@@ -109,7 +115,7 @@ def main(limit: int = 100, max_total: int = 0):
         # 1. BATCH QUERY: Cek duplikasi judul
         existing_titles = set()
         titles_to_check = [a.get("title") or "" for a in articles if a.get("title")]
-        chunk_size = 100 # Naikkan dari 50 ke 100
+        chunk_size = 100
         
         for i in range(0, len(titles_to_check), chunk_size):
             chunk = titles_to_check[i:i + chunk_size]
@@ -198,32 +204,27 @@ def main(limit: int = 100, max_total: int = 0):
                 })
                 stats["rejected"] += 1
                 
-        # === OPTIMASI v8: THREADED PGMQ ENQUEUE ===
+        # === v9: SEQUENTIAL PGMQ ENQUEUE (NO THREADING) ===
         succeeded_ids = set()
-        if ready_to_enqueue:
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-                futures = {pool.submit(enqueue_worker, sb, item["id"]): item for item in ready_to_enqueue}
-                
-                for future in as_completed(futures):
-                    item = futures[future]
-                    try:
-                        art_id, success = future.result()
-                        if success:
-                            succeeded_ids.add(art_id)
-                            stats["ready"] += 1
-                        else:
-                            rejected_updates.append({
-                                "id": art_id, "status": pc.STATUS_FAILED, 
-                                "metadata": {**item["metadata"], "fail_reason": "pgmq_enqueue_failed"}
-                            })
-                            stats["rejected"] += 1
-                    except Exception as e:
-                        logger.error(f"Enqueue thread crashed: {e}")
-                        rejected_updates.append({
-                            "id": item["id"], "status": pc.STATUS_FAILED, 
-                            "metadata": {**item["metadata"], "fail_reason": "enqueue_thread_crash"}
-                        })
-                        stats["rejected"] += 1
+        enqueue_failed = 0
+        for item in ready_to_enqueue:
+            art_id = item["id"]
+            aid, success = enqueue_single(sb, art_id)
+            if success:
+                succeeded_ids.add(art_id)
+                stats["ready"] += 1
+            else:
+                rejected_updates.append({
+                    "id": art_id, "status": pc.STATUS_FAILED, 
+                    "metadata": {**item["metadata"], "fail_reason": "pgmq_enqueue_failed"}
+                })
+                stats["rejected"] += 1
+                enqueue_failed += 1
+            # Small delay between requests to avoid rate limit
+            time.sleep(0.1)
+        
+        if enqueue_failed > 0:
+            logger.warning(f"Enqueue failed for {enqueue_failed} articles (will retry next run)")
 
         # Susun updates untuk artikel yang sukses di-enqueue
         success_updates = [
@@ -259,7 +260,7 @@ def main(limit: int = 100, max_total: int = 0):
         gc.collect()
         
     finish_run(run_id, total_processed, total_ready, total_rejected)
-    logger.info(f"Total Duplicates Skipped: {total_duplicates}")
+    logger.info(f"Total: Ready={total_ready} | Rejected={total_rejected} | Duplicates={total_duplicates}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
