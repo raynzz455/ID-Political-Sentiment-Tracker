@@ -55,7 +55,9 @@ logging.getLogger("stanza").setLevel(logging.WARNING)
 
 RESOLVER_VERSION = "v15.1_expanded_verbs"
 DEFAULT_DAYS_BACK = 30
-MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
+# FIX: Stanza is NOT thread-safe! Multiple threads corrupt pipeline.
+# Threading crash = root cause of 0 mappings after batch 1.
+MAX_NLP_WORKERS = 1
 
 logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
 try:
