@@ -83,15 +83,30 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
     }
     
     try:
-        ctx_res = sb.table("entity_contexts") \
-                .select(
-                    "raw_text_id, entity_id, context_text, metadata, "
-                    "raw_texts(source_url, resolved_domain, published_at, content_hash, text), "
-                    "political_entities(canonical_name)"
-                ) \
-                .limit(limit) \
-                .execute()  # FIX: include all contexts (even without entity_id)
-        raw_data = ctx_res.data or []
+        # FIX: Pagination loop untuk bypass Supabase default max_rows=1000
+        # Supabase membatasi 1,000 rows per query, kita loop untuk ambil semua
+        raw_data = []
+        offset = 0
+        PAGE_SIZE = 500  # small pages = more reliable
+        while True:
+            ctx_res = sb.table("entity_contexts") \
+                    .select(
+                        "raw_text_id, entity_id, context_text, metadata, "
+                        "raw_texts(source_url, resolved_domain, published_at, content_hash, text), "
+                        "political_entities(canonical_name)"
+                    ) \
+                    .range(offset, offset + PAGE_SIZE - 1) \
+                    .execute()
+            page_data = ctx_res.data or []
+            if not page_data:
+                break
+            raw_data.extend(page_data)
+            logger.info(f"  Fetched {len(raw_data)}/{len(raw_data)} contexts (page {offset//PAGE_SIZE + 1})")
+            if len(page_data) < PAGE_SIZE:
+                break
+            offset += PAGE_SIZE
+            if len(raw_data) >= limit:
+                break
         audit["raw_contexts"] = len(raw_data)
         logger.info(f"Total kandidat context ditarik: {len(raw_data)}")
         
