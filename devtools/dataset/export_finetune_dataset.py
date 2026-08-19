@@ -41,12 +41,12 @@ DATASET_DIR = ROOT_DIR / "devtools" / "dataset"
 DATASET_DIR.mkdir(parents=True, exist_ok=True)
 
 # Konfigurasi
-MAX_PER_MEDIA = 500
-MAX_PER_ENTITY = 300
+MAX_PER_MEDIA = 5000
+MAX_PER_ENTITY = 2000
 MIN_ARTICLE_LEN = 300
 MIN_CONTEXT_LEN = 50
 MAX_BOILERPLATE_RATIO = 0.20
-MAX_ARTICLE_CHARS_AI = 1000 # Batas karakter article_text untuk JSONL (hemat token AI)
+MAX_ARTICLE_CHARS_AI = 1500 # Batas karakter article_text untuk JSONL (hemat token AI)
 
 BOILERPLATE_RE = re.compile(r'(Baca Juga|Simak Juga|Berita Terkait|Advertisement|Ikuti Kami|Copyright|©|Reportase:|Jurnalis:|Editor:).*?(?=\n|$)', re.IGNORECASE)
 
@@ -66,7 +66,7 @@ def calculate_entropy(scores: list) -> float:
     except:
         return 1.0
 
-def main(limit: int = 10000):
+def main(limit: int = 10000, include_no_sentiment: bool = False):
     sb = get_client()
     
     # Buat folder versi baru (misal: V4)
@@ -105,8 +105,7 @@ def main(limit: int = 10000):
             ss_res = sb.table("sentiment_scores") \
                         .select("raw_text_id, entity_id, label, confidence, score_negative, score_neutral, score_positive") \
                         .in_("raw_text_id", chunk) \
-                        .not_.is_("entity_id", "null") \
-                        .execute()
+                        .execute()  # FIX: include fallback scores (entity_id=NULL)
             ss_data.extend(ss_res.data or [])
             
         ss_map = {(s["raw_text_id"], s["entity_id"]): s for s in ss_data}
@@ -123,9 +122,14 @@ def main(limit: int = 10000):
         if not rt or not pe: continue
         
         ss = ss_map.get((row["raw_text_id"], row["entity_id"]))
-        if not ss: 
+        if not ss:
+            ss = ss_map.get((row["raw_text_id"], None))  # try fallback
+        if not ss:
             audit["missing_sentiment"] += 1
-            continue
+            if not include_no_sentiment:
+                continue
+            ss = {"label": "neutral", "confidence": 0.0,
+                  "score_negative": 0.33, "score_neutral": 0.34, "score_positive": 0.33}
         
         full_text = rt.get("text") or ""
         ctx_text = row.get("context_text") or ""
@@ -137,8 +141,9 @@ def main(limit: int = 10000):
             audit["article_short"] += 1
             continue
         
-        boilerplate_hits = len(BOILERPLATE_RE.findall(full_text))
-        boilerplate_ratio = (boilerplate_hits * 50) / len(full_text)
+        bp_matches = BOILERPLATE_RE.findall(full_text)
+        bp_chars = sum(len(m) for m in bp_matches)
+        boilerplate_ratio = bp_chars / max(1, len(full_text))
         if boilerplate_ratio > MAX_BOILERPLATE_RATIO: 
             audit["boilerplate_fail"] += 1
             continue
@@ -280,6 +285,13 @@ def main(limit: int = 10000):
     logger.info(f"Final Export               : {len(final_dataset)}")
     logger.info("=" * 60)
     
+    from collections import Counter as C2
+    label_dist = C2(item["pseudo_label"] for item in final_dataset)
+    logger.info("Distribusi Label:")
+    for l in ["positive", "neutral", "negative"]:
+        c = label_dist.get(l, 0)
+        logger.info(f"  {l:10s}: {c:4d} ({100*c/max(1,len(final_dataset)):.1f}%)")
+    logger.info("-" * 60)
     logger.info("Distribusi Media (Top 5):")
     for m, c in media_counter.most_common(5): logger.info(f"  {m:20s}: {c}")
     logger.info("Distribusi Entity (Top 5):")
@@ -289,5 +301,6 @@ def main(limit: int = 10000):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=10000)
+    parser.add_argument("--include-no-sentiment", action="store_true")
     args = parser.parse_args()
-    main(limit=args.limit)
+    main(limit=args.limit, include_no_sentiment=args.include_no_sentiment)
