@@ -89,9 +89,8 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
                     "raw_texts(source_url, resolved_domain, published_at, content_hash, text), "
                     "political_entities(canonical_name)"
                 ) \
-                .not_.is_("entity_id", "null") \
                 .limit(limit) \
-                .execute()
+                .execute()  # FIX: include all contexts (even without entity_id)
         raw_data = ctx_res.data or []
         audit["raw_contexts"] = len(raw_data)
         logger.info(f"Total kandidat context ditarik: {len(raw_data)}")
@@ -108,7 +107,14 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
                         .execute()  # FIX: include fallback scores (entity_id=NULL)
             ss_data.extend(ss_res.data or [])
             
-        ss_map = {(s["raw_text_id"], s["entity_id"]): s for s in ss_data}
+        # FIX: Build ss_map with both targeted + fallback scores
+        ss_map = {}
+        for s in ss_data:
+            ent_id = s.get("entity_id")
+            ss_map[(s["raw_text_id"], ent_id)] = s
+            if ent_id is None:
+                # Also store fallback with None key for easy lookup
+                ss_map[(s["raw_text_id"], None)] = s
         
     except Exception as e:
         logger.error(f"Gagal query DB: {e}")
