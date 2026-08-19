@@ -125,6 +125,103 @@ def main():
         except Exception:
             pass
 
+    # 6. PIPELINE DETAIL — Entity Resolution, Context, NLP Readiness
+    logger.info("\n--- [ PIPELINE DETAIL (Layer 3.2 - 3.7) ] ---")
+    
+    # Entity Resolution stats
+    ent_resolved = get_count(sb, "raw_texts", "entity_resolved_at", None)  # not null
+    # Can't easily query "not null" with helper, use direct
+    try:
+        er = sb.table("raw_texts").select("id", count="exact").not_.is_("entity_resolved_at", "null").eq("status", "validated").limit(1).execute()
+        ent_resolved = er.count
+    except: ent_resolved = 0
+    
+    ctx_extracted = 0
+    try:
+        cr = sb.table("raw_texts").select("id", count="exact").not_.is_("context_extracted_at", "null").eq("status", "validated").limit(1).execute()
+        ctx_extracted = cr.count
+    except: pass
+    
+    nlp_ready = 0
+    try:
+        nr = sb.table("raw_texts").select("id", count="exact").not_.is_("nlp_ready_at", "null").limit(1).execute()
+        nlp_ready = nr.count
+    except: pass
+    
+    logger.info(f"  Entity Resolved : {ent_resolved:>6}")
+    logger.info(f"  Context Built   : {ctx_extracted:>6}")
+    logger.info(f"  NLP Ready       : {nlp_ready:>6}")
+    
+    # Entity Resolution version breakdown
+    try:
+        rv_res = sb.table("raw_texts").select("resolver_version").not_.is_("entity_resolved_at", "null").limit(500).execute()
+        rv_dist = Counter(r.get("resolver_version", "unknown") for r in (rv_res.data or []))
+        if rv_dist:
+            logger.info(f"  Resolver Versions (sample 500):")
+            for v, c in rv_dist.most_common(5):
+                logger.info(f"    {v or 'unknown':30s}: {c}")
+    except: pass
+    
+    # 7. CONTENT TYPE x STATUS CROSS-TAB
+    logger.info("\n--- [ CONTENT TYPE x STATUS ] ---")
+    for ct in ['FULLTEXT', 'SNIPPET']:
+        for st in ['validated', 'queued', 'processed', 'failed', 'skipped']:
+            try:
+                r = sb.table("raw_texts").select("id", count="exact").eq("content_type", ct).eq("status", st).limit(1).execute()
+                if r.count > 0:
+                    logger.info(f"  {ct:8s} + {st:12s}: {r.count:>6}")
+            except: pass
+    
+    # 8. DATASET EXPORT POTENTIAL
+    logger.info("\n--- [ DATASET EXPORT POTENTIAL ] ---")
+    # Articles with: context + sentiment → ready for dataset
+    try:
+        # Count contexts with sentiment
+        ctx_total = get_count(sb, "entity_contexts")
+        
+        # Count scores (targeted + fallback)
+        scores_targeted = get_count(sb, "sentiment_scores")  # all scores
+        
+        # Scores with entity_id
+        scores_with_ent = 0
+        try:
+            se = sb.table("sentiment_scores").select("id", count="exact").not_.is_("entity_id", "null").limit(1).execute()
+            scores_with_ent = se.count
+        except: pass
+        
+        # Scores without entity_id (fallback)
+        scores_fallback = scores_targeted - scores_with_ent
+        
+        logger.info(f"  Entity Contexts     : {ctx_total:>6}")
+        logger.info(f"  Sentiment Scores    : {scores_targeted:>6}")
+        logger.info(f"    - Targeted (ent)  : {scores_with_ent:>6}")
+        logger.info(f"    - Fallback (gen)  : {scores_fallback:>6}")
+        logger.info(f"  Est. Dataset Rows   : {min(ctx_total, scores_targeted):>6}  <-- Max possible export")
+    except: pass
+    
+    # 9. GNEWS RESOLVER POTENTIAL
+    logger.info("\n--- [ GNEWS RESOLVER POTENTIAL ] ---")
+    snippet_pending = 0
+    snippet_failed = 0
+    snippet_skipped = 0
+    try:
+        r = sb.table("raw_texts").select("id", count="exact").eq("content_type", "SNIPPET").eq("status", "pending").limit(1).execute()
+        snippet_pending = r.count
+    except: pass
+    try:
+        r = sb.table("raw_texts").select("id", count="exact").eq("content_type", "SNIPPET").eq("status", "failed").limit(1).execute()
+        snippet_failed = r.count
+    except: pass
+    try:
+        r = sb.table("raw_texts").select("id", count="exact").eq("content_type", "SNIPPET").eq("status", "skipped").limit(1).execute()
+        snippet_skipped = r.count
+    except: pass
+    
+    logger.info(f"  Snippet Pending   : {snippet_pending:>6}  <-- Siap di-resolve")
+    logger.info(f"  Snippet Failed    : {snippet_failed:>6}  <-- Bisa di-reset untuk retry")
+    logger.info(f"  Snippet Skipped   : {snippet_skipped:>6}  <-- Bisa di-reset untuk retry")
+    logger.info(f"  Total Resolvable  : {snippet_pending + snippet_failed + snippet_skipped:>6}")
+    
     logger.info("\n" + "=" * 50 + "\n")
 
 if __name__ == "__main__":

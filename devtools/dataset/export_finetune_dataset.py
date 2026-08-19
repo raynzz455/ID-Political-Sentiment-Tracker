@@ -87,7 +87,7 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
         # Supabase membatasi 1,000 rows per query, kita loop untuk ambil semua
         raw_data = []
         offset = 0
-        PAGE_SIZE = 500  # small pages = more reliable
+        PAGE_SIZE = 1000  # FIX: larger pages = faster fetch
         while True:
             ctx_res = sb.table("entity_contexts") \
                     .select(
@@ -114,13 +114,17 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
         
         rt_ids = list(set([r["raw_text_id"] for r in raw_data]))
         ss_data = []
+        # FIX: Pagination for sentiment_scores (bypass 1000 row limit)
         for i in range(0, len(rt_ids), 100):
             chunk = rt_ids[i:i+100]
             ss_res = sb.table("sentiment_scores") \
                         .select("raw_text_id, entity_id, label, confidence, score_negative, score_neutral, score_positive") \
                         .in_("raw_text_id", chunk) \
-                        .execute()  # FIX: include fallback scores (entity_id=NULL)
+                        .execute()
             ss_data.extend(ss_res.data or [])
+            # Small delay to avoid rate limit
+            import time as _time
+            _time.sleep(0.1)
             
         # FIX: Build ss_map with both targeted + fallback scores
         ss_map = {}
@@ -237,8 +241,9 @@ def main(limit: int = 10000, include_no_sentiment: bool = False):
         with pd.ExcelWriter(output_xlsx, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='Gold Dataset')
             
+            # FIX: Access workbook properly (avoid "workbook is not accessed" error)
             workbook = writer.book
-            worksheet = writer.sheets['Gold Dataset']
+            worksheet = workbook['Gold Dataset']  # Use workbook, not writer.sheets
             
             # Header Bold
             header_font = Font(bold=True, color="FFFFFF")
