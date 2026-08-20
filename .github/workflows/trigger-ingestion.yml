@@ -12,13 +12,42 @@ jobs:
     name: Trigger RSS Deno
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Supabase Edge Function
+      - name: Trigger Supabase Edge Function (with retry)
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          EDGE_FUNCTION_URL: ${{ secrets.SUPABASE_EDGE_FUNCTION_URL }}
         run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --request POST \
-          --header "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
-          --header "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
-          "${{ secrets.SUPABASE_EDGE_FUNCTION_URL }}")
-          if [ "$HTTP_STATUS" -ne 200 ]; then exit 1; fi
+          MAX_RETRIES=3
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "Attempt $attempt/$MAX_RETRIES..."
+            HTTP_STATUS=$(curl -s -o /tmp/rss_response.txt -w "%{http_code}" \
+              --request POST \
+              --header "Authorization: Bearer $SUPABASE_ANON_KEY" \
+              --header "x-cron-secret: $CRON_SECRET" \
+              --max-time 30 \
+              "$EDGE_FUNCTION_URL")
+            
+            echo "HTTP Status: $HTTP_STATUS"
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "✅ RSS Deno triggered successfully"
+              exit 0
+            fi
+            
+            echo "⚠️ Failed (HTTP $HTTP_STATUS). Response:"
+            cat /tmp/rss_response.txt 2>/dev/null || echo "(no response body)"
+            
+            if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+              WAIT=$((attempt * 10))
+              echo "Waiting ${WAIT}s before retry..."
+              sleep $WAIT
+            fi
+          done
+          
+          echo "❌ RSS Deno failed after $MAX_RETRIES attempts"
+          echo "This is non-blocking — GNews/DDG fetcher will still run"
+          exit 0  # Don't fail the whole workflow
 
   run-fetchers:
     name: Run GNews & DDG Fetcher
