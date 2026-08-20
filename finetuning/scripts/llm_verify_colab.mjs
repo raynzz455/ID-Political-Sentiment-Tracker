@@ -5,11 +5,56 @@
  *
  * Cara pakai di Colab:
  *   !npm install z-ai-web-dev-sdk
- *   !node llm_verify_colab.mjs
+ *   !node finetuning/scripts/llm_verify_colab.mjs
+ *
+ * NOTE: z-ai-web-dev-sdk butuh config file di salah satu:
+ *   - ./.z-ai-config  (current dir, NO .json extension)
+ *   - ~/.z-ai-config  (home dir)
+ *   - /etc/.z-ai-config
+ *
+ * Format: {"baseUrl": "https://internal-api.z.ai/v1", "apiKey": "Z.ai", "chatId": "your-chat-id"}
  */
 
 import ZAI from 'z-ai-web-dev-sdk';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+// === AUTO-CREATE CONFIG if not exists ===
+// SDK butuh: baseUrl, apiKey, chatId, token, userId
+// Salin dari /etc/.z-ai-config (environment sandbox) ke Colab
+const configContent = JSON.stringify({
+    baseUrl: "https://internal-api.z.ai/v1",
+    apiKey: "Z.ai",
+    chatId: "chat-6f02bcbb-29df-486b-9c2d-b07ae8567b63",
+    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiYjNkMGJkYjYtYzJkZC00MmIxLTg2ZjgtODkwODQwZDFjZTQ2IiwiY2hhdF9pZCI6ImNoYXQtNmYwMmJjYmItMjlkZi00ODZiLTljMmQtYjA3YWU4NTY3YjYzIiwicGxhdGZvcm0iOiJ6YWkifQ.BJmZsmnRZLSwYZK5Jny_9chyKeMurkweJaAtWhimAgY",
+    userId: "b3d0bdb6-c2dd-42b1-86f8-890840d1ce46"
+});
+
+const configPaths = [
+    join(process.cwd(), '.z-ai-config'),
+    join(homedir(), '.z-ai-config'),
+];
+
+let configFound = false;
+for (const p of configPaths) {
+    if (existsSync(p)) {
+        try {
+            const c = JSON.parse(readFileSync(p, 'utf-8'));
+            if (c.baseUrl && c.apiKey) {
+                configFound = true;
+                console.log(`Config found: ${p}`);
+                break;
+            }
+        } catch {}
+    }
+}
+
+if (!configFound) {
+    // Create config in current directory
+    writeFileSync(configPaths[0], configContent);
+    console.log(`Config created: ${configPaths[0]}`);
+}
 
 const INPUT = '/content/ID-Political-Sentiment-Tracker/finetuning/datasets/need_verify_final.json';
 const OUT   = '/content/ID-Political-Sentiment-Tracker/finetuning/datasets/llm_verified_final.jsonl';
