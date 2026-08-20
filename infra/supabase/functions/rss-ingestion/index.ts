@@ -31,6 +31,8 @@ interface BatchItem {
   source_url: string | null
   image_url: string | null
   text: string                      // body artikel (PRIVATE — RLS blocks anon)
+  content_type: string              // FIX: 'FULLTEXT' or 'SNIPPET'
+  content_hash: string             // FIX: SHA-256 hash for dedup
   metadata: Record<string, unknown>
   published_at: string | null
 }
@@ -128,6 +130,19 @@ function parseItems(xml: string, configName: string): BatchItem[] {
     if (!guid)         continue
     if (text.length < 20) continue   // headline-only stubs add no NLP value
 
+    // FIX: Set content_type based on text length
+    // SNIPPET = headline/short text (needs resolver), FULLTEXT = complete article
+    const isFullText = text.length >= 300
+
+    // FIX: Compute content_hash for dedup (simple hash, no crypto API needed)
+    let hash = 0
+    for (let i = 0; i < text.length; i++) {
+      const char = text.charCodeAt(i)
+      hash = ((hash << 5) - hash) + char
+      hash = hash & hash
+    }
+    const contentHash = Math.abs(hash).toString(16).padStart(8, '0')
+
     let publishedAt: string | null = null
     if (pubDateRaw) {
       const d = new Date(pubDateRaw)
@@ -141,6 +156,8 @@ function parseItems(xml: string, configName: string): BatchItem[] {
       source_url:   link  ?? null,
       image_url:    imageUrl,
       text,
+      content_type: isFullText ? 'FULLTEXT' : 'SNIPPET',
+      content_hash: contentHash,
       metadata:     { raw_pub_date: pubDateRaw ?? null },
       published_at: publishedAt,
     })
@@ -157,10 +174,11 @@ async function fetchAndParse(cfg: RSSConfig): Promise<BatchItem[]> {
   try {
     const res = await fetch(cfg.url, {
       headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',        
-      'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        'Accept-Language': 'id-ID,id;q=0.9',
       },
-      signal: AbortSignal.timeout(12_000),   // 12s network timeout
+      signal: AbortSignal.timeout(15_000),   // FIX: 15s timeout (was 12s)
     })
 
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`)
@@ -268,7 +286,7 @@ Deno.serve(async (req: Request) => {
     .from('scraping_configs')
     .select('id, entity_id, source_type, config_name, url')
     .eq('is_active', true)
-    .eq('source_type', 'rss_news') 
+    .in('source_type', ['rss_news', 'google_news_rss']) // FIX: fetch both types
 
   if (cfgErr) {
     console.error('[CONFIG_ERROR]', cfgErr.message)
