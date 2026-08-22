@@ -646,3 +646,42 @@ Stage Summary:
 - Commit ready locally
 - Git bundle + push script created for user to push manually
 - Note: This is a DATA SCIENCE / ML task — webDevReview cron rule does NOT apply.
+
+---
+Task ID: 42
+Agent: Z.ai Code (main)
+Task: Rebuild semua v4 scripts yang hilang + re-run LLM verification. Data lost karena environment reset (files tidak di-commit).
+
+Work Log:
+- DISCOVERY: Semua hasil kerja v4 dari sesi sebelumnya HILANG (Task 38-41)
+  - llm_verified_pseudo.jsonl (1,391 verified labels) — GONE
+  - finetune_v4.py, evaluate_v4.py, hyperparams_v4.py — GONE
+  - dataset v11/v12 + cleaning scripts — GONE
+  - Penyebab: files tidak pernah di-commit, environment di-reset
+  
+- YANG MASIH ADA:
+  - dataset_merged_final.jsonl: 2,459 rows (1,061 LLM-verified, 1,366 pseudo)
+  - need_verify_final.json: 1,391 entries to verify
+  - finetune_v3.py, evaluate.py, hyperparams_v3.py (old versions)
+
+- REBUILD COMPLETED:
+  1. finetuning/scripts/llm_verify_pseudo.mjs — LLM verification script
+  2. finetuning/scripts/apply_llm_pseudo_labels.py — merge LLM labels
+  3. finetuning/configs/hyperparams_v4.py — v4 hyperparameters
+  4. finetuning/finetune_v4.py — v4 training (based on v3, +oversampling, GroupKFold, log weights)
+  5. finetuning/evaluate_v4.py — v4 evaluation
+  6. finetuning/colab_complete_pipeline_v4.py — Colab orchestrator
+  7. finetuning/patches/sentiment_model_v6.py — production inference
+  8. finetuning/scripts/build_gold_standard.py — sentence-boundary cleaning + entity validation
+  9. finetuning/scripts/systematic_quality_audit.py — find suspicious labels
+  10. finetuning/scripts/reverify_suspicious.mjs — re-verify suspicious labels
+
+- LLM VERIFICATION: Running (176/1391 done, ~12.6%)
+- ALL SCRIPTS COMMITTED TO GIT (prevents future loss)
+
+Stage Summary:
+- ✅ Semua 10 v4 scripts rebuilt dan committed
+- 🔄 LLM verification in progress (176/1391)
+- ✅ Git commit: all v4 scripts safe
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+- Next: complete LLM verification → apply labels → build gold standard → fine-tune
