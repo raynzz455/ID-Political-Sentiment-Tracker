@@ -87,7 +87,7 @@ np.random.seed(H.SEED)
 # ---------------------------------------------------------------------------
 TASK_CFG = {
     "relevancy": {
-        "data_file": "dataset_gold_standard.jsonl",
+        "data_file": "dataset_gold_standard_final.jsonl",
         "label_field": "gold_relevancy",
         "text_field": "text",
         "entity_field": "entity_name",
@@ -99,7 +99,7 @@ TASK_CFG = {
         "oversample": False,
     },
     "sentiment": {
-        "data_file": "dataset_gold_standard.jsonl",
+        "data_file": "dataset_gold_standard_final.jsonl",
         "label_field": "label",
         "text_field": "text",
         "entity_field": "entity_name",

@@ -28,8 +28,8 @@ from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classifi
 import hyperparams_v4 as H
 
 TASK_CFG = {
-    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_gold_standard.jsonl"},
-    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_gold_standard.jsonl"},
+    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_gold_standard_final.jsonl"},
+    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_gold_standard_final.jsonl"},
 }
 
 def load_jsonl(p):

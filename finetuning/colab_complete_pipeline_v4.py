@@ -18,7 +18,7 @@ REPO_DIR = "/content/ID-Political-Sentiment-Tracker"
 HF_TOKEN_ENV = "HF_TOKEN"
 HF_MODEL_SENTIMENT = "raynzz455/id-political-sentiment-sentiment-v4"
 HF_MODEL_RELEVANCY = "raynzz455/id-political-sentiment-relevancy-v4"
-DATASET = "dataset_gold_standard.jsonl"
+DATASET = "dataset_gold_standard_final.jsonl"
 K_FOLD = 5
 
 def run(cmd, cwd=None, check=True):
