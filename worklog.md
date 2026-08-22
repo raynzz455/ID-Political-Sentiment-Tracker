@@ -685,3 +685,67 @@ Stage Summary:
 - ✅ Git commit: all v4 scripts safe
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
 - Next: complete LLM verification → apply labels → build gold standard → fine-tune
+
+---
+Task ID: 43
+Agent: Z.ai Code (main)
+Task: Lanjutkan proses yang tertunda — apply LLM labels, build gold standard, re-verify, finalize.
+
+Work Log:
+- DISCOVERY: Verifikasi LLM dari sesi kemarin TERNYATA SUDAH SELESAI (1391/1391)
+  - llm_verified_pseudo.jsonl: 1391 entries
+  - 152 labels flipped (10.9% correction rate)
+  - Label dist: neutral 975, positive 307, negative 109
+
+- Step 1: Apply LLM labels ke dataset (apply_llm_pseudo_labels.py)
+  - Input: dataset_merged_final.jsonl (2459 rows)
+  - Applied: 1391 labels, 152 flipped
+  - Output: dataset_v10_final.jsonl (2459 rows, 0 pseudo-labels)
+  - Verified: 2427/2459 (98.7%)
+
+- Step 2: Build gold standard (build_gold_standard.py)
+  - Sentence-boundary cleaning + entity validation
+  - Input: 2459 rows → Output: 2412 rows (98.1% kept)
+  - Removed: 34 entity_not_found, 13 too_short
+  - Match types: 2078 full_match, 213 context_fallback, 58 first_name, 48 last_name
+
+- Step 3: Systematic audit (systematic_quality_audit.py)
+  - Found 597 suspicious rows (low confidence, era context, label mismatch)
+
+- Step 4: Re-verification LLM (reverify_suspicious.mjs)
+  - 3 runs foreground orphan pattern
+  - 597/597 completed (100%)
+  - 59 labels flipped (9.9%)
+  - 48 entity NOT main subject (8.0%)
+  - Changes: neg→neu 27, pos→neu 20, neu→neg 6, neu→pos 4, neg→pos 2
+
+- Step 5: Build gold standard FINAL (apply_reverified_labels.py)
+  - Apply 49 label corrections
+  - Remove 48 rows (entity not main subject)
+  - Output: dataset_gold_standard_final.jsonl (2,364 rows, 98.0% kept)
+  - Label dist: neutral 72.3%, positive 20.6%, negative 7.1%
+  - 98.8% LLM-verified, 77.6% high confidence
+
+- Step 6: EDA (eda_gold_standard.py)
+  - 114 unique entities, 270 source domains
+  - p95 tokens=94 → MAX_SEQ_LENGTH=256 sufficient
+  - 61 duplicate texts (minor, can be deduped in training)
+  - Top entity: Prabowo Subianto (417 samples, 17.7%)
+
+- Step 7: Updated all v4 scripts to use dataset_gold_standard_final.jsonl
+
+Stage Summary:
+- ✅ COMPLETE PIPELINE: LLM verify → apply → clean → audit → reverify → finalize
+- ✅ Final dataset: dataset_gold_standard_final.jsonl (2,364 rows, production-ready)
+- ✅ All scripts committed to git (prevents future loss)
+- ✅ Ready for fine-tuning experiment
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+- User next: run fine-tuning v4 + hyperparameter experiment di Colab
+
+FILES READY FOR FINETUNING:
+  finetune_v4.py (oversampling, entity-aware K-fold, log class weights, focal gamma=3.0)
+  evaluate_v4.py (ECE, confidence sweep, per-class analysis)
+  colab_complete_pipeline_v4.py (7-step Colab orchestrator)
+  configs/hyperparams_v4.py (tuned for gold standard)
+  patches/sentiment_model_v6.py (production inference)
+  datasets/dataset_gold_standard_final.jsonl (2,364 rows, 98.8% LLM-verified)
