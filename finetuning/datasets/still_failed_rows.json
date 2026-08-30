@@ -1,0 +1,604 @@
+[
+  {
+    "row_index": 1509,
+    "entity_name": "Joko Widodo",
+    "text": "Jokowi menang, dan meminta Khofifah untuk menjadi menteri sosial pada kabinet Kerja 2014-2019.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 1556,
+    "entity_name": "Abdurrahman Wahid",
+    "text": "SBY resmi pensiun dini sebagai Pati TNI AD pada tahun 2001 karena ditunjuk menjadi Menteri Pertambangan dan Energi (Mentamben) di pemerintahan Presiden KH Abdurrahman Wahid atau Gus Dur.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2000,
+    "entity_name": "Sufmi Dasco Ahmad",
+    "text": "Dan empat lainnya, wakil ketua, adalah Sufmi Dasco Ahmad (Gerindra), Saan Mustopa (NasDem), Cucun Ahmad Syamsurijal (PKB), dan Sari Yuliati (Golkar). \"Saya tanya kepada pimpinan DPR, apakah Panja itu berkenan dibentuk saat ini atau kami harus menunggu momentum politik dan momentum legislasi yang kami tentu taat kepada tata tertib dan mekanisme yang ada di DPR?\" Kata Rifqi dalam diskusi di kampus UIN Jakarta, Selasa 7 Juli 2026.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2001,
+    "entity_name": "Bobby Nasution",
+    "text": "Gubernur Sumatera Utara (Sumut) Muhammad Bobby Afif Nasution menjajaki kerja sama pengolahan sampah menjadi energi listrik (PSEL) dengan Finlandia. Kerja sama tersebut diharapkan dapat mendukung pengelolaan sampah, sekaligus memperkuat pasokan energi listrik di berbagai wilayah Sumut, termasuk daerah terpencil.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2002,
+    "entity_name": "Mahfud MD",
+    "text": "Pakar Hukum Tata Negara, Mahfud MD, mengkritik langkah Korps Pemberantasan Tindak Pidana Korupsi (Kortas Tipikor) Polri yang menyerahkan kelanjutan penyidikan kasus dugaan korupsi mantan Jampidsus Febrie Adriansyah ke Kejaksaan Agung (Kejagung). Mahfud menilai mekanisme pengalihan penyidikan tersebut cacat hukum karena tidak dikenal dan tidak dibenarkan dalam Kitab Undang-Undang Hukum Acara Pidana (KUHAP). Mahfud mengaku awalnya sempat terkecoh saat mendengar informasi konferensi pers pada Sabtu, 11 Juli 2026.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2003,
+    "entity_name": "Gibran Rakabuming Raka",
+    "text": "Bupati Siak Afni Zulkifli mengadukan persoalan Dana Bagi Hasil (DBH) kepada Wakil Presiden Gibran Rakabuming Raka. Ia mengungkapkan kondisi keuangan Kabupaten Siak yang tengah tertekan lantaran mewarisi utang daerah hampir Rp400 miliar.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2004,
+    "entity_name": "Refly Harun",
+    "text": "dak didasari oleh izin dari Ketua Pengadilan Negeri setempat yang berwenang,\" kata kuasa hukum Roy, Refly Harun saat membacakan petitum di sidang praperadilan di PN Jaksel, Senin (29/6).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2005,
+    "entity_name": "Susilo Bambang Yudhoyono",
+    "text": "Jika diperlukan adanya perbaikan, yang mana surat itu harus ditandatangani Ketua Umum Partai Demokrat Susilo Bambang Yudhoyono, maka akan menindaklanjutinya.\"Kalau surat itu dianggap melanggar aturan akan kita benarkan, kalau (perlu tanda tangan) ketum ya nanti akan diganti dengan benar,\" tegas Pasek.Fungsi parpol, lanjut Ketua Fraksi Partai Demokrat itu adalah salah satunya menertibkan anggotanya.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2006,
+    "entity_name": "Nasaruddin Umar",
+    "text": "Kemudian mencuat pula nama Menteri Agama Nasaruddin Umar, pengasuh Pondok Pesantren Mamba'ul Ma'arif, Abdussalam Shohib, serta pengasuh Pondok Pesantren Asrama Perguruan Islam Tegalrejo, Muhammad Yusuf Chudlori. Laporan Tempo berjudul \"Timang-timang Calon Ketua PBNU\" yang terbit pada 23 Juni 2026 menyebut beberapa di antara nama itu sudah menyatakan kesediaan secara terbuka untuk ikut berkontestasi dalam pemilihan Ketua Umum PBNU. Bahkan mereka sudah bergerilya untuk meraih dukungan dari pengurus wilayah dan pengurus cabang Nahdlatul Ulama.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2007,
+    "entity_name": "Muhaimin Iskandar",
+    "text": "Menko Pemberdayaan Masyarakat sekaligus Ketum PKB, Muhaimin Iskandar alias Cak Imin, mengungkapkan Indonesia harus bersiap diri dalam menghadapi situasi global saat ini. \"Dengan situasi perang, kita harus bersiap diri,\" kata Cak Imin usai menghadiri pertemuan dengan Presiden Prabowo Subianto di Istana Kepresidenan, Jakarta, Selasa (3/3). Cak Imin optimis, dengan kondisi saat ini, Indonesia siap menghadapi gejolak geopolitik yang terjadi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2008,
+    "entity_name": "Khofifah Indar Parawansa",
+    "text": "UNAIR NEWS - Ketua Ikatan Keluarga Alumni (IKA) Universitas Airlangga (UNAIR), Dr (HCUA) Khofifah Indar Parawansa kembali terpilih sebagai Gubernur Jawa Timur. Sebelumnya, Alumnus Fakultas Ilmu Sosial dan Ilmu Politik (FISIP) UNAIR itu menjabat sebagai Gubernur Jawa Timur periode 2019-2024.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2009,
+    "entity_name": "Gibran Rakabuming Raka",
+    "text": "Wakil Presiden RI Gibran Rakabuming Raka meninjau langsung Sekolah Dasar Negeri (SDN) Wolomoni di Desa Niowula, Kecamatan Detusoko, Kabupaten Ende, Nusa Tenggara Timur (NTT), Kamis (18/6). Kunjungan ini dilakukan setelah sekolah tersebut viral terkait rencana penggunaan lahannya untuk pembangunan Koperasi Desa Merah Putih (KDMP). Selama berada di lokasi, Gibran berkeliling melihat kondisi sekolah, menyapa guru, siswa, tokoh adat, serta warga setempat.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2010,
+    "entity_name": "Tito Karnavian",
+    "text": "Kasatgas Tito Karnavian, dalam berbagai kesempatan aktif mendorong seluruh pihak, dari kementerian hingga pemerintah daerah agar bekerja cepat dan tanggap, sehingga penyintas bencana bisa merasakan manfaatnya.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2013,
+    "entity_name": "Prabowo Subianto",
+    "text": "Pengamat politik Adi Prayitno menilai pernyataan Presiden Prabowo Subianto yang mengaku kalah dalam empat pemilu presiden namun tak pernah ikut campur dalam pemerintahan terpilih, merupakan pesan politik untuk meredam tensi politik sekaligus mengajak seluruh elemen bangsa menjaga stabilitas. Pernyataan tersebut disampaikan Prabowo saat memberikan pengarahan pada Sarasehan Nasional yang diikuti 2.600 rektor, dekan, dan dosen perguruan tinggi negeri dan swasta se-Indonesia di Jakarta Convention Center, Jumat, 26 Juni 2026.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2014,
+    "entity_name": "Bima Arya Sugiarto",
+    "text": "Medan, VIVA - Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya Sugiarto menegaskan, Festival Karnaval Budaya Nusantara dan Pentas Seni mencerminkan kuatnya semangat kolaborasi antarkota di Indonesia. Hal tersebut tercermin dari partisipasi 55 kota yang mengikuti parade budaya pada Festival Karnaval Budaya Nusantara dan Pentas Seni bertema The Sparkling of Local Heroes and Culture: Menampilkan Ketangguhan Pahlawan Lokal dan Keindahan Nilai-Nilai Budaya agar Terlihat Memukau di Mata Dunia.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2015,
+    "entity_name": "Joko Widodo",
+    "text": "Selain faktor militer dan senior, kiprah serta kinerja seseorang dalam masa kampanye Pemilihan Presiden (Pilpres) 2019 dinilainya bakal menjadi sisi plus di mata Presiden terpilih Joko.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2017,
+    "entity_name": "Dedi Mulyadi",
+    "text": "Sebelum diringkus jajaran Polda Jawa Barat di Majalaya, Taufik ternyata sempat mendatangi Gedung Pakuan, rumah dinas Gubernur Jawa Barat Dedi Mulyadi, untuk meminta bertemu langsung. Pengakuan tersebut disampaikan Dedi Mulyadi usai menjenguk YTR di Rumah Sakit Hasan Sadikin (RSHS) Bandung, Senin (29/6/2026) sore.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2019,
+    "entity_name": "Budi Gunadi Sadikin",
+    "text": "Menteri Kesehatan Budi Gunadi Sadikin memberikan penjelasan jaminan kesehatan nasional saat rapat kerja dengan Komisi IX DPR RI, Rabu (11/2/2026). Menteri Kesehatan (Menkes) Budi Gunadi Sadikin mengungkapkan korban perempuan penyekapan di Bandung, Jawa Barat kini menjalani perawatan intensif di Rumah Sakit Hasan Sadikin (RSHS) Bandung.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2021,
+    "entity_name": "Hasto Kristiyanto",
+    "text": "seperti Puti Guntur Soekarnoputri dan Romy Soekarno, serta jajaran PDIP seperti Sekretaris Jenderal Hasto Kristiyanto dan Ketua DPP Bintang Puspayoga.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2022,
+    "entity_name": "Prabowo Subianto",
+    "text": "Yusril mengatakan pemerintah tak masalah untuk membahas hal itu, tapi dia mengatakan hingga saat ini belum sempat bertemu dengan Presiden Prabowo Subianto. \"Tidak pernah masalah ini dibahas internal pemerintah, ya,\" kata Yusril dalam tayangan YouTube di channel-nya, Kamis (9/4/2026).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2023,
+    "entity_name": "Surya Paloh",
+    "text": "JAKARTA (21 Februari) Ketua Umum DPP Partai NasDem Surya Paloh resmi melepas Tim Safari Ramadan 1447 H di NasDem Tower, Jakarta, Sabtu (21/2/2026). Kegiatan ini menjadi momentum konsolidasi organisasi sekaligus penguatan silaturahmi antara kader partai dan masyarakat selama bulan suci Ramadan.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2024,
+    "entity_name": "Erick Thohir",
+    "text": "Presiden Prabowo Subianto melantik Erick Thohir menjadi Menteri Pemuda dan Olahraga (Menpora). Ia sebelumnya menjabat sebagai Menteri BUMN.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2025,
+    "entity_name": "Joko Widodo",
+    "text": "Sekjen PAN Eddy Soeparno menceritakan mengenai arah PAN yang sebetulnya ingin bergabung ke koalisi Jokowi-Ma'ruf Amin saat Pilpres 2019 namun dijegal oleh Amien Rais. Cerita Eddy Soeparno ini dinilai sinyal kuat kepastian PAN akan merapat ke Jokowi.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2026,
+    "entity_name": "Puan Maharani",
+    "text": "Anggota Fraksi PDIP (F-PDIP) DPR bangga dengan penganugerahan gelar doktor honoris causa untuk Ketua DPR Puan Maharani. Puluhan anggota Fraksi PDIP DPR bahkan berangkat dengan biaya sendiri untuk menyaksikan momen bersejarah penganugerahan Dr Hc untuk Puan.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2028,
+    "entity_name": "Mahfud MD",
+    "text": "Di antara yang terlihat bersama antara lain Wakil Presiden RI ke-10 dan ke-12 Jusuf Kalla (JK), mantan Gubernur DKI Jakarta Anies Baswedan, mantan Menko Polhukam Mahfud MD, putra Presiden Prabowo Subianto Didit Hediprasetyo, mantan Ketua Mahkamah Konstitusi Jimly Asshiddiqie, serta Suharso Monoarfa. Momen kebersamaan itu kemudian diabadikan dalam foto bersama seusai pelaksanaan Salat Id. Para tokoh tersebut tampak berinteraksi hangat setelah rangkaian ibadah selesai.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2029,
+    "entity_name": "Susilo Bambang Yudhoyono",
+    "text": "Namun, sebuah organisasi yang dikenal sebagai Pengusaha Indonesia Muda melaporkan Ahok ke Bareskrim Mabes Polri karena diduga telah melecehkan Ma'ruf dan menyadap percakapan teleponnya dengan mantan Presiden SBY, meskipun penolakan sebelumnya oleh tim kuasa hukum Ahok dari tuduhan tersebut.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2030,
+    "entity_name": "Fadli Zon",
+    "text": "Menteri Kebudayaan RI Fadli Zon mengejar golf car yang ditumpangi Presiden RI Prabowo Subianto dan Perdana Menteri India Narendra Modi. Momen Sekretaris Kabinet Teddy Indra Wijaya mengemudikan mobil golf yang ditumpangi Presiden Prabowo Subianto dan Perdana Menteri India Narendra Modi di Candi Prambanan menjadi sorotan publik. Pasalnya, di saat yang sama Menteri Kebudayaan Fadli Zon tampak berjalan kaki mengikuti rombongan.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2031,
+    "entity_name": "Luhut Binsar Panjaitan",
+    "text": "Dia datang hampir bersamaan dengan Ketua DEN Luhut Binsar Panjaitan. \"Mau ketemu kan, iya (bertemu Pak Presiden),\" kata Chatib Basri kepada wartawan di Kompleks Istana Kepresidenan Jakarta, Selasa (9/6/2026).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2032,
+    "entity_name": "Amien Rais",
+    "text": "Ketua DPP PAN Bara Hasibuan menyatakan pernyataan Ketua Majelis Pertimbangan Partai Amanat Nasional (MPP PAN) Amien Rais yang membandingkan Jokowi dengan mantan Presiden Filipina, Joseph Estrada adalah pernyataan pribadi.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2033,
+    "entity_name": "Pramono Anung",
+    "text": "JAKARTA, iNews.id - Gubernur DKI Jakarta Pramono Anung mempercepat pembebasan lahan di wilayah Cawang, Jakarta Timur dalam rangka normalisasi Kali Ciliwung. Dia menargetkan 170 bangunan yang terkena proyeknormalisasi rampung dibongkar paling lambat akhir 2026.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2035,
+    "entity_name": "Tito Karnavian",
+    "text": "Ketua Satuan Tugas (Satgas) Percepatan Rehabilitasi dan Rekonstruksi (PRR) Pascabencana Sumatera yang juga Menteri Dalam Negeri, Tito Karnavian, mengatakan skema tersebut tidak hanya memperkuat kapasitas fiskal daerah terdampak, tetapi juga mencerminkan tingginya solidaritas dan semangat gotong royong antardaerah dalam mempercepat proses rehabilitasi dan rekonstruksi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2036,
+    "entity_name": "Prabowo Subianto",
+    "text": "Mahfud MD memberikan apresiasi atas keputusan Presiden Prabowo Subianto melakukan reshuffle lima menteri dalam kabinetnya. Keputusan tersebut dipandang sebagai langkah cepat yang menunjukkan respons pemerintah terhadap dinamika politik dan aspirasi publik setelah demonstrasi besar pada akhir Agustus 2025.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2038,
+    "entity_name": "Bahlil Lahadalia",
+    "text": "Susunan Baru Pengurus, Bahlil Lahadalia Resmi Jadi Ketua Umum Partai Golkar. (Dery Ridwansah/ JawaPos.com) law-justice.co - Ketua Umum Partai Golkar, Bahlil Lahadalia mengumumkan bahwa anak mantan Ketua Umum Airlangga Hartarto, Ravindra Airlangga akan menjadi Wakil Bendahara Partai Golkar.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2040,
+    "entity_name": "Prabowo Subianto",
+    "text": "Pada kesempatan itu, Febrie juga menegaskan bahwa saat ini pihaknya masih melaksanakan tugas-tugas terutama dalam rangka pemberantasan korupsi sesuai dengan perintah Presiden Prabowo Subianto.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2041,
+    "entity_name": "Pramono Anung",
+    "text": "GUBERNUR DKI Jakarta Pramono Anung menyatakan mendukung penuh kegiatan antar anak sekolah oleh aparatur sipil negara (ASN) yang memiliki buah hati. Adapun hari pertama sekolah tahun ajaran baru 2026/2027 di DKI Jakarta dimulai pada Senin, 13 Juli 2026.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2043,
+    "entity_name": "Prabowo Subianto",
+    "text": "Kan pengangkatan ada Keppres, nanti pengundurannya apakah disetujui oleh Pak Presiden (Prabowo Subianto),\" ujarnya.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2044,
+    "entity_name": "Bima Arya Sugiarto",
+    "text": "Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya menaruh harapan besar kepada para delegasi Youth City Changers (YCC) dalam Rakernas XVIII APEKSI 2026. Menurutnya, generasi muda tersebut bukan hanya calon pemimpin masa depan, tetapi sudah saatnya dilibatkan sebagai mitra pembangunan kota sejak sekarang.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2046,
+    "entity_name": "Joko Widodo",
+    "text": "Pernyataan itu disampaikan Ketua Bidang Politik Dewan Pimpinan Pusat (DPP) PSI, Bestari Barus seusai menemui Presiden ke-7 RI, Joko Widodo (Jokowi) di Solo, Jawa Tengah, Senin (13/7/2026). \"Setelah beliau putuskan untuk bergabung PSI kami gembira dan ini kemudian InsyaAllah menjadi tambahan energi bagi PSI di Provinsi Banten,\" katanya.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2047,
+    "entity_name": "Prabowo Subianto",
+    "text": "PRESIDEN Prabowo Subianto menyatakan dirinya pernah melakukan tes genetik. Kata Prabowo, hasilnya menunjukkan dia memiliki DNA India.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2048,
+    "entity_name": "Muhaimin Iskandar",
+    "text": "Ketum Partai Demokrat), Pak Airlangga (Ketum Partai Golkar), sebelumnya ketemu Presiden PKS, ketemu Cak Imin (Ketum PKB), Ketemu Pak Surya Paloh (Ketum NasDem),\" kata RK. RK mengaku pilihan politik itu akan ditentukan sebelum periode kepemimpinannya di Jabar berakhir, atau pada tahun 2023.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2050,
+    "entity_name": "Setya Novanto",
+    "text": "JAKARTA, KOMPAS.com - Mantan Ketua DPR RI Setya Novanto resmi bebas dari Lapas Sukamiskin, Bandung pada 16 Agustus 2025. Dia bebas setelah mendapatkan program pembebasan bersyarat (PB) dari Kementerian Imigrasi dan Pemasyarakatan (Imipas).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2051,
+    "entity_name": "Abdurrahman Wahid",
+    "text": "Pada era Presiden Abdurrahman Wahid alias Gusdur, Jusuf Kalla dicopot dari Menteri Perdagangan dan Perindustrian (Menperin). Ketika Megawati Soekarnoputri menjabat presiden menggantikan Gus Dur, JK kembali diangkat sebagai Menteri Koordinator Kesejahteraan Rakyat (Menko Kesra).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2052,
+    "entity_name": "Joko Widodo",
+    "text": "Juru Bicara Partai Gerindra, Bahtra Banong angkat suara soal safari politik Presiden ketujuh RI, Joko Widodo (Jokowi) ke sejumlah daerah yang telah dimulai di Lampung pada akhir pekan lalu. Bahtra mengatakan partainya saat ini masih fokus mengawal program Presiden Prabowo Subianto yang merupakan ketua umum partainya. Selain fokus mengawal program pemerintah, dia menyebut pemilu juga masih jauh.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2053,
+    "entity_name": "Tito Karnavian",
+    "text": "Karena itu, penyelesaian bendung dan jaringan irigasi harus berjalan paralel agar tidak mengganggu musim tanam masyarakat,\" ujar Imran dalam laporannya kepada Kasatgas PRR Tito Karnavian.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2054,
+    "entity_name": "Puan Maharani",
+    "text": "Kaesang rencananya akan maju lewat Dapil Jateng V yang juga menjadi dapil Ketua DPP PDIP sekaligus Ketua DPR RI Puan Maharani. Dapil itu meliputi sejumlah wilayah keresidenan Surakarta, meliputi Solo, Boyolali, Klaten, dan Sukoharjo.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2055,
+    "entity_name": "Joko Widodo",
+    "text": "Dia menilai Pilpres 2024 berlangsung ketat terutama setelah manuver politik Presiden Joko Widodo (Jokowi) yang bersebrangan dengan PDIP untuk memenangkan Prabowo-Gibran.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2056,
+    "entity_name": "Bima Arya Sugiarto",
+    "text": ", Jakarta - Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya Sugiarto menegaskan, ketangguhan kota perlu dibangun melalui penguatan sistem pangan dan pengelolaan lingkungan hidup berkelanjutan. Kedua sektor tersebut menjadi fondasi penting untuk meningkatkan daya tahan daerah sekaligus mendukung ketahanan nasional. Bima menilai, pemerintah kota memiliki posisi strategis dalam mendukung ketahanan pangan nasional.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2057,
+    "entity_name": "Tito Karnavian",
+    "text": "Selain itu, Mu'ti mengaku telah membicarakan masalah tersebut kepada Mendagri Tito Karnavian. Ia mengatakan akan diadakan rapat khusus membahas fenomena sekolah negeri minim murid tersebut \"Secara nonformal saya sudah menyampaikan masalah menurunnya jumlah murid SD kepada Bapak Mendagri.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2059,
+    "entity_name": "Hasto Kristiyanto",
+    "text": "Surat diteken Sekretaris Jenderal (Sekjen) DPP PDIP Hasto Kristiyanto dan Ketua DPP Bidang Kehormatan Partai Komarudin Watubun tertanggal 22 Juni, perihal Permohonan Data dan Informasi Terkait Program MBG. \"DPP PDI Perjuangan memohon bantuan Saudara untuk memberikan data dan informasi yang diperlukan,\" demikian bunyi surat tersebut.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2060,
+    "entity_name": "Chatib Basri",
+    "text": ", JAKARTA - Nama Muhamad Chatib Basri kembali menjadi sorotan dalam berbagai diskusi ekonomi nasional. Mantan Menteri Keuangan Republik Indonesia itu dikenal sebagai salah satu ekonom paling berpengaruh di Indonesia dengan pengalaman panjang di bidang akademik, pemerintahan, dan lembaga internasional.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2061,
+    "entity_name": "Joko Widodo",
+    "text": "Inilah mengapa Jokowi bakal kesulitan menghadapi trah Soekarno yang membesarkan PDIP. \"Karena di PDIP bukan pemilihan cara menentukan ketum partainya.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2062,
+    "entity_name": "Megawati Soekarnoputri",
+    "text": "JAKARTA, KOMPAS.com - Nama Hasto Kristiyanto kembali ditunjuk Megawati Soekarnoputri sebagai Sekretaris Jenderal Partai Demokrasi Indonesia Perjuangan (PDI-P). Hasto menjadi Sekretaris Jenderal PDI-P untuk periode 2025-2030. Artinya, ia menempati posisi tersebut selama tiga periode.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2063,
+    "entity_name": "Prabowo Subianto",
+    "text": "Eks politikus PDIP Budiman Sudjatmiko buka suara terkait kabar beredar menyebut dirinya mendukung Prabowo Subianto sebagai capres 2024 lantaran berharap bisa mendapat jatah kursi menteri. Ketika ditanya soal harapan tersebut Budiman enggan menjawab dengan pasti.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2064,
+    "entity_name": "Prabowo Subianto",
+    "text": "Partai Golkar merespons pernyataan Ketua Umum PDI Perjuangan Megawati Soekarnoputri soal posisi PDI Perjuangan sebagai partai penyeimbang terhadap koalisi kabinet Merah Putih Presiden Prabowo Subianto. Sekretaris Jenderal Partai Golkar Sarmuji mengatakan partainya tidak mempermasalahkan sikap politik yang diambil PDIP itu.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2065,
+    "entity_name": "Joko Widodo",
+    "text": "Putra sulung Presiden ke-6 RI Susilo Bambang Yudhoyono (SBY) ini dilantik sebagai Menteri ATR oleh Presiden Joko Widodo (Jokowi) di Istana Negara, Jakarta pada 21 Februari 2024. Saat itu, AHY menggantikan Hadi Tjahjanto yang dipercaya menjabat sebagai Menteri Koordinator Bidang Politik, Hukum, dan Keamanan (Menko Polhukam).",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2066,
+    "entity_name": "Prabowo Subianto",
+    "text": "JAKARTA ( Waspada.id ): Presiden Prabowo Subianto menegaskan komitmennya membenahi tata kelola badan usaha milik negara (BUMN) sebagai bagian dari upaya memperkuat perekonomian nasional sekaligus memberantas korupsi. Pemerintah, kata Prabowo, telah mengonsolidasikan lebih dari 1.000 BUMN ke dalam satu dana kekayaan negara ( sovereign wealth fund ) yang nilainya mencapai US$ 1 triliun atau sekitar Rp18.000 triliun.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2067,
+    "entity_name": "Khofifah Indar Parawansa",
+    "text": "Gubernur Jawa Timur Khofifah Indar Parawansa menegaskan seluruh tahapan penjaringan dilakukan secara bertahap dengan melibatkan sumber daya manusia Program Keluarga Harapan (PKH) bersama Dinas Sosial kabupaten/kota. Langkah itu ditempuh untuk memastikan kuota peserta didik, terutama di 18 Sekolah Rakyat permanen, dapat terpenuhi sesuai target. Menurut Khofifah, pendampingan kepada calon siswa dan keluarga tidak hanya menyangkut kelengkapan administrasi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2069,
+    "entity_name": "Megawati Soekarnoputri",
+    "text": "\"Inilah yang diingatkan oleh Ibu Megawati Soekarnoputri, khususnya kepada para pemuda Indonesia, agar membangun semangat kepemimpinan itu.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2071,
+    "entity_name": "Joko Widodo",
+    "text": "Tersangka kasus tudingan ijazah palsu Presiden ke-7 RI Joko Widodo, KMRT Roy Suryo Notodiprojo, mengucapkan terima kasih kepada hakim tunggal Pengadilan Negeri (PN) Jakarta Selatan, I Ketut Darpawan, yang mengabulkan sebagian permohonan Praperadilannya. \"Kami ingin menghaturkan terima kasih atas kebijakan yang luar biasa, pertimbangan kepada hakim tunggal ya, kalau tidak salah namanya Pak Ketut ya, kalau tidak salah. Terima kasih, matur suksma Pak Ketut atas pertimbangannya yang sangat luar biasa,\" ujar Roy di PN Jakarta Selatan, Selasa (7/7).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2072,
+    "entity_name": "Budi Gunadi Sadikin",
+    "text": "Namun, Menteri Kesehatan Budi Gunadi Sadikin mengingatkan bahwa tidak semua produk yoghurt memberikan manfaat kesehatan yang sama, tergantung pada jenis dan kandungan nutrisi di dalamnya. Hal itu diungkapkan Budi dalam unggahan video di akun Instagramnya.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2073,
+    "entity_name": "Joko Widodo",
+    "text": "Ketua Majelis Pertimbangan Partai (MPP) PPP, M Romahurmuziy, mengungkap ciri khas permainan politik Presiden Joko Widodo (Jokowi). Menurut Rommy, ciri khas permainan politik Jokowi ada tiga.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2075,
+    "entity_name": "Khofifah Indar Parawansa",
+    "text": "Gubernur Jawa Timur Khofifah Indar Parawansa melakukan mutasi jabatan Eselon II Pemprov Jatim di Gedung Negara Grahadi, Selasa (14/7) sore. Ada sebanyak 6 pejabat yang dimutasi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2076,
+    "entity_name": "Joko Widodo",
+    "text": "Namun Puan melepas kursi di DPR karena dipilih Presiden Joko Widodo untuk menjabat sebagai Menteri Koordinator Bidang Pembangunan Manusia dan Kebudayaan (Menko PMK).",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2077,
+    "entity_name": "Hasto Kristiyanto",
+    "text": "Sekjen PDIP Hasto Kristiyanto mengklaim ada kekuatan besar yang membuat dirinya dijerat hukum dalam kasus pengurusan suap PAW anggota DPR periode 2019-2024 Harun Masiku. Majelis hakim Pengadilan Tipikor Jakarta mengatakan dalil Hasto perihal kekuatan besar itu tidak jelas. Hal tersebut disampaikan hakim dalam pertimbangan putusan terhadap Hasto Kristiyanto di Pengadilan Tipikor Jakarta, Jumat (25/7/2025).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2080,
+    "entity_name": "Prabowo Subianto",
+    "text": "Di sisi lain, Prabowo menegaskan bahwa Indonesia justru semakin mendapat pengakuan internasional. Prabowo mengaku terkejut karena banyak tokoh dunia menyoroti keberhasilan Indonesia menjaga stabilitas ekonomi tanpa menaikkan harga BBM bersubsidi di tengah lonjakan harga minyak dunia akibat perang. \"Saya kaget sendiri tokoh-tokoh dunia membicarakan Indonesia.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2081,
+    "entity_name": "Joko Widodo",
+    "text": "Mantan politikus senior Partai Amanat Nasional (PAN) Amien Rais, mengaku menangkap sinyal politik atau skenario yang mengarah agar Presiden Joko Widodo kembali terpilih hingga tiga periode. Menurutnya, ada manuver politik yang dilakukan pemerintah saat ini untuk mengamankan semua lembaga negara, mulai dari DPR, MPR, DPD, maupun lembaga negara lain.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2083,
+    "entity_name": "Prabowo Subianto",
+    "text": "Pembangunan SMA Unggul Garuda Baru merupakan bagian dari program andalan alias Program Hasil Terbaik Cepat (PHTC) Presiden Prabowo Subianto.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2084,
+    "entity_name": "Prabowo Subianto",
+    "text": "PRESIDEN Prabowo Subianto dan Presiden Alexander Lukashenko meluncurkan Peta Jalan Kerja Sama Bilateral Indonesia-Belarus 2026-2030. Dokumen tersebut diumumkan seusai pertemuan kedua pemimpin di Istana Kepresidenan Jakarta, Kamis, 2 Juli 2026.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2086,
+    "entity_name": "Khofifah Indar Parawansa",
+    "text": "Berikut ini profil dan harta kekayaan Khofifah Indar Parawansa, Gubernur Jawa Timur yang dilantik 20 Februari 2025. TRIBUNJAMBI.COM - Pasangan Khofifah Indar Parawansa dan Emil Elestianto Dardak akan dilantik sebagai Gubernur Jawa Timur dan Wakil Gubernur Jawa Timur pada 20 Februari 2025.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2087,
+    "entity_name": "Abdurrahman Wahid",
+    "text": "Namun, hal berbeda terjadi pada masa pemerintahan Presiden ke-4 RI, Abdurrahman Wahid atau Gus Dur. Dia diketahui pernah memanggil dadakan menterinya ke Istana pada pukul 04.30 pagi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2088,
+    "entity_name": "Sufmi Dasco Ahmad",
+    "text": "\"Saudara memberi penghargaan luar biasa ke saya bahkan Gerindra aja enggak makai kaos seperti kalian, gimana itu Dasco?\" kata Prabowo dalam pidatonya.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2089,
+    "entity_name": "Joko Widodo",
+    "text": "Presiden RI ke-7 Joko Widodo (Jokowi) tengah melakukan safari politik. Salah satu daerah yang akan jadi sasarannya adalah Jawa Barat.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2090,
+    "entity_name": "Sufmi Dasco Ahmad",
+    "text": "Menurut dia, gagasan menggelar safari RUU Pemilu ke ormas keagamaan berasal dari Wakil Ketua DPR Bidang Politik dan Keamanan, Sufmi Dasco Ahmad.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2094,
+    "entity_name": "Agus Harimurti Yudhoyono",
+    "text": "Menko Infrastruktur dan Pembangunan Kewilayahan Agus Harimurti Yudhoyono (AHY) meninjau kawasan Kali Ciliwung. Dia melihat sepanjang bantaran kali dipenuhi sampah.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2095,
+    "entity_name": "Pramono Anung",
+    "text": "Ia menilai peluncuran Mobil Klinik Hewan Keliling juga merupakan realisasi salah satu komitmen kampanye Gubernur DKI Jakarta Pramono Anung Wibowo, yakni memperluas akses.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2096,
+    "entity_name": "Bima Arya Sugiarto",
+    "text": "Jakarta, VIVA - Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya Sugiarto menegaskan pentingnya transformasi pelayanan publik melalui penguatan orientasi pelayanan, empati, dan inovasi di kalangan aparatur sipil negara (ASN). Hal ini penting termasuk dalam mendukung pencapaian Standar Pelayanan Minimal (SPM) bidang pendidikan dan kesehatan.",
+    "current_label": "positive",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2097,
+    "entity_name": "Bambang Soesatyo",
+    "text": "Janji Radovan Pankov Bikin Lini Belakang Persija Makin Kokoh - Latih Italia Lagi, Mancini Fokus Bawa Azzurri ke Piala Dunia 2030 - OTT, KPK Bawa 12 Orang ke Gedung Merah Putih, Termasuk Bupati Pemalang - PSIM Yogyakarta Rekrut Striker Asal Spanyol - KPPU dan K&K Advocates Dorong Kepatuhan Pelaku Usaha, Wujudkan Persaingan Sehat RM.id Rakyat Merdeka - Ketua MPR sekaligus Wakil Ketua Umum Partai Golkar Bambang Soesatyo (Bamsoet) mengatakan, ada sekitar 42 ribu peraturan di Indonesia, mulai dari Undang-Undang, Peraturan Presiden, peraturan pemerintah, hingga Peraturan Gubernur, Bupati, dan Wali.",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2098,
+    "entity_name": "Prabowo Subianto",
+    "text": "Pilihan Menteri Koordinator Bidang Infrastruktur dan Pembangunan Kewilayahan Agus Harimurti Yudhoyono (AHY) mengatakan langkah tersebut diputuskan dalam rapat terbatas yang dipimpin Presiden Prabowo Subianto di Istana Kepresidenan, Jakarta, Selasa, 28 Juli 2026. Rapat diikuti jajaran Kabinet Merah Putih, Panglima TNI, Kapolri, serta kepala lembaga terkait.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2100,
+    "entity_name": "Mahfud MD",
+    "text": "- Kapolri Jenderal Polisi Listyo Sigit Prabowo merespons singkat kritik mantan Menteri Koordinator Bidang Politik, Hukum, dan Keamanan (Menko Polhukam) Mahfud MD terkait pengalihan penanganan perkara mantan Jaksa Agung Muda Tindak Pidana Khusus (Jampidsus) Febrie Adriansyah yang dinilai tidak sesuai dengan Kitab Undang-Undang Hukum Acara Pidana (KUHAP). Saat ditemui awak media di Kompleks Parlemen, Senayan, Jakarta, Selasa (14/7/2026), Kapolri enggan memberikan penjelasan panjang mengenai polemik tersebut.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2101,
+    "entity_name": "Prabowo Subianto",
+    "text": "Presiden Prabowo Subianto dijadwalkan memimpin upacara Hari Ulang Tahun ke-80 Bhayangkara esok hari. Kepala Divisi Hubungan Masyarakat Markas Besar Polri Inspektur Jenderal Johnny Eddizon Isir mengungkapkan bahwa Presiden Prabowo bakal bertindak sebagai inspektur upacara.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2102,
+    "entity_name": "Tito Karnavian",
+    "text": "lam Negeri (Mendagri) Muhammad Tito Karnavian menilai Festival Fulan Fehan IV sebagai momen untuk memperkuat diplomasi budaya dan persahabatan antara Indonesia dengan Timor-Leste. Festival Fulan Fehan juga menampilkan tarian khas empat suku yang bersatu mengusung tema Dance for Friendship. Menurut Tito, tema tersebut sejalan dengan pesan Presiden Prabowo Subianto bahwa persahabatan jauh lebih berharga daripada permusuhan.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2103,
+    "entity_name": "Jusuf Kalla",
+    "text": "Jusuf Kalla, Sekjen MUI Amirsyah Tambunan dan Wakil Ketua Komnas HAM Pramono Ubaid saat Silaturahmi dan Tukar Pikiran mengenai penyelesaian masalah Pulau Rempang di MUI, Jakarta, Jumat (6/10/2023). JawaPos.com - Muhammad Jusuf Kalla merupakan seorang politikus Indonesia dengan perjalanan karir politik yang kompleks. Pria yang akrab disapa JK itu menduduki posisi Wakil Presiden dua kali. Yaitu, periode 2004-2009 dan 2014-2019.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2104,
+    "entity_name": "Puan Maharani",
+    "text": "Puan Maharani meminta kepada pemerintah untuk menyediakan tempat penitipan anak atau daycare yang aman guna mencegah kasus kekerasan terhadap anak seperti yang terjadi di sebuah daycare di Yogyakarta. Menurut dia, fasilitas daycare itu dibutuhkan khususnya bagi para ibu yang bekerja. Terlebih lagi, kata dia, keberadaan daycare yang aman merupakan amanat dari Undang-Undang Nomor 4 Tahun 2024 tentang Kesejahteraan Ibu dan Anak (UU KIA).",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2105,
+    "entity_name": "Anies Baswedan",
+    "text": "Anies Baswedan bersama Muhaimin Iskandar (Cak Imin) melaju ke Pemilu 2024 sebagai pasangan bakal capres-cawapres Koalisi Perubahan. Anies tercatat sebagai alumni Universitas Gadjah Mada. Anies Rasyid Baswedan lahir pada 7 Mei 1969 dari pasangan akademisi.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2106,
+    "entity_name": "Susilo Bambang Yudhoyono",
+    "text": "Pada 14 Juli 1998, Panglima ABRI membentuk sebuah Dewan Kehormatan Perwira yang diketuai oleh Jenderal Subagyo Hadi Siswoyo dan dianggotai oleh enam orang letnan jenderal: Fachrul Razi (wakil ketua); Djamari Chaniago (sekretaris); Arie J. Kumaat; Agum Gumelar; Susilo Bambang Yudhoyono; dan Yusuf Kartanegara. Dewan ini memeriksa Prabowo dalam tujuh butir tuduhan; salah satunya adalah \"sengaja melakukan kesalahan dalam analisis tugas\", \"melaksanakan dan mengendalikan operasi dalam rangka stabilitas nasional yang bukan menjadi wewenangnya, tetapi menjadi wewenang Pangab\", \"tidak melibatkan staf organik dalam prosedur staf, pengendalian dan pengawasan\", dan \"sering ke luar negeri tanpa ijin dari Kasad ataupun Pangab\".",
+    "current_label": "negative",
+    "current_confidence": 0.7
+  },
+  {
+    "row_index": 2107,
+    "entity_name": "Ridwan Kamil",
+    "text": "Ridwan Kamil mendatangi Pengadilan Agama (PA) Bandung untuk mengurus pengangkatan Arkana Aidan Misbach jadi anak asuhnya. Sidang putusan akan dilaksanakan pada pekan depan. Dilansir detikJabar, RK hanya memberikan pernyataan singkat setelah menjalani persidangan.",
+    "current_label": "neutral",
+    "current_confidence": 0.7
+  }
+]
