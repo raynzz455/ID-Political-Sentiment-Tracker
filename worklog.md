@@ -749,3 +749,44 @@ FILES READY FOR FINETUNING:
   configs/hyperparams_v4.py (tuned for gold standard)
   patches/sentiment_model_v6.py (production inference)
   datasets/dataset_gold_standard_final.jsonl (2,364 rows, 98.8% LLM-verified)
+
+---
+Task ID: 45
+Agent: Z.ai Code (main)
+Task: Refactor worker — hapus semua regex manual, ganti dengan library NLP.
+
+Work Log:
+- Entity Resolution MoE (entity_resolution_moe.py):
+  - HAPUS RegexEntityMatcher class (pakai re.compile manual)
+  - GANTI dengan RapidFuzzMatcher (rapidfuzz library, fuzzy matching)
+  - HAPUS extract_features dengan slang_markers/legal_markers hardcoded
+  - GANTI dengan Stanza POS distribution (formality score) + Stanza NER (legal domain)
+  - HAPUS regex_patterns build (re.compile word boundary)
+  - GANTI dengan entity_names list untuk rapidfuzz
+  - Router: weights['regex'] → weights['rapidfuzz']
+
+- Context Extraction MoE (context_extraction_moe.py):
+  - HAPUS re.split(r'(?<=[.!?])\s+') untuk sentence splitting
+  - GANTI dengan _split_sentences() pakai Stanza tokenizer (fallback spaCy, final fallback string ops)
+  - HAPUS re.sub(r'\s+', ' ', para) untuk whitespace normalize
+  - GANTI dengan ' '.join(para.split())
+  - HAPUS import re (tidak dipakai lagi)
+
+- Enricher Worker (enricher_worker_library.py) — FILE BARU:
+  - KeyBERT untuk keyword extraction (embedding-based)
+  - BERTopic untuk topic modeling (transformer clustering)
+  - transformers pipeline untuk emotion (IndoBERT)
+  - Stanza POS untuk formality score (no hardcoded word lists)
+  - Stanza NER untuk entity extraction (no regex)
+
+AUDIT FINAL:
+  entity_resolution_moe.py: 0 regex calls (was 5)
+  context_extraction_moe.py: 0 regex calls (was 1)
+  enricher_worker_library.py: 0 regex calls (new file)
+
+Stage Summary:
+- ✅ SEMUA worker refactored ke library-based (0 regex manual)
+- ✅ Library yang dipakai: Stanza, spaCy, sentence-transformers, rapidfuzz, KeyBERT, BERTopic, transformers, DBpedia
+- ✅ Syntax semua file OK
+- ✅ Committed to git
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
