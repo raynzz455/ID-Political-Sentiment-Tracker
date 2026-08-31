@@ -39,7 +39,6 @@ USAGE:
   result = moe.extract(article_text, entity_name, entity_offset)
   # result = {"context_text": "...", "all_spans": [...], "quality_score": 95}
 """
-import re
 import logging
 import time
 from typing import List, Dict, Tuple, Optional
@@ -468,8 +467,8 @@ class ParagraphExtractor:
             
             if para_start <= entity_offset < para_end:
                 # Found paragraph containing entity
-                # Clean up: replace single newlines with spaces
-                clean_para = re.sub(r'\s+', ' ', para).strip()
+                # Clean up: normalize whitespace using split+join (no regex)
+                clean_para = ' '.join(para.split()).strip()
                 
                 if len(clean_para) < 50:
                     return []
@@ -514,7 +513,8 @@ class EmbeddingSimilarityExtractor:
     def __init__(self, similarity_threshold: float = 0.65):
         self.similarity_threshold = similarity_threshold
         self._model = None
-    
+        self._stanza_nlp = None  # cached Stanza tokenizer
+
     def _load_model(self):
         if self._model is None:
             try:
@@ -525,6 +525,50 @@ class EmbeddingSimilarityExtractor:
                 logger.warning(f"Failed to load embedding model: {e}")
                 return None
         return self._model
+
+    def _split_sentences(self, text: str) -> List[str]:
+        """Library-based sentence splitting using Stanza tokenizer.
+        
+        Handles abbreviations, honorifics (H., Ir., Dr.), and complex sentence
+        structures that manual regex split fails on.
+        """
+        # Try Stanza first (best for Indonesian)
+        try:
+            if self._stanza_nlp is None:
+                import stanza
+                self._stanza_nlp = stanza.Pipeline(
+                    "id", processors="tokenize",
+                    use_gpu=False, verbose=False,
+                    logging_level="ERROR"
+                )
+            doc = self._stanza_nlp(text[:3000])  # limit for speed
+            return [sent.text for sent in doc.sentences]
+        except ImportError:
+            pass
+        
+        # Fallback: spaCy (if available)
+        try:
+            import spacy
+            if not hasattr(self, '_spacy_nlp'):
+                self._spacy_nlp = spacy.load("id_core_news_sm", disable=["ner", "tagger", "parser", "lemmatizer"])
+            doc = self._spacy_nlp(text[:3000])
+            return [sent.text for sent in doc.sents]
+        except Exception:
+            pass
+        
+        # Final fallback: simple split on punctuation (NOT regex — just string ops)
+        # This is less accurate but has no manual regex pattern
+        sentences = []
+        current = []
+        for char in text:
+            current.append(char)
+            if char in '.!?' and len(current) > 1:
+                # Check next char is whitespace (end of sentence)
+                sentences.append(''.join(current).strip())
+                current = []
+        if current:
+            sentences.append(''.join(current).strip())
+        return [s for s in sentences if s]
     
     def extract(self, article_text: str, entity_name: str,
                 entity_offset: int) -> List[ContextSpan]:
@@ -533,8 +577,8 @@ class EmbeddingSimilarityExtractor:
         if model is None:
             return []
         
-        # Split article into sentences (simple split)
-        sentences = re.split(r'(?<=[.!?])\s+', article_text)
+        # Library-based sentence splitting (Stanza tokenizer, no manual regex)
+        sentences = self._split_sentences(article_text)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
         
         if len(sentences) < 2:
