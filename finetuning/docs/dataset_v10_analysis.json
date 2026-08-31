@@ -1,0 +1,89 @@
+{
+  "training_rows": 2396,
+  "full_rows": 2459,
+  "label_distribution": {
+    "positive": 478,
+    "neutral": 1766,
+    "negative": 152
+  },
+  "label_percentages": {
+    "positive": 19.95,
+    "neutral": 73.71,
+    "negative": 6.34
+  },
+  "imbalance_ratio": 11.62,
+  "text_length": {
+    "chars_mean": 558.0,
+    "chars_median": 559,
+    "chars_p95": 850,
+    "chars_max": 2182,
+    "chars_min": 60,
+    "words_mean": 76.3,
+    "words_median": 77,
+    "words_p95": 119
+  },
+  "token_estimate_p95": 154,
+  "token_estimate_p99": 165,
+  "unique_entities": 114,
+  "top_10_entities": {
+    "Prabowo Subianto": 420,
+    "Joko Widodo": 119,
+    "Pramono Anung": 102,
+    "Megawati Soekarnoputri": 83,
+    "Bima Arya Sugiarto": 81,
+    "Tito Karnavian": 61,
+    "Puan Maharani": 58,
+    "Dedi Mulyadi": 57,
+    "Khofifah Indar Parawansa": 55,
+    "Refly Harun": 50
+  },
+  "entities_with_5plus": 81,
+  "entities_with_1": 5,
+  "biased_entities": [
+    {
+      "entity": "Fadli Zon",
+      "total": 14,
+      "dominant_label": "neutral",
+      "fraction": 1.0
+    },
+    {
+      "entity": "Try Sutrisno",
+      "total": 14,
+      "dominant_label": "neutral",
+      "fraction": 1.0
+    }
+  ],
+  "label_sources": {
+    "llm_verified": 2262,
+    "llm_second_pass": 118,
+    "gold_human": 10,
+    "llm_verified_v8": 6
+  },
+  "relevancy_distribution": {
+    "relevant": 2134,
+    "not_relevant": 262
+  },
+  "confidence": {
+    "mean": 0.766,
+    "min": 0.5,
+    "max": 1.0
+  },
+  "unique_domains": 277,
+  "top_10_domains": {
+    "news.google.com": 523,
+    "www.cnnindonesia.com": 348,
+    "nasional.tempo.co": 313,
+    "nasional.kompas.com": 92,
+    "id.wikipedia.org": 71,
+    "news.detik.com": 53,
+    "www.liputan6.com": 48,
+    "www.tribunnews.com": 42,
+    "en.wikipedia.org": 40,
+    "www.antaranews.com": 39
+  },
+  "recommendations": [
+    "High imbalance (11.62x) → use focal_loss gamma=2.5 + class_weights + oversample negative to ~400",
+    "Dataset size 2396 < 3000 → use LoRA r=64, dropout=0.2, strong augmentation (mixup alpha=0.3)",
+    "p95 tokens=154 ≤ 256 → MAX_SEQ_LENGTH=256 is sufficient"
+  ]
+}

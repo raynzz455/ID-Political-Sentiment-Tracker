@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-08-16T04:07:04.999Z",
+  "input": "/home/z/my-project/finetuning/datasets/dataset_v2.jsonl",
+  "output": "/home/z/my-project/finetuning/llm_verified_v3.jsonl",
+  "total_base_rows_verified": 135,
+  "label_distribution": {
+    "positive": 28,
+    "neutral": 99,
+    "negative": 8
+  },
+  "relevancy_distribution": {
+    "relevant": 124,
+    "not_relevant": 11
+  },
+  "label_flips_from_heuristic": 59,
+  "flip_rate": 0.43703703703703706,
+  "dataset_v2_total_rows": 777,
+  "notes": "Verifikasi LLM baris berconfidence <0.7. Label dipropagasi ke semua baris oversampled yang punya base_row_index sama saat build_dataset_v3.py."
+}

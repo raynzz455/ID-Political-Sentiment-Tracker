@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-08-16T09:37:27.253Z",
+  "input": "/home/z/my-project/finetuning/datasets/dataset_v8_merged.jsonl",
+  "output": "/home/z/my-project/finetuning/llm_verified_v8.jsonl",
+  "total_rows_verified": 5,
+  "label_distribution": {
+    "positive": 2,
+    "neutral": 2,
+    "negative": 1
+  },
+  "relevancy_distribution": {
+    "relevant": 5,
+    "not_relevant": 0
+  },
+  "label_flips_from_prev": 2,
+  "flip_rate": 0.4,
+  "dataset_v8_merged_total": 1394
+}

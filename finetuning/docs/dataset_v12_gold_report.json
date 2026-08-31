@@ -1,0 +1,43 @@
+{
+  "input_rows": 2400,
+  "output_rows": 2272,
+  "removed": {
+    "not_main_subject": 128
+  },
+  "label_changes": {
+    "neutral->negative": 13,
+    "positive->neutral": 21,
+    "negative->neutral": 18,
+    "neutral->positive": 19
+  },
+  "total_flipped": 71,
+  "final_label_distribution": {
+    "positive": 481,
+    "neutral": 1649,
+    "negative": 142
+  },
+  "label_sources": {
+    "llm_verified": 1750,
+    "llm_reverified": 364,
+    "llm_second_pass": 111,
+    "oversampled": 21,
+    "llm_verified_v8": 6,
+    "gold_human": 9,
+    "llm_failed": 11
+  },
+  "relevancy_distribution": {
+    "relevant": 2030,
+    "not_relevant": 242
+  },
+  "context_length": {
+    "min": 81,
+    "max": 599,
+    "avg": 325.7,
+    "median": 314.0
+  },
+  "confidence": {
+    "mean": 0.828,
+    "high_confidence_count": 1985,
+    "high_confidence_pct": 87.4
+  }
+}
