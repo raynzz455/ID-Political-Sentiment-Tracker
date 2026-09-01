@@ -1,0 +1,36 @@
+name: 3. NLP Inference Worker
+
+on:
+  # Jalankan setiap hari pukul 01:30 WIB (18:30 UTC)
+  schedule:
+    - cron: '30 18 * * *'
+
+  # Tetap bisa dijalankan manual
+  workflow_dispatch:
+
+jobs:
+  run-nlp:
+    name: Run Layer 4 (IndoBERT)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run NLP Worker
+        run: |
+          python main.py run-nlp --target 1000 --batch-size 30
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

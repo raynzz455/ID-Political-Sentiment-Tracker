@@ -1,0 +1,148 @@
+<mxfile host="app.diagrams.net" version="24.0.0">
+  <diagram name="ID-Political-Sentiment-Tracker" id="id-pst-v1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="1500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===== L1: SUMBER DATA ===== -->
+        <mxCell id="L1" value="Layer 1 — Sumber Data" style="swimlane;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="40" width="1000" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="S1" value="X / Twitter API&#xa;(pay-per-use, $0.005/read)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L1">
+          <mxGeometry x="20" y="38" width="215" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="S2" value="News &amp; Media Online&#xa;(httpx scraper)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L1">
+          <mxGeometry x="255" y="38" width="215" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="S3" value="YouTube Comments&#xa;(YouTube Data API)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L1">
+          <mxGeometry x="490" y="38" width="215" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="S4" value="Play Store Reviews&#xa;(google-play-scraper)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L1">
+          <mxGeometry x="725" y="38" width="235" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E1" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L1" target="L2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L2: INGESTION WORKERS ===== -->
+        <mxCell id="L2" value="Layer 2 — Ingestion Workers (Berjalan Terjadwal — Proses Terpisah dari API)" style="swimlane;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="210" width="1000" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="W1" value="Async Fetcher Worker&#xa;(httpx / asyncio per source)" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L2">
+          <mxGeometry x="20" y="38" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="W2" value="Scheduler (APScheduler)&#xa;X:15min · News:30min · YT:2jam · Store:12jam" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L2">
+          <mxGeometry x="320" y="38" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="W3" value="Normalize + SHA-256 dedup&#xa;(pre-queue, reject exact duplicate)" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L2">
+          <mxGeometry x="680" y="38" width="290" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E2" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L2" target="L3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L3: QUEUE ===== -->
+        <mxCell id="L3" value="Layer 3 — Queue (Supabase pgmq)" style="swimlane;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="380" width="1000" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="Q1" value="pgmq Queue&#xa;visibility timeout · retry · dead-letter" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L3">
+          <mxGeometry x="20" y="38" width="320" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="Q2" value="Message Envelope&#xa;{source, external_id, text, posted_at, content_hash}" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L3">
+          <mxGeometry x="365" y="38" width="390" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E3" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L3" target="L4" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L4: NLP PIPELINE ===== -->
+        <mxCell id="L4" value="Layer 4 — NLP Pipeline Workers (Python, ONNX Runtime)" style="swimlane;startSize=30;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="550" width="1000" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="N1" value="IndoBERT fine-tuned&#xa;ONNX INT8 (CPU-viable)&#xa;micro-batch 16–32" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4">
+          <mxGeometry x="20" y="35" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="N2" value="Sentiment 3-class&#xa;neg / netral / pos&#xa;+ confidence score" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4">
+          <mxGeometry x="265" y="35" width="210" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="N3" value="NER&#xa;tokoh · partai · institusi&#xa;(entity attribution)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4">
+          <mxGeometry x="500" y="35" width="205" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="N4" value="Embedding 768-dim&#xa;(pgvector, same forward pass)&#xa;semantic dedup + clustering" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="L4">
+          <mxGeometry x="730" y="35" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E4" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L4" target="L5" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L5: SUPABASE POSTGRESQL ===== -->
+        <mxCell id="L5" value="Layer 5 — Supabase PostgreSQL (Storage + Scheduling)" style="swimlane;startSize=30;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="740" width="1000" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="DB1" value="sentiment_scores&#xa;(partitioned monthly)&#xa;pg_partman · 18 mo retention" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="20" y="38" width="240" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="DB2" value="entities&#xa;politicians · parties · orgs&#xa;name · aliases[] · type" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="285" y="38" width="210" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="DB3" value="pgvector (HNSW)&#xa;vector(768), cosine dist&#xa;semantic search + dedup" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="520" y="38" width="220" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="DB4" value="Index Strategy&#xa;BRIN (created_at) · btree (entity_id)&#xa;gin_trgm (text_content)" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="765" y="38" width="215" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="DB5" value="Materialized Views&#xa;entity_sentiment_hourly&#xa;entity_sentiment_daily" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="20" y="130" width="240" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="DB6" value="pg_cron Jobs&#xa;refresh MV (tiap jam)&#xa;partman maintenance (tiap hari)" style="rounded=1;fillColor=#f9f9f9;strokeColor=#666666;fontSize=11;" vertex="1" parent="L5">
+          <mxGeometry x="285" y="130" width="255" height="65" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E5" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L5" target="L6" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L6: API LAYER ===== -->
+        <mxCell id="L6" value="Layer 6 — API Layer (Always-On, Proses Terpisah dari Worker)" style="swimlane;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1010" width="1000" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="A1" value="FastAPI + asyncpg&#xa;(complex queries, write endpoints)" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="L6">
+          <mxGeometry x="20" y="38" width="290" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="A2" value="PostgREST (Supabase built-in)&#xa;(auto CRUD, public read endpoints)" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="L6">
+          <mxGeometry x="335" y="38" width="275" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="A3" value="Supabase Realtime&#xa;(WebSocket, live push ke dashboard)" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="L6">
+          <mxGeometry x="635" y="38" width="260" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="E6" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" source="L6" target="L7" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ===== L7: OUTPUT KE USER ===== -->
+        <mxCell id="L7" value="Layer 7 — Output ke User" style="swimlane;startSize=30;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="80" y="1180" width="1000" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="O1" value="Dashboard&#xa;trend · head-to-head&#xa;drill-down · heatmap real-time" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="L7">
+          <mxGeometry x="20" y="35" width="215" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="O2" value="Semantic Search&#xa;pgvector cosine similarity&#xa;topic clustering (HDBSCAN)" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="L7">
+          <mxGeometry x="255" y="35" width="215" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="O3" value="Alert / Webhook&#xa;spike detection (3-sigma)&#xa;Discord · Telegram · email" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="L7">
+          <mxGeometry x="490" y="35" width="215" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="O4" value="Export &amp; Public API&#xa;CSV / PDF report&#xa;rate-limited read endpoint" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="L7">
+          <mxGeometry x="725" y="35" width="215" height="70" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

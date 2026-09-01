@@ -1,0 +1,111 @@
+#OUPUT TES 1
+| source                              | total_articles |
+| ----------------------------------- | -------------- |
+| gdelt_republika_co_id               | 15             |
+| gdelt_news_mongabay_com             | 3              |
+| gdelt_simonroughneen_com            | 2              |
+| gdelt_news24xx_com                  | 2              |
+| gdelt_internasional_metrotvnews_com | 1              |
+| gdelt_balidiscovery_com             | 1              |
+| gdelt_coconuts_co                   | 1              |
+| gdelt_jakartainformer_com           | 1              |
+
+#OUPUT TES 2
+=== UJI KUALITAS URL & EXTRACTION ===
+
+Title : The biggest rainforest news stories in 2018
+URL   : https://news.mongabay.com/2018/12/the-biggest-rainforest-news-stories-in-2018/
+Tahun : 2018-12-31T02:30:00+00:00
+❌ URL MATI / DITOLAK (HTTP 403)
+------------------------------------------------------------
+Title : A Failure to Warn
+URL   : http://www.balidiscovery.com/news/a-failure-to-warn
+Tahun : 2018-12-29T08:15:00+00:00
+❌ URL MATI / DITOLAK (HTTP 404)
+------------------------------------------------------------
+Title : Is captive breeding the answer to Indonesia songbird crisis ?
+URL   : https://news.mongabay.com/2018/12/is-captive-breeding-the-answer-to-indonesias-songbird-crisis/
+Tahun : 2018-12-25T22:00:00+00:00
+❌ URL MATI / DITOLAK (HTTP 403)
+------------------------------------------------------------
+Title : Tsunami linked to volcano kills over 200 in Indonesia
+URL   : http://www.simonroughneen.com/asia/seasia/indonesia/tsunami-linked-to-volcano-kills-over-200-in-indonesia-los-angeles-times-rte-france-24/
+Tahun : 2018-12-24T05:00:00+00:00
+✅ BERHASIL DIEKSTRAK | Panjang teks: 4267 karakter
+------------------------------------------------------------
+Title : Anak Krakatau volcano latest eruption , raises fears of another tsunami in Indonesia
+URL   : http://www.news24xx.com/read/news/13120/Anak-Krakatau-volcano-latest-eruption-raises-fears-of-another-tsunami-in-Indonesia
+Tahun : 2018-12-24T02:15:00+00:00
+✅ BERHASIL DIEKSTRAK | Panjang teks: 183 karakter
+------------------------------------------------------------
+
+#OUPUT TE$ST 3 (Batch mengambil RSS juga bukan hanya GDELT saja )
+PS C:\Users\rayna\Project Code\Bentar lagi di grebek\packages\nlp-worker> python cli_test.py batch 10
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/dequeue_nlp_batch "HTTP/2 200 OK"
+
+============================================================
+BATCH PROCESS — 10 items (distribusi)
+============================================================
+[INFO] HTTP Request: GET https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/political_entities?select=id%2Ccanonical_name%2Caliases%2Cis_active&is_active=eq.True "HTTP/2 200 OK"
+[INFO] Loading apriandito/indobert-relevancy-classifier ...
+[INFO] HTTP Request: GET https://huggingface.co/api/agent-harnesses "HTTP/1.1 200 OK"
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-relevancy-classifier/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-relevancy-classifier/8465aa08826c30e4aa438df414b8a7799ca81e89/config.json "HTTP/1.1 200 OK"
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-relevancy-classifier/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[WARNING] Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-relevancy-classifier/8465aa08826c30e4aa438df414b8a7799ca81e89/tokenizer_config.json "HTTP/1.1 200 OK"
+[INFO] HTTP Request: GET https://huggingface.co/api/models/apriandito/indobert-relevancy-classifier/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+[INFO] HTTP Request: GET https://huggingface.co/api/models/apriandito/indobert-relevancy-classifier/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-relevancy-classifier/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-relevancy-classifier/8465aa08826c30e4aa438df414b8a7799ca81e89/config.json "HTTP/1.1 200 OK"
+Loading weights: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 393/393 [00:00<00:00, 5367.98it/s]
+[INFO]   -> loaded. id2label = {0: 'NOT_RELEVANT', 1: 'RELEVANT'}
+[INFO] Loading apriandito/indobert-sentiment-classifier ...
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-sentiment-classifier/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-sentiment-classifier/ba24f8cea1c00090cc4fce2b63c61ed307943a78/config.json "HTTP/1.1 200 OK"
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-sentiment-classifier/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-sentiment-classifier/ba24f8cea1c00090cc4fce2b63c61ed307943a78/tokenizer_config.json "HTTP/1.1 200 OK"
+[INFO] HTTP Request: GET https://huggingface.co/api/models/apriandito/indobert-sentiment-classifier/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+[INFO] HTTP Request: GET https://huggingface.co/api/models/apriandito/indobert-sentiment-classifier/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+[INFO] HTTP Request: HEAD https://huggingface.co/apriandito/indobert-sentiment-classifier/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[INFO] HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/apriandito/indobert-sentiment-classifier/ba24f8cea1c00090cc4fce2b63c61ed307943a78/config.json "HTTP/1.1 200 OK"
+Loading weights: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 393/393 [00:00<00:00, 4812.52it/s]
+[INFO]   -> loaded. id2label = {0: 'NEGATIF', 1: 'NETRAL', 2: 'POSITIF'}
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/insert_sentiment_score "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/insert_sentiment_score "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/insert_sentiment_score "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/insert_sentiment_score "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+[INFO] HTTP Request: POST https://bawvxtivogcuwvqdqoae.supabase.co/rest/v1/rpc/ack_nlp_message "HTTP/2 200 OK"
+
+Total items: 10
+Processed (entity matched + inserted): 4
+Skipped (no entity match, acked only): 6
+Avg confidence (relevant only): 0.998
+
+Sentiment distribution (relevant only):
+  positive     0 (  0.0%) 
+  neutral      4 (100.0%) ████████████████████████████████████████
+  negative     0 (  0.0%) 
+
+Confidence buckets (relevant only):
+  <0.5         0 (  0.0%)
+  0.5-0.7      0 (  0.0%)
+  0.7-0.85     0 (  0.0%)
+  >=0.85       4 (100.0%)
+
+Top mentioned entities (relevant only):
+  Airlangga Hartarto               2 mentions
+  Megawati Soekarnoputri           1 mentions
+  Rocky Gerung                     1 mentions
+
+============================================================
