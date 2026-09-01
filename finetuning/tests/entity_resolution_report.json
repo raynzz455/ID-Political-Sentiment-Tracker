@@ -1,0 +1,266 @@
+{
+  "config": {
+    "n": 20,
+    "expert": "all",
+    "seed": 2024,
+    "timestamp": "2026-09-01 17:17:02"
+  },
+  "results": {
+    "rapidfuzz": {
+      "metrics": {
+        "accuracy": 1.0,
+        "precision": 0.5556,
+        "recall": 1.0,
+        "f1": 0.7143,
+        "tp": 20,
+        "fn": 0,
+        "fp": 16,
+        "total": 20,
+        "avg_ms": 1.8
+      },
+      "details": [
+        {
+          "row": 1,
+          "expected": "Joko Widodo",
+          "found": [
+            "Prabowo Subianto",
+            "Joko Widodo",
+            "Gibran Rakabuming Raka"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Prabowo Subianto",
+            "Gibran Rakabuming Raka"
+          ],
+          "num_mentions": 6
+        },
+        {
+          "row": 2,
+          "expected": "Yenny Wahid",
+          "found": [
+            "Hidayat Nur Wahid",
+            "Abdurrahman Wahid",
+            "Yenny Wahid"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Hidayat Nur Wahid",
+            "Abdurrahman Wahid"
+          ],
+          "num_mentions": 7
+        },
+        {
+          "row": 3,
+          "expected": "Haedar Nashir",
+          "found": [
+            "Hidayat Nur Wahid",
+            "Haedar Nashir"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Hidayat Nur Wahid"
+          ],
+          "num_mentions": 7
+        },
+        {
+          "row": 4,
+          "expected": "Muhaimin Iskandar",
+          "found": [
+            "Ridwan Kamil",
+            "Muhaimin Iskandar",
+            "Bahlil Lahadalia",
+            "Andi Amran Sulaiman"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Ridwan Kamil",
+            "Bahlil Lahadalia",
+            "Andi Amran Sulaiman"
+          ],
+          "num_mentions": 8
+        },
+        {
+          "row": 5,
+          "expected": "Bima Arya Sugiarto",
+          "found": [
+            "Bima Arya Sugiarto"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 4
+        },
+        {
+          "row": 6,
+          "expected": "Pramono Anung",
+          "found": [
+            "Pramono Anung"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 6
+        },
+        {
+          "row": 7,
+          "expected": "Dedi Mulyadi",
+          "found": [
+            "Dedi Mulyadi"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 8,
+          "expected": "Tito Karnavian",
+          "found": [
+            "Tito Karnavian"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 9,
+          "expected": "Zulkifli Hasan",
+          "found": [
+            "Zulkifli Hasan"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 10,
+          "expected": "Dito Ariotedjo",
+          "found": [
+            "Joko Widodo",
+            "Dito Ariotedjo",
+            "Zainudin Amali"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Joko Widodo",
+            "Zainudin Amali"
+          ],
+          "num_mentions": 15
+        },
+        {
+          "row": 11,
+          "expected": "Abdurrahman Wahid",
+          "found": [
+            "Agus Gumiwang Kartasasmita",
+            "Abdurrahman Wahid",
+            "Umar Wirahadikusumah",
+            "Ryamizard Ryacudu"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Agus Gumiwang Kartasasmita",
+            "Umar Wirahadikusumah",
+            "Ryamizard Ryacudu"
+          ],
+          "num_mentions": 5
+        },
+        {
+          "row": 12,
+          "expected": "Hamzah Haz",
+          "found": [
+            "Hamzah Haz"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 2
+        },
+        {
+          "row": 13,
+          "expected": "Puan Maharani",
+          "found": [
+            "Puan Maharani"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 14,
+          "expected": "Refly Harun",
+          "found": [
+            "Joko Widodo",
+            "Refly Harun"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Joko Widodo"
+          ],
+          "num_mentions": 8
+        },
+        {
+          "row": 15,
+          "expected": "Try Sutrisno",
+          "found": [
+            "Try Sutrisno"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 2
+        },
+        {
+          "row": 16,
+          "expected": "Hasto Kristiyanto",
+          "found": [
+            "Megawati Soekarnoputri",
+            "Hasto Kristiyanto"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Megawati Soekarnoputri"
+          ],
+          "num_mentions": 6
+        },
+        {
+          "row": 17,
+          "expected": "Bhima Yudhistira",
+          "found": [
+            "Bhima Yudhistira"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 18,
+          "expected": "Sufmi Dasco Ahmad",
+          "found": [
+            "Sufmi Dasco Ahmad",
+            "Ahmad Syaikhu"
+          ],
+          "found_expected": true,
+          "false_positives": [
+            "Ahmad Syaikhu"
+          ],
+          "num_mentions": 7
+        },
+        {
+          "row": 19,
+          "expected": "Prabowo Subianto",
+          "found": [
+            "Prabowo Subianto"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 3
+        },
+        {
+          "row": 20,
+          "expected": "Ridwan Kamil",
+          "found": [
+            "Ridwan Kamil"
+          ],
+          "found_expected": true,
+          "false_positives": [],
+          "num_mentions": 6
+        }
+      ]
+    }
+  }
+}

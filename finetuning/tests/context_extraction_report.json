@@ -1,0 +1,265 @@
+{
+  "config": {
+    "n": 20,
+    "expert": "paragraph",
+    "seed": 2024,
+    "timestamp": "2026-09-01 17:17:11"
+  },
+  "results": {
+    "paragraph": {
+      "metrics": {
+        "extraction_rate": 0.95,
+        "extracted": 19,
+        "total": 20,
+        "high_quality": 19,
+        "medium_quality": 0,
+        "low_quality": 0,
+        "high_pct": 100.0,
+        "avg_length": 321.3,
+        "entity_coverage": 100.0,
+        "quality_dist": {
+          "4": 18,
+          "3": 1
+        },
+        "avg_ms": 1.4
+      },
+      "details": [
+        {
+          "row": 1,
+          "entity": "Joko Widodo",
+          "extracted": true,
+          "context_len": 169,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Dia menilai Pilpres 2024 berlangsung ketat terutama setelah manuver politik Presiden Joko Widodo (Jokowi) yang bersebrangan dengan PDIP untuk memenang"
+        },
+        {
+          "row": 2,
+          "entity": "Yenny Wahid",
+          "extracted": true,
+          "context_len": 390,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Zannuba Ariffah Chafsoh, known as Yenny Wahid (born 29 October 1974), is an Indonesian activist, politician, former journalist, and sports administrat"
+        },
+        {
+          "row": 3,
+          "entity": "Haedar Nashir",
+          "extracted": true,
+          "context_len": 510,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Kehadiran media Muhammadiyah dan tokoh Haedar Nashir diharapkan dapat memberikan pencerahan dan bobot, bahwa informasi yang beredar harus berkualitas,"
+        },
+        {
+          "row": 4,
+          "entity": "Muhaimin Iskandar",
+          "extracted": true,
+          "context_len": 596,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Kepercayaan itu hanya bisa dibangun melalui integritas serta konsistensi dalam tindakan,\" katanya Di acara syukuran itu dihadiri Ketum Partai Golkar/M"
+        },
+        {
+          "row": 5,
+          "entity": "Bima Arya Sugiarto",
+          "extracted": true,
+          "context_len": 499,
+          "quality_score": 3,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": false,
+          "ends_clean": true,
+          "preview": ", Jakarta - Wakil Menteri Dalam Negeri (Wamendagri) Bima Arya Sugiarto mendorong pemerintah daerah (Pemda) menjadikan penghijauan sebagai gerakan berk"
+        },
+        {
+          "row": 6,
+          "entity": "Pramono Anung",
+          "extracted": true,
+          "context_len": 270,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "JAKARTA, KOMPAS.com - Pramono Anung resmi mendaftarkan diri ke KPU untuk maju sebagai bakal calon gubernur Jakarta. Politisi senior PDI-P ini maju di "
+        },
+        {
+          "row": 7,
+          "entity": "Dedi Mulyadi",
+          "extracted": true,
+          "context_len": 143,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Kabar siswi korban dugaan kekerasan seksual di Karawang dikeluarkan dari sekolah memantik reaksi Dedi Mulyadi. Sang gubernur kini turun tangan."
+        },
+        {
+          "row": 8,
+          "entity": "Tito Karnavian",
+          "extracted": true,
+          "context_len": 185,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Semangat ini selaras dengan pesan Kasatgas PRR Tito Karnavian agar semua unsur, baik kementerian, lembaga, hingga pemerintah daerah mempercepat proses"
+        },
+        {
+          "row": 9,
+          "entity": "Zulkifli Hasan",
+          "extracted": true,
+          "context_len": 253,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "MENTERI Koordinator Bidang Pangan, Zulkifli Hasan (Zulhas) menyebut bahwa 13 ribu satuan pemenuhan pelayanan gizi (SPPG) yang dinilai boros akan dibag"
+        },
+        {
+          "row": 10,
+          "entity": "Dito Ariotedjo",
+          "extracted": true,
+          "context_len": 300,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Dito Ariotedjo akan dilantik menjadi Menteri Pemuda dan Olahraga oleh Presiden Joko Widodo pada Senin, 3 April 2023. Dito Ariotedjo menggantikan Zainu"
+        },
+        {
+          "row": 11,
+          "entity": "Abdurrahman Wahid",
+          "extracted": false,
+          "reason": "entity not found",
+          "quality_score": 0
+        },
+        {
+          "row": 12,
+          "entity": "Hamzah Haz",
+          "extracted": true,
+          "context_len": 594,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Hamzah Haz (15 Februari 1940 - 24 Juli 2024) adalah politikus, ekonom, dan aktivis Islam Indonesia yang menjabat sebagai Wakil Presiden Indonesia ke-9"
+        },
+        {
+          "row": 13,
+          "entity": "Puan Maharani",
+          "extracted": true,
+          "context_len": 104,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Namun ia tak menampik jika nantinya Puan Maharani menjadi Ketua DPR RI lagi. \"Kami belum sampai ke sana."
+        },
+        {
+          "row": 14,
+          "entity": "Refly Harun",
+          "extracted": true,
+          "context_len": 309,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "JAKARTA, KOMPAS.TV - Kuasa Hukum Roy Suryo, Refly Harun, membacakan replik menanggapi jawaban dari Polda Metro Jaya atas penangkapannya terkait kasus "
+        },
+        {
+          "row": 15,
+          "entity": "Try Sutrisno",
+          "extracted": true,
+          "context_len": 488,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Try Sutrisno (Indonesian pronunciation: [ˌt̪ri suˈt̪risnɔ]; 15 November 1935 - 2 March 2026) was an Indonesian politician and army general who served "
+        },
+        {
+          "row": 16,
+          "entity": "Hasto Kristiyanto",
+          "extracted": true,
+          "context_len": 325,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "IGNATIUS Windu Hastomo, putra sulung politikus nasional Hasto Kristiyanto, resmi menikah dengan Lim Xin Rui (Emily) dalam prosesi adat Jawa di Yogyaka"
+        },
+        {
+          "row": 17,
+          "entity": "Bhima Yudhistira",
+          "extracted": true,
+          "context_len": 238,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Nama Bhima Yudhistira Adhinegara semakin sering muncul dalam perbincangan publik ketika isu ekonomi nasional mengemuka. Ekonom muda ini dikenal aktif "
+        },
+        {
+          "row": 18,
+          "entity": "Sufmi Dasco Ahmad",
+          "extracted": true,
+          "context_len": 249,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Advokat Hotman Paris dan Ketua Umum Persatuan Wartawan Indonesia (PWI) Akhmad Munir bertemu dengan Wakil Ketua DPR RI Sufmi Dasco Ahmad pada hari ini,"
+        },
+        {
+          "row": 19,
+          "entity": "Prabowo Subianto",
+          "extracted": true,
+          "context_len": 267,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Anom yang berpasangan dengan Nurkholes mulai menjabat sebagai kepala daerah pada 20 Februari 2025 setelah dilantik Presiden Prabowo Subianto di Istana"
+        },
+        {
+          "row": 20,
+          "entity": "Ridwan Kamil",
+          "extracted": true,
+          "context_len": 216,
+          "quality_score": 4,
+          "has_entity": true,
+          "length_ok": true,
+          "starts_clean": true,
+          "ends_clean": true,
+          "preview": "Anggota DPR RI Atalia Praratya telah resmi bercerai dengan suaminya, Ridwan Kamil. Setelah sebulan persidangan bergulir di Pengadilan Agama (PA) Bandu"
+        }
+      ]
+    }
+  }
+}
