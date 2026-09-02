@@ -50,12 +50,22 @@ PROMO_PATTERNS = [
 ]
 
 # Byline patterns: (hnh/kri), (red), (tfq/dal), dll
-BYLINE_PATTERN = re.compile(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*$', re.IGNORECASE)
+# HANYA hapus yang punya SLASH (author/editor format) ATAU di akhir text
+BYLINE_SLASH_PATTERN = re.compile(r'\s*\([a-z]{2,5}/[a-z]{2,5}\)\s*', re.IGNORECASE)
+BYLINE_END_PATTERN = re.compile(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*$', re.IGNORECASE)
+
+# Singkatan konteks yang HARUS dipertahankan (BUKAN byline)
+KEEP_ABBREVIATIONS = {
+    'ratas', 'nobar', 'red', 'kapol', 'wabup', ' Wagub', 'wali',
+    'ist', 'dok', 'antara', 'foto', 'instagram', 'pmj', 'ls',
+    'psht', 'pmp', 'kk', 'ak', 's.h.', 'm.h.', 's.i.p.',
+}
 
 # Source attribution patterns: "KOMPAS.com -", "TRIBUN -", "CNN Indonesia -"
 SOURCE_ATTR_PATTERNS = [
-    r'^(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*|ANTARA|jpnn\.com|detikcom|VIVA|Suara\.com|Republika|POPOSIDK)\s*[\-–—|:]\s*',
+    r'^(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*\.?\w*|ANTARA/?\w*|jpnn\.com|detikcom|VIVA|Suara\.com|Republika|POPOSIDK)\s*[\-–—|:]\s*',
     r'^(JAKARTA|BANDUNG|SURABAYA|MEDAN|MAKASSAR|SEMARANG|YOGYAKARTA)\s*[\-–—|:]\s*[A-Z]',
+    r'^(TRIBUNNEWS\.COM|KOMPAS\.TV|CNNINDONESIA)\s*[, ]*[A-Z\s]*\s*[\-–—|:]\s*',
 ]
 
 # UI patterns (navigation, tags, related articles)
@@ -128,19 +138,30 @@ def remove_promo_content(text: str) -> str:
 
 
 def remove_byline(text: str) -> str:
-    """Remove byline author markers.
+    """Remove byline author markers — but KEEP context abbreviations.
     
-    Handles:
-    - (hnh/kri) at end of text
-    - (red) at end of text
-    - (tfq/dal) at end of text
-    - (ratas) at end of text
+    Removes:
+    - (hnh/kri), (tfq/dal) — author/editor bylines (with slash)
+    - (red) at END of text only — editor byline
+    
+    KEEPS (does NOT remove):
+    - (ratas) — rapat terbatas (context abbreviation)
+    - (nobar) — nonton bareng (context abbreviation)
+    - (ist), (dok), (antara) — photo credits (handled separately)
     """
-    # Remove byline at end of text
-    text = BYLINE_PATTERN.sub('', text)
+    # 1. Remove bylines WITH slash (author/editor format): (hnh/kri), (tfq/dal)
+    text = BYLINE_SLASH_PATTERN.sub(' ', text)
     
-    # Also remove byline in middle of text (before last paragraph)
-    text = re.sub(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*(?=\n|$)', '', text, flags=re.IGNORECASE)
+    # 2. Remove byline at END of text only: (red), (hnh)
+    #    But ONLY if it's not a known abbreviation
+    match = BYLINE_END_PATTERN.search(text)
+    if match:
+        byline_content = match.group().strip('() \n\r')
+        if byline_content.lower() not in KEEP_ABBREVIATIONS:
+            text = BYLINE_END_PATTERN.sub('', text)
+    
+    # 3. Clean up any trailing whitespace
+    text = text.rstrip()
     
     return text
 
@@ -160,11 +181,10 @@ def remove_source_attribution(text: str) -> str:
     return text.strip()
 
 
-def remove_duplicate_paragraphs(text: str) -> str:
+def remove_duplicate_paragraphs(text: str, entity_name: str = "") -> str:
     """Remove duplicate paragraphs within article.
     
-    Detects paragraphs that appear 2x and keeps only the first occurrence.
-    Uses first 100 chars as dedup key (handles minor variations).
+    Preserves paragraphs containing the entity name.
     """
     # Split into paragraphs
     paragraphs = text.split('\n')
@@ -174,8 +194,13 @@ def remove_duplicate_paragraphs(text: str) -> str:
         sentences = re.split(r'(?<=[.!?])\s+', text)
         seen = set()
         unique = []
+        entity_lower = entity_name.lower() if entity_name else ""
         for s in sentences:
             key = s.strip()[:80].lower()
+            # Always keep sentences with entity
+            if entity_lower and entity_lower in s.lower():
+                unique.append(s.strip())
+                continue
             if key not in seen and len(s.strip()) > 20:
                 seen.add(key)
                 unique.append(s.strip())
@@ -184,8 +209,13 @@ def remove_duplicate_paragraphs(text: str) -> str:
     # Paragraph-level dedup
     seen = set()
     unique = []
+    entity_lower = entity_name.lower() if entity_name else ""
     for para in paragraphs:
         key = para.strip()[:100].lower()
+        # Always keep paragraphs with entity
+        if entity_lower and entity_lower in para.lower():
+            unique.append(para.strip())
+            continue
         if key not in seen and para.strip():
             seen.add(key)
             unique.append(para.strip())
@@ -193,45 +223,67 @@ def remove_duplicate_paragraphs(text: str) -> str:
     return '\n'.join(unique)
 
 
-def align_sentence_boundary(text: str, max_chars: int = 500) -> str:
-    """Ensure text ends at sentence boundary (not mid-word).
+def align_sentence_boundary(text: str, max_chars: int = 500, entity_name: str = "") -> str:
+    """Ensure text ends at sentence boundary (not mid-word or incomplete).
     
-    If text exceeds max_chars, truncate at last sentence boundary.
+    If entity_name is provided, ensures entity is not cut off by truncation.
     """
-    if len(text) <= max_chars:
-        # Still ensure ends with punctuation
-        if text and text[-1] not in '.!?"\')]':
-            # Find last sentence boundary
-            last_period = text.rfind('. ')
-            if last_period > 100:
-                text = text[:last_period + 1]
-            else:
-                text = text.rstrip() + '.'
+    if not text:
         return text
     
-    # Truncate to max_chars, then find sentence boundary
-    truncated = text[:max_chars]
+    # Check for incomplete ending
+    INCOMPLETE_WORDS = ['dan', 'atau', 'yang', 'di', 'ke', 'dari', 'untuk', 'pada', 'dengan',
+                        'karena', 'sementara', 'namun', 'tetapi', 'meskipun', 'sehingga',
+                        'agar', 'supaya', 'ketika', 'saat', 'jika', 'kalau']
     
-    # Find last sentence boundary
-    last_period = truncated.rfind('. ')
-    if last_period > 100:
-        return truncated[:last_period + 1]
+    # Remove incomplete ending
+    clean_end = text.rstrip('.!?"\')]').strip()
+    if clean_end:
+        last_word = clean_end.split()[-1].lower() if clean_end.split() else ''
+        if last_word in INCOMPLETE_WORDS:
+            last_space = clean_end.rfind(' ')
+            if last_space > 50:
+                text = clean_end[:last_space].rstrip() + '.'
+            else:
+                text = clean_end.rstrip() + '.'
     
-    # Try with other punctuation
-    for punct in ['! ', '? ', '." ', '?" ']:
-        pos = truncated.rfind(punct)
-        if pos > 100:
-            return truncated[:pos + 1]
+    # If entity_name provided, extend max_chars to include entity
+    effective_max = max_chars
+    if entity_name:
+        entity_pos = text.lower().find(entity_name.lower())
+        if entity_pos >= 0:
+            entity_end = entity_pos + len(entity_name)
+            # Ensure max_chars covers at least entity + some context after
+            effective_max = max(max_chars, entity_end + 100)
     
-    # Fallback: cut at last space
-    last_space = truncated.rfind(' ')
-    if last_space > 100:
-        return truncated[:last_space] + '.'
+    # Truncate if needed
+    if len(text) > effective_max:
+        truncated = text[:effective_max]
+        # Find last sentence boundary
+        last_period = truncated.rfind('. ')
+        if last_period > 100:
+            return truncated[:last_period + 1]
+        for punct in ['! ', '? ', '." ']:
+            pos = truncated.rfind(punct)
+            if pos > 100:
+                return truncated[:pos + 1]
+        last_space = truncated.rfind(' ')
+        if last_space > 100:
+            return truncated[:last_space] + '.'
+        return truncated + '.'
     
-    return truncated + '.'
+    # Ensure ends with punctuation
+    if text and text[-1] not in '.!?"\')]':
+        last_period = text.rfind('. ')
+        if last_period > 100:
+            text = text[:last_period + 1]
+        else:
+            text = text.rstrip() + '.'
+    
+    return text
 
 
-def clean_article_text(text: str, title: str = "") -> str:
+def clean_article_text(text: str, title: str = "", entity_name: str = "") -> str:
     """
     MAIN FUNCTION: Clean article text using library-based approach.
     
@@ -241,12 +293,13 @@ def clean_article_text(text: str, title: str = "") -> str:
       3. Remove promo/marketing
       4. Remove byline
       5. Remove source attribution
-      6. Remove duplicate paragraphs
+      6. Remove duplicate paragraphs (preserves entity paragraphs)
       7. Align sentence boundary
     
     Args:
         text: Raw article text (from Trafilatura or RSS)
         title: Article title (for title removal from text start)
+        entity_name: Entity name to preserve during dedup
     
     Returns:
         Clean article text
@@ -286,15 +339,15 @@ def clean_article_text(text: str, title: str = "") -> str:
     if len(text) < len(pre_source):
         changes.append('source attribution removed')
     
-    # Step 6: Remove duplicate paragraphs
+    # Step 6: Remove duplicate paragraphs (preserves entity paragraphs)
     pre_dup = text
-    text = remove_duplicate_paragraphs(text)
+    text = remove_duplicate_paragraphs(text, entity_name)
     if len(text) < len(pre_dup):
         changes.append(f'duplicate removed ({len(pre_dup) - len(text)} chars)')
     
-    # Step 7: Align sentence boundary
+    # Step 7: Align sentence boundary (with entity preservation)
     pre_align = text
-    text = align_sentence_boundary(text)
+    text = align_sentence_boundary(text, entity_name=entity_name)
     if text != pre_align:
         changes.append('sentence boundary aligned')
     
