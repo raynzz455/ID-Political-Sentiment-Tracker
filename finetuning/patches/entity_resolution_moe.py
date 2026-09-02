@@ -137,11 +137,11 @@ class RapidFuzzMatcher:
             matches = process.extract(
                 candidate, self.names_only,
                 scorer=fuzz.WRatio,
-                score_cutoff=85,  # high threshold for confidence
+                score_cutoff=90,  # raised from 85 to reduce false positives
                 limit=3
             )
             for match_name, score, idx in matches:
-                if score >= 85:
+                if score >= 90:  # raised from 85 to reduce false positives
                     canon_lower, canon, is_alias = self.match_list[idx]
                     ent_id = self.entity_db_map.get(canon.lower())
                     if ent_id:
