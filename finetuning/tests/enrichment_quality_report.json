@@ -1,0 +1,98 @@
+{
+  "test_config": {
+    "n_rows": 30,
+    "seed": 2024,
+    "timestamp": "2026-09-02 13:40:57"
+  },
+  "results": {
+    "entity_resolution": {
+      "exact_match": 28,
+      "partial_match": 2,
+      "mismatch": 0,
+      "mismatches_detail": [],
+      "total": 30,
+      "accuracy": 100.0,
+      "mismatch_rate": 0.0,
+      "grade": "SANGAT BAIK"
+    },
+    "context_quality": {
+      "quality_4": 22,
+      "quality_3": 8,
+      "quality_2": 0,
+      "quality_1": 0,
+      "quality_0": 0,
+      "issues": {
+        "truncated_start": 1,
+        "no_terminal_punct": 0,
+        "too_short": 0,
+        "too_long": 7,
+        "entity_not_in_text": 0
+      },
+      "details": [],
+      "total": 30,
+      "perfect_rate": 73.33,
+      "good_rate": 100.0,
+      "poor_rate": 0.0,
+      "avg_score": 3.73,
+      "grade": "BAIK"
+    },
+    "preprocessing": {
+      "issues": {
+        "non_ascii": 0,
+        "html_entities": 0,
+        "mojibake": 0,
+        "multi_whitespace": 0,
+        "tabs": 0,
+        "citations": 0,
+        "urls_in_text": 0,
+        "emoji": 0,
+        "repeated_chars": 0,
+        "zero_width": 0,
+        "control_chars": 0
+      },
+      "details": [],
+      "total": 30,
+      "total_issues": 0,
+      "clean_rate": 100.0,
+      "grade": "SANGAT BAIK"
+    },
+    "label_quality": {
+      "mean_confidence": 96.3,
+      "median_confidence": 98.0,
+      "min_confidence": 90.0,
+      "high_confidence_count": 26,
+      "high_confidence_pct": 86.67,
+      "low_confidence_count": 0,
+      "low_confidence_pct": 0.0,
+      "llm_verified_count": 27,
+      "llm_verified_pct": 90.0,
+      "label_distribution": {
+        "neutral": 26,
+        "positive": 3,
+        "negative": 1
+      },
+      "label_sources": {
+        "llm_reverify_095": 15,
+        "llm_reverified_v2": 5,
+        "llm_reverify_precise": 6,
+        "sample_validation": 3,
+        "llm_final_retry": 1
+      },
+      "total": 30,
+      "grade": "SANGAT BAIK"
+    },
+    "data_integrity": {
+      "total_rows": 30,
+      "duplicates": 0,
+      "empty_texts": 0,
+      "empty_entities": 0,
+      "empty_labels": 0,
+      "empty_confidence": 0,
+      "empty_reasoning": 0,
+      "integrity_rate": 100.0,
+      "grade": "SANGAT BAIK"
+    }
+  },
+  "overall_score": 97,
+  "overall_grade": "SANGAT BAIK ✅"
+}
