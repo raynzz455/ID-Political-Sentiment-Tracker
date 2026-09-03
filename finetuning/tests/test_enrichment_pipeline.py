@@ -213,25 +213,65 @@ def print_row_pipeline(raw_row, final_row, row_num):
     # ===== L3: PREPROCESSING =====
     print_layer('3', 'PREPROCESSING', 'Normalisasi unicode, hapus URL, hash dedup')
     
-    # Show raw context (sebelum preprocessing)
-    if context_raw:
-        print(f"\n  Context sebelum preprocessing ({len(context_raw)} chars):")
-        wrap(context_raw[:300])
+    # Preprocessing membersihkan ARTICLE_TEXT (bukan context_text!)
+    # Show article_text BEFORE preprocessing (with noise)
+    print(f"\n  Article Text SEBELUM preprocessing ({len(article_text)} chars):")
+    wrap(article_text[:400])
+    if len(article_text) > 400:
+        print(f"    ... ({len(article_text) - 400} more chars)")
     
-    # Simulasi preprocessing changes
-    changes, content_hash = simulate_preprocessing(final_text)
+    # Apply preprocessing to article_text (same text, just cleaned)
+    import unicodedata
+    import html as html_lib
+    preprocessed = article_text
+    changes = []
     
-    print(f"\n  Final Text setelah preprocessing ({len(final_text)} chars):")
-    wrap(final_text[:300])
+    # 1. HTML unescape
+    preprocessed = html_lib.unescape(preprocessed)
+    # 2. Unicode normalize
+    preprocessed = unicodedata.normalize('NFKC', preprocessed)
+    # 3. Remove zero-width chars
+    preprocessed = preprocessed.replace('\u200b','').replace('\u200c','').replace('\xa0',' ')
+    # 4. Remove URLs
+    if re.search(r'https?://\S+', preprocessed):
+        preprocessed = re.sub(r'https?://\S+', '', preprocessed)
+        changes.append('URLs removed')
+    # 5. Remove HTML entities
+    if re.search(r'&\w+;|&#\d+;', preprocessed):
+        preprocessed = re.sub(r'&\w+;|&#\d+;', '', preprocessed)
+        changes.append('HTML entities removed')
+    # 6. Remove citation markers
+    if re.search(r'\[\d+\]', preprocessed):
+        preprocessed = re.sub(r'\[\d+\]', '', preprocessed)
+        changes.append('Citation markers removed')
+    # 7. Normalize whitespace
+    if re.search(r'  +|\t|\n', preprocessed):
+        preprocessed = re.sub(r'\s+', ' ', preprocessed)
+        changes.append('Whitespace normalized')
+    # 8. Non-ASCII check
+    if any(ord(c) > 127 for c in preprocessed):
+        changes.append('Non-ASCII chars detected (kept as-is)')
     
-    print(f"\n  Content hash:    {content_hash}")
-    print(f"  Is clean:        ✅ YES")
+    preprocessed = preprocessed.strip()
+    content_hash = hashlib.sha256(preprocessed.encode('utf-8')).hexdigest()[:16]
+    
+    print(f"\n  Article Text SETELAH preprocessing ({len(preprocessed)} chars):")
+    wrap(preprocessed[:400])
+    if len(preprocessed) > 400:
+        print(f"    ... ({len(preprocessed) - 400} more chars)")
+    
+    print(f"\n  Reduction:       {len(article_text) - len(preprocessed)} chars")
+    print(f"  Content hash:    {content_hash}")
+    
     if changes:
         print(f"\n  Changes applied:")
         for change in changes:
             print(f"    • {change}")
     else:
         print(f"\n  No changes needed (already clean)")
+    
+    # Update article_text to preprocessed version for downstream layers
+    article_text = preprocessed
     
     # ===== L3.2: ENTITY RESOLUTION =====
     print_layer('3.2', 'ENTITY RESOLUTION', 'NER + alias matching')
