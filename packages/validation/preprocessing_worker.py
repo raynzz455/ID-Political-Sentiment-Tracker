@@ -1,7 +1,7 @@
 """
-preprocessing_worker.py v10 — I/O & CPU Optimized
+preprocessing_worker.py v12 — I/O & CPU Optimized
 =============================================================
-FIX v10:
+FIX v12 (library-based):
   1. THREADED NORMALIZATION: Menggunakan ThreadPoolExecutor untuk memparalelkan 
      Regex cleaning & Hashing per artikel (Memanfaatkan CPU multi-core).
   2. I/O BATCHING: Menaikkan chunk size untuk query Duplikat (50 -> 100) dan 
@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-PIPELINE_VERSION = "v10_io_cpu_optimized"
+PIPELINE_VERSION = "v12_library_based"
 CHUNK_SIZE = 50  # Naikkan dari 25 ke 50 untuk mengurangi Network I/O
 MAX_WORKERS = 4  # Thread untuk Regex & Hashing paralel
 

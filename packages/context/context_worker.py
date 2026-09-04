@@ -472,6 +472,24 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             "is_relevant": relevancy_score >= RELEVANCY_THRESHOLD,
         }
 
+        # v23: Apply quality filter — remove profile & redundant sentences
+        ctx_sentences = ctx_text.split('. ')
+        filtered_sentences = []
+        for sent in ctx_sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            # Skip profile sentences
+            if is_profile_sentence_v23(sent):
+                continue
+            # Skip redundant sentences
+            if is_redundant_v23(sent, filtered_sentences):
+                continue
+            filtered_sentences.append(sent)
+        ctx_text = '. '.join(filtered_sentences)
+        if ctx_text and not ctx_text.endswith('.'):
+            ctx_text += '.'
+
         all_spans.setdefault(entity_id, []).append((ctx_text, quality))
 
     # v18: store ALL spans per entity (not just best)

@@ -191,6 +191,11 @@ def load_caches(sb):
 def is_false_positive(matched_text: str, canonical_name: str, full_persons: list) -> bool:
     matched_lower = matched_text.lower()
     canonical_lower = canonical_name.lower()
+    
+    # v22: Filter common Indonesian words (not entity names)
+    if matched_lower in COMMON_INDONESIAN_WORDS:
+        return True
+    
     for person in full_persons:
         person_lower = person.lower()
         person_words = person_lower.split()

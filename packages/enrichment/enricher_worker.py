@@ -1,7 +1,7 @@
 """
-enricher_worker.py v20 — RAM & CPU Optimized
+enricher_worker.py v21 — RAM & CPU Optimized
 ====================================================================
-FIX v20:
+FIX v21 (library-based):
   1. LXML PARSER: Mengganti html.parser ke lxml (3x lebih cepat, hemat RAM).
   2. GC COLLECTION: Memaksa garbage collection tiap akhir batch agar RAM 16GB tidak bocor.
   3. THREAD BOOST: Menaikkan limit thread dari 7 ke 10 untuk I/O paralel.
@@ -216,7 +216,7 @@ def calculate_title_relevancy(title: str, text: str) -> float:
 
 def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str | None, str]:
     if rss_text and len(rss_text) >= RSS_TEXT_MIN_LEN:
-        full_text = clean_boilerplate(rss_text, title) 
+        full_text = rss_text  # v21: cleaning dilakukan di line 247, tidak perlu double
         extraction_method = "rss_fulltext"
     elif html:
         if len(html) > MAX_HTML_SIZE_BYTES:
@@ -434,12 +434,12 @@ def main(limit: int = 100, max_total: int = 0):
     try: sb.table("raw_texts").select("id").limit(1).execute()
     except Exception as e: logger.error(f"[FATAL] DB tidak reachable: {e}"); sys.exit(1)
 
-    run_id = start_run("enricher_worker", "v20_ram_optimized")
+    run_id = start_run("enricher_worker", "v21_library_based")
     total_stats = Counter()
     total_processed = 0
     batch_num = 1
     
-    logger.info(f"[ENRICHER v20] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
+    logger.info(f"[ENRICHER v21] Limit: {limit}/batch | Threads: {MAX_WORKERS} | Max: {'Unlimited' if max_total == 0 else max_total}")
 
     while True:
         if max_total > 0 and total_processed >= max_total:
