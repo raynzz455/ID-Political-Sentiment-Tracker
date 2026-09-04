@@ -17,6 +17,39 @@ import hashlib
 import logging
 import argparse
 import html as html_lib
+import unicodedata
+
+# v21: Library-based cleaning
+try:
+    import ftfy
+    HAS_FTFY = True
+except ImportError:
+    HAS_FTFY = False
+
+# v21: Byline patterns (smart — keep context abbreviations)
+BYLINE_SLASH_PATTERN = re.compile(r'\s*\([a-z]{2,5}/[a-z]{2,5}\)\s*', re.IGNORECASE)
+BYLINE_END_PATTERN = re.compile(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*$', re.IGNORECASE)
+KEEP_ABBREVIATIONS = {'ratas', 'nobar', 'red', 'kapol', 'wabup', 'wagub', 'wali',
+                      'ist', 'dok', 'antara', 'foto', 'instagram', 'pmj', 'ls',
+                      'psht', 'pmp', 'kk', 'ak'}
+
+# v21: Promo patterns
+PROMO_PATTERNS_V21 = [
+    r'(?i)Gabung\s+\w+\s*\.?\s*Plus\s*sekarang.*',
+    r'(?i)berkomitmen memberikan fakta jernih.*',
+    r'(?i)Dukung keberlanjutan jurnalisme.*',
+    r'(?i)nikmati kenyamanan baca.*',
+    r'(?i)KOMPAS\.com berkomitmen.*',
+]
+
+# v21: Source attribution (awal + tengah)
+SOURCE_ATTR_V21 = [
+    r'^(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*\.?\w*|ANTARA/?\w*|jpnn\.com|detikcom|VIVA|Suara\.com|Republika)\s*[\-\u2013\u2014|:]\s*',
+    r'\.\s+(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*|Suara\.com|VIVA|Republika)\s*[\-\u2013\u2014|:]\s*',
+]
+
+# v21: Bullet points
+BULLET_V21 = r'(?:^|\.\s+)-\s+(?=[A-Z])'
 from collections import Counter
 from pathlib import Path
 from dotenv import load_dotenv
@@ -96,11 +129,28 @@ def extract_jsonld_article(soup: BeautifulSoup) -> str | None:
     return None
 
 def clean_boilerplate(text: str, title: str = "") -> str:
+    """v21: Library-based cleaning with ftfy + promo + byline + source attr + dedup."""
     if not text: return ""
     
+    # v21: Fix encoding with ftfy
+    if HAS_FTFY:
+        text = ftfy.fix_text(text)
+    
     text = html_lib.unescape(text)
+    text = unicodedata.normalize("NFKC", text)
+    text = text.replace("\u200b", "").replace("\u200c", "").replace("\xa0", " ")
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     
+    # v21: Remove bullet points
+    text = re.sub(BULLET_V21, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+    
+    # v21: Remove promo/marketing
+    for pattern in PROMO_PATTERNS_V21:
+        text = re.sub(pattern, '', text, flags=re.DOTALL)
+    
+    # Original UI patterns
     ui_patterns = [
         r'(?i)(Tags\s*:|Berita Lainnya|Dark/Light Mode|BREAKINGNEWS).*?(?=\n|$|\.)',
         r'(?i)Gambas\s*:\s*Video\s*\w+',
@@ -116,19 +166,39 @@ def clean_boilerplate(text: str, title: str = "") -> str:
         
     text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
 
+    # v21: Remove byline (smart — keep abbreviations)
+    text = BYLINE_SLASH_PATTERN.sub(' ', text)
+    match = BYLINE_END_PATTERN.search(text)
+    if match:
+        byline_content = match.group().strip('() \n\r')
+        if byline_content.lower() not in KEEP_ABBREVIATIONS:
+            text = BYLINE_END_PATTERN.sub('', text)
+    text = text.rstrip()
+
+    # v21: Remove source attribution (awal + tengah)
+    for pattern in SOURCE_ATTR_V21:
+        text = re.sub(pattern, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+
     if title:
         clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
         if text[:60].lower().startswith(clean_title[:30]):
             text = text[len(clean_title):].strip()
             text = re.sub(r'^[\s\-:|]+[a-zA-Z\s,\d]{0,20}', '', text).strip()
 
+    # v21: Deduplicate sentences (core content based)
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    seen = set()
+    seen_content = set()
     unique_sentences = []
     for s in sentences:
         s_clean = s.strip()
-        if s_clean and len(s_clean) > 15 and s_clean not in seen:
-            seen.add(s_clean)
+        if not s_clean or len(s_clean) <= 15:
+            continue
+        core = re.sub(r'^(Profil\s+\w+\s*|Perjalanan\s+\w+\s*|Berikut\s+\w+\s*)', '', s_clean, flags=re.IGNORECASE).strip()
+        key = core[:80].lower()
+        if key not in seen_content:
+            seen_content.add(key)
             unique_sentences.append(s_clean)
             
     text = ' '.join(unique_sentences)

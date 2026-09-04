@@ -19,6 +19,31 @@ import logging
 import argparse
 import random
 import html as html_lib
+
+# v12: Library-based imports
+try:
+    import ftfy
+    HAS_FTFY = True
+except ImportError:
+    HAS_FTFY = False
+
+# v12: Byline + source attr + bullet patterns
+BYLINE_SLASH_V12 = re.compile(r'\s*\([a-z]{2,5}/[a-z]{2,5}\)\s*', re.IGNORECASE)
+BYLINE_END_V12 = re.compile(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*$', re.IGNORECASE)
+KEEP_ABBREV_V12 = {'ratas', 'nobar', 'red', 'kapol', 'wabup', 'wagub', 'wali',
+                   'ist', 'dok', 'antara', 'foto', 'instagram', 'pmj', 'ls',
+                   'psht', 'pmp', 'kk', 'ak'}
+PROMO_V12 = [
+    r'(?i)Gabung\s+\w+\s*\.?\s*Plus\s*sekarang.*',
+    r'(?i)berkomitmen memberikan fakta jernih.*',
+    r'(?i)Dukung keberlanjutan jurnalisme.*',
+    r'(?i)KOMPAS\.com berkomitmen.*',
+]
+SOURCE_ATTR_V12 = [
+    r'^(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*\.?\w*|ANTARA/?\w*|Suara\.com|Republika)\s*[\-\u2013\u2014|:]\s*',
+    r'\.\s+(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*|Suara\.com|Republika)\s*[\-\u2013\u2014|:]\s*',
+]
+BULLET_V12 = r'(?:^|\.\s+)-\s+(?=[A-Z])'
 from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
@@ -45,6 +70,9 @@ MAX_WORKERS = 4  # Thread untuk Regex & Hashing paralel
 # ─────────────────────────────────────────────────────────────
 
 def normalize_unicode(text: str) -> str:
+    # v12: Use ftfy if available
+    if HAS_FTFY:
+        text = ftfy.fix_text(text)
     text = html_lib.unescape(text)
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\xa0", " ")

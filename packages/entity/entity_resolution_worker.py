@@ -111,6 +111,21 @@ TOPIC_DOMINANCE_THRESHOLD = 0.25
 MIN_BODY_MENTIONS_FOR_MAIN = 1
 
 
+# v22: Common Indonesian words to filter (reduce false positives)
+COMMON_INDONESIAN_WORDS = {
+    'walau', 'khususnya', 'salah', 'entah', 'meski', 'mengingat',
+    'melalui', 'dalam', 'antara', 'sementara', 'namun', 'tetapi',
+    'akan', 'sehingga', 'karena', 'jika', 'saat', 'ketika',
+    'belum', 'teman-teman', 'selain', 'berikut', 'adapun',
+    'sebagai', 'oleh', 'tentang', 'untuk', 'dengan', 'dari',
+    'video', 'foto', 'audio', 'sumber', 'portal', 'berita',
+    'agustus', 'september', 'oktober', 'november', 'desember',
+    'januari', 'februari', 'maret', 'april', 'mei', 'juni',
+    'juli', 'senin', 'selasa', 'rabu', 'kamis', 'jumat',
+    'sabtu', 'minggu', 'kompas', 'cnn', 'tempo', 'tribun',
+    'detik', 'suara', 'republika', 'viva',
+}
+
 def normalize_name(name: str) -> str:
     return re.sub(r'\s+', ' ', name).strip()
 
