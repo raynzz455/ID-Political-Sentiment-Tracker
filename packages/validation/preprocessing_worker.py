@@ -85,7 +85,31 @@ def remove_urls_emails(text: str) -> tuple[str, int]:
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
     return text, int(len(urls) + len(emails))
 
-def strip_news_boilerplate_safe(text: str, title: str = "") -> str:    
+def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
+    # v12: Remove bullet points
+    text = re.sub(BULLET_V12, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+
+    # v12: Remove promo
+    for pattern in PROMO_V12:
+        text = re.sub(pattern, '', text, flags=re.DOTALL)
+
+    # v12: Remove byline (smart — keep abbreviations)
+    text = BYLINE_SLASH_V12.sub(' ', text)
+    match = BYLINE_END_V12.search(text)
+    if match:
+        byline_content = match.group().strip('() \n\r')
+        if byline_content.lower() not in KEEP_ABBREV_V12:
+            text = BYLINE_END_V12.sub('', text)
+    text = text.rstrip()
+
+    # v12: Remove source attribution (awal + tengah)
+    for pattern in SOURCE_ATTR_V12:
+        text = re.sub(pattern, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+
     if title:
         title_words = re.findall(r'\w+', title)[:8]
         if title_words:
@@ -93,13 +117,13 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
             match = re.match(r'^\s*' + pattern_title, text, re.IGNORECASE)
             if match:
                 text = text[match.end():].lstrip(" :-\n\"'")
-    
+
     # Hapus nama domain yang nyangkut
     domain_pattern = r'^[\w\.\-]+\.(com|id|co|tv|news|net)\b\s*[\-\|:]*\s*'
     for _ in range(2):
-        text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)                
-    
-    text = re.sub(r'<[^>]+>', ' ', text)    
+        text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)
+
+    text = re.sub(r'<[^>]+>', ' ', text)
     patterns = [
         r"(?i)(baca juga|simak juga|berita terkait)\s*:[^.\n]*\.?",
         r"(?i)(reporter|editor|penulis|pewarta|jurnalis)\s*:\s*[^.\n]*\.?",
@@ -108,7 +132,7 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
         r"(?i)(scroll ke bawah|mau berita terbaru|pilihan untuk lu)\s*[^.\n]*\.?"
     ]
     for p in patterns:
-        text = re.sub(p, '', text)        
+        text = re.sub(p, '', text)
     text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
     return text.strip(" :-\n\"'")
 
