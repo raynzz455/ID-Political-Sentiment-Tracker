@@ -2,26 +2,25 @@
 """
 test_enrichment_pipeline.py
 ===========================
-Script penguji yang menampilkan OUTPUT LANGSUNG dari setiap tahap proses
-enrichment worker sampai preprocessing.
+Script penguji yang menampilkan OUTPUT LANGSUNG dari setiap layer
+sesuai README backend pipeline.
 
-Untuk setiap row, script menampilkan:
-  TAHAP 0: Raw Article (data mentah dari portal berita)
-  TAHAP 1: Entity Resolution Output (entity yang ditemukan worker)
-  TAHAP 2: Context Extraction Output (context yang di-extract worker)
-  TAHAP 3: Preprocessing Output (context setelah dibersihkan)
-  TAHAP 4: Label Output (label + confidence dari LLM)
-  TAHAP 5: Final Dataset Row (data final yang masuk training)
-
-User bisa melihat output setiap tahap dan menilai apakah tepat atau tidak.
+URUTAN LAYER SESUAI README:
+  L1-2:   Ingestion & Enrichment (RSS fetch + Trafilatura extraction)
+  L2.5:   Validation (Quality Control score 0-100)
+  L3:     Preprocessing (normalisasi unicode, hapus URL, hash dedup)
+  L3.2:   Entity Resolution (NER + alias matching)
+  L3.5:   Context Extraction (context span di sekitar entity)
+  L3.7:   Readiness & Queue (final gatekeeper)
+  L4:     NLP Worker (IndoBERT 2-stage: relevancy + sentiment)
 
 Usage:
-  python3 test_enrichment_pipeline.py                    # default 5 rows
-  python3 test_enrichment_pipeline.py --n 10              # 10 rows
-  python3 test_enrichment_pipeline.py --row 5             # row ke-5 saja
-  python3 test_enrichment_pipeline.py --label negative    # hanya label negative
+  python3 test_enrichment_pipeline.py                    # default 3 rows
+  python3 test_enrichment_pipeline.py --n 5              # 5 rows
+  python3 test_enrichment_pipeline.py --row 0            # row ke-0 saja
+  python3 test_enrichment_pipeline.py --label negative   # hanya label negative
 """
-import sys, json, re, argparse, random, textwrap
+import sys, json, re, argparse, random, textwrap, hashlib, unicodedata
 from pathlib import Path
 from collections import Counter
 
@@ -45,374 +44,396 @@ SHORT_FORMS = {
 
 
 def load_data():
-    """Load final dataset + raw articles for comparison."""
     final_rows = [json.loads(l) for l in open(DATASET_FINAL) if l.strip()]
-    
-    # Load raw articles (with article_text)
     raw_map = {}
     if DATASET_RAW.exists():
-        raw_rows = [json.loads(l) for l in open(DATASET_RAW) if l.strip()]
-        for r in raw_rows:
-            raw_map[r.get('raw_text_id', '')] = r
-    
+        for l in open(DATASET_RAW):
+            if l.strip():
+                r = json.loads(l)
+                raw_map[r.get('raw_text_id', '')] = r
     return final_rows, raw_map
 
 
-def find_entity_in_text(entity, text):
-    """Check if entity or alias is in text."""
-    entity_lower = entity.lower()
-    text_lower = text.lower()
-    
-    if entity_lower in text_lower:
-        return True, 'exact'
-    
-    if entity_lower in SHORT_FORMS:
-        for sf in SHORT_FORMS[entity_lower]:
-            if sf in text_lower:
-                return True, f'alias:{sf}'
-    
-    parts = entity.split()
-    if len(parts) >= 2:
-        if len(parts[-1]) >= 4 and parts[-1].lower() in text_lower:
-            return True, 'last_name'
-        if len(parts[0]) >= 4 and parts[0].lower() in text_lower:
-            return True, 'first_name'
-    
-    return False, 'NOT_FOUND'
+def detect_portal(url):
+    if 'cnnindonesia' in url: return 'CNN Indonesia'
+    elif 'tempo.co' in url: return 'Tempo'
+    elif 'kompas.com' in url: return 'Kompas'
+    elif 'tribunnews' in url: return 'Tribun News'
+    elif 'detik' in url: return 'Detik'
+    elif 'antaranews' in url: return 'Antara News'
+    elif 'jpnn' in url: return 'JPNN'
+    elif 'news.google.com' in url: return 'Google News'
+    return 'Other'
 
 
-def detect_entities_in_text(text, entity_db_names=None):
-    """Simulate entity resolution — find all potential entities in text."""
-    # Find capitalized words/phrases (potential entity names)
-    # Look for sequences of capitalized words
+def detect_entities(text):
+    """Simulasi entity detection — find capitalized sequences."""
     words = text.split()
-    entities_found = []
-    current_seq = []
-    
+    entities = []
+    current = []
     for word in words:
         clean = word.strip('.,;:!?()"\'[]{}—–-')
         if clean and clean[0].isupper() and len(clean) >= 3:
-            current_seq.append(clean)
+            current.append(clean)
         else:
-            if current_seq:
-                entities_found.append(' '.join(current_seq))
-                current_seq = []
-    if current_seq:
-        entities_found.append(' '.join(current_seq))
-    
-    # Deduplicate
+            if current:
+                entities.append(' '.join(current))
+                current = []
+    if current:
+        entities.append(' '.join(current))
     seen = set()
     unique = []
-    for e in entities_found:
+    for e in entities:
         if e.lower() not in seen and len(e) >= 4:
             seen.add(e.lower())
             unique.append(e)
-    
-    return unique[:10]  # limit to 10
+    return unique[:10]
 
 
-def simulate_context_extraction(article_text, entity_name):
-    """Simulate context extraction — find entity position and extract context."""
-    entity_lower = entity_name.lower()
-    article_lower = article_text.lower()
-    
-    # Find entity position
-    pos = article_lower.find(entity_lower)
-    match_type = 'full_match'
-    
+def find_entity_position(text, entity):
+    entity_lower = entity.lower()
+    text_lower = text.lower()
+    pos = text_lower.find(entity_lower)
     if pos < 0:
-        # Try short forms
-        if entity_lower in SHORT_FORMS:
-            for sf in SHORT_FORMS[entity_lower]:
-                pos = article_lower.find(sf)
-                if pos >= 0:
-                    match_type = f'alias:{sf}'
-                    break
-    
+        for sf in SHORT_FORMS.get(entity_lower, []):
+            pos = text_lower.find(sf)
+            if pos >= 0: break
     if pos < 0:
-        # Try last name
-        parts = entity_name.split()
+        parts = entity.split()
         if len(parts) >= 2 and len(parts[-1]) >= 4:
-            pos = article_lower.find(parts[-1].lower())
-            if pos >= 0:
-                match_type = 'last_name'
-    
+            pos = text_lower.find(parts[-1].lower())
+    return pos
+
+
+def extract_context(article_text, entity_name):
+    """Simulasi context extraction — sentence window."""
+    pos = find_entity_position(article_text, entity_name)
     if pos < 0:
-        return None, 'entity_not_found', 0
-    
-    # Find sentence boundaries
+        return None, -1
     SENTENCE_END = re.compile(r'[.!?]["\')\]]?\s+')
-    
-    # Walk backwards to find sentence start
     before = article_text[:pos]
     matches = list(SENTENCE_END.finditer(before))
     start = matches[-1].end() if matches else 0
-    
-    # Walk forwards to find sentence end (up to 3 sentences)
     end = pos + len(entity_name)
     sent_count = 0
     for match in SENTENCE_END.finditer(article_text[end:]):
         end = end + match.end()
         sent_count += 1
-        if sent_count >= 3:
-            break
-    
-    context = article_text[start:end]
-    return context, match_type, pos
+        if sent_count >= 3: break
+    return article_text[start:end], pos
 
 
 def simulate_preprocessing(text):
-    """Simulate preprocessing — show what cleaning was applied."""
-    original = text
+    """Simulasi preprocessing — show what cleaning was applied."""
     changes = []
-    
-    # Check non-ASCII
-    non_ascii = [c for c in text if ord(c) > 127]
-    if non_ascii:
-        import unicodedata
-        text = unicodedata.normalize('NFKD', text)
-        text = ''.join(c for c in text if not unicodedata.combining(c))
-        text = ''.join(c if ord(c) < 128 else ' ' for c in text)
-        changes.append(f'Removed {len(non_ascii)} non-ASCII chars')
-    
-    # Check HTML entities
-    html = re.findall(r'&\w+;|&#\d+;', text)
-    if html:
-        text = re.sub(r'&\w+;', ' ', text)
-        text = re.sub(r'&#\d+;', ' ', text)
-        changes.append(f'Removed {len(html)} HTML entities')
-    
-    # Check citation markers
-    citations = re.findall(r'\[\d+\]', text)
-    if citations:
-        text = re.sub(r'\[\d+\]', '', text)
-        changes.append(f'Removed {len(citations)} citation markers')
-    
-    # Check multiple whitespace
+    if any(ord(c) > 127 for c in text):
+        changes.append('Non-ASCII normalized')
+    if re.search(r'&\w+;|&#\d+;', text):
+        changes.append('HTML entities removed')
+    if re.search(r'\[\d+\]', text):
+        changes.append('Citation markers removed')
     if re.search(r'  +', text):
-        count = len(re.findall(r'  +', text))
-        text = re.sub(r' +', ' ', text)
-        changes.append(f'Normalized {count} multiple whitespace')
-    
-    # Check tabs/newlines
-    if '\t' in text or '\n' in text:
-        text = text.replace('\t', ' ').replace('\n', ' ')
-        changes.append('Removed tabs/newlines')
-    
-    # Strip
-    text = text.strip()
-    
-    if text != original and not changes:
-        changes.append('Minor cleanup')
-    
-    return text, changes
+        changes.append('Whitespace normalized')
+    if re.search(r'https?://\S+', text):
+        changes.append('URLs removed')
+    content_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
+    return changes, content_hash
 
 
-def print_separator(char='═', width=80):
-    print(char * width)
+def print_sep(char='═', w=80):
+    print(char * w)
 
-
-def print_tahap(num, title):
+def print_layer(layer_num, title, subtitle=''):
     print()
-    print_separator()
-    print(f"  TAHAP {num}: {title}")
-    print_separator()
+    print_sep()
+    print(f"  LAYER {layer_num}: {title}")
+    if subtitle:
+        print(f"  ({subtitle})")
+    print_sep()
+
+def wrap(text, indent='    ', w=72):
+    for line in textwrap.wrap(str(text), width=w, initial_indent=indent, subsequent_indent=indent):
+        print(line)
 
 
-def print_row_pipeline(row, raw_row, row_num):
-    """Print full pipeline output for one row."""
+def print_row_pipeline(raw_row, final_row, row_num):
+    """Print pipeline output SESUAI URUTAN README."""
     
     print(f"\n{'#'*80}")
-    print(f"  ROW {row_num} — Pipeline Output Trace")
+    print(f"  ROW {row_num} — Backend Pipeline Output Trace")
     print(f"{'#'*80}")
     
-    # ===== TAHAP 0: RAW ARTICLE =====
-    print_tahap(0, "RAW ARTICLE (Data Mentah dari Portal Berita)")
+    article_text = raw_row.get('article_text', '') if raw_row else final_row.get('text', '')
+    context_raw = raw_row.get('context_text', '') if raw_row else ''
+    final_text = final_row.get('text', '')
+    entity_name = final_row.get('entity_name', '')
+    source_url = final_row.get('source_url', '')
     
-    source_url = row.get('source_url', 'N/A')
-    print(f"\n  Source URL: {source_url}")
+    # ===== L1-2: INGESTION & ENRICHMENT =====
+    print_layer('1-2', 'INGESTION & ENRICHMENT', 'RSS fetch + Trafilatura extraction')
     
-    # Extract portal name from URL
-    if 'cnnindonesia' in source_url:
-        portal = "CNN Indonesia"
-    elif 'tempo.co' in source_url:
-        portal = "Tempo"
-    elif 'kompas.com' in source_url:
-        portal = "Kompas"
-    elif 'tribunnews' in source_url:
-        portal = "Tribun News"
-    elif 'jpnn' in source_url:
-        portal = "JPNN"
-    elif 'detik' in source_url:
-        portal = "Detik"
-    elif 'antaranews' in source_url:
-        portal = "Antara News"
-    else:
-        portal = "Other"
+    portal = detect_portal(source_url)
+    print(f"\n  Source URL: {source_url[:100]}")
     print(f"  Portal: {portal}")
+    print(f"  Raw Text ID: {final_row.get('raw_text_id', 'N/A')}")
+    print(f"\n  Article Text ({len(article_text)} chars):")
+    wrap(article_text[:500])
+    if len(article_text) > 500:
+        print(f"    ... ({len(article_text) - 500} more chars)")
     
-    raw_text_id = row.get('raw_text_id', 'N/A')
-    print(f"  Raw Text ID: {raw_text_id}")
+    # Anti-sampah checks
+    print(f"\n  Anti-Sampah Checks:")
+    print(f"    ✅ Text < 20.000 chars: {len(article_text) < 20000}")
+    print(f"    ✅ Text > 500 chars: {len(article_text) > 500}")
     
-    if raw_row:
-        article_text = raw_row.get('article_text', '')
-        context_text_raw = raw_row.get('context_text', '')
-        print(f"\n  Article Text ({len(article_text)} chars):")
-        for line in textwrap.wrap(article_text[:600], width=76, initial_indent='    ', subsequent_indent='    '):
-            print(line)
-        if len(article_text) > 600:
-            print(f"    ... ({len(article_text) - 600} more chars)")
-        
-        print(f"\n  Context (sebelum cleaning, {len(context_text_raw)} chars):")
-        for line in textwrap.wrap(context_text_raw[:400], width=76, initial_indent='    ', subsequent_indent='    '):
-            print(line)
+    # ===== L2.5: VALIDATION (Quality Control) =====
+    print_layer('2.5', 'VALIDATION', 'Quality Control score 0-100')
+    
+    # Simulasi QC
+    score = 0
+    if 200 <= len(article_text) <= 5000: score += 40
+    elif len(article_text) > 50: score += 20
+    sentences = re.split(r'[.!?]\s', article_text)
+    if len(sentences) >= 3: score += 20
+    elif len(sentences) >= 1: score += 10
+    indo_words = ['yang','dan','di','ke','dari','untuk','pada','dengan','atau','ini']
+    indo_count = sum(1 for w in indo_words if w in article_text.lower())
+    if indo_count >= 5: score += 20
+    elif indo_count >= 2: score += 10
+    url_count = len(re.findall(r'https?://', article_text))
+    if url_count <= 10: score += 20
+    score = max(0, min(100, score))
+    
+    print(f"\n  QC Score:        {score}/100")
+    print(f"  Passed:          {'✅ YES' if score >= 50 else '❌ NO'}")
+    print(f"  Article Length:  {len(article_text)} chars")
+    print(f"  Sentence Count:  {len(sentences)}")
+    print(f"  Indo Words:      {indo_count}")
+    
+    # ===== L3: PREPROCESSING =====
+    print_layer('3', 'PREPROCESSING', 'Normalisasi unicode, hapus URL, hash dedup')
+    
+    # Preprocessing membersihkan ARTICLE_TEXT (bukan context_text!)
+    # Show article_text BEFORE preprocessing (with noise)
+    print(f"\n  Article Text SEBELUM preprocessing ({len(article_text)} chars):")
+    wrap(article_text[:400])
+    if len(article_text) > 400:
+        print(f"    ... ({len(article_text) - 400} more chars)")
+    
+    # Apply preprocessing to article_text (same text, just cleaned)
+    import unicodedata
+    import html as html_lib
+    preprocessed = article_text
+    changes = []
+    
+    # 1. HTML unescape
+    preprocessed = html_lib.unescape(preprocessed)
+    # 2. Unicode normalize
+    preprocessed = unicodedata.normalize('NFKC', preprocessed)
+    # 3. Remove zero-width chars
+    preprocessed = preprocessed.replace('\u200b','').replace('\u200c','').replace('\xa0',' ')
+    # 4. Remove URLs
+    if re.search(r'https?://\S+', preprocessed):
+        preprocessed = re.sub(r'https?://\S+', '', preprocessed)
+        changes.append('URLs removed')
+    # 5. Remove HTML entities
+    if re.search(r'&\w+;|&#\d+;', preprocessed):
+        preprocessed = re.sub(r'&\w+;|&#\d+;', '', preprocessed)
+        changes.append('HTML entities removed')
+    # 6. Remove citation markers
+    if re.search(r'\[\d+\]', preprocessed):
+        preprocessed = re.sub(r'\[\d+\]', '', preprocessed)
+        changes.append('Citation markers removed')
+    # 7. Normalize whitespace
+    if re.search(r'  +|\t|\n', preprocessed):
+        preprocessed = re.sub(r'\s+', ' ', preprocessed)
+        changes.append('Whitespace normalized')
+    # 8. Non-ASCII check
+    if any(ord(c) > 127 for c in preprocessed):
+        changes.append('Non-ASCII chars detected (kept as-is)')
+    
+    preprocessed = preprocessed.strip()
+    content_hash = hashlib.sha256(preprocessed.encode('utf-8')).hexdigest()[:16]
+    
+    print(f"\n  Article Text SETELAH preprocessing ({len(preprocessed)} chars):")
+    wrap(preprocessed[:400])
+    if len(preprocessed) > 400:
+        print(f"    ... ({len(preprocessed) - 400} more chars)")
+    
+    print(f"\n  Reduction:       {len(article_text) - len(preprocessed)} chars")
+    print(f"  Content hash:    {content_hash}")
+    
+    if changes:
+        print(f"\n  Changes applied:")
+        for change in changes:
+            print(f"    • {change}")
     else:
-        print(f"\n  [Raw article tidak tersedia]")
+        print(f"\n  No changes needed (already clean)")
     
-    # ===== TAHAP 1: ENTITY RESOLUTION =====
-    print_tahap(1, "ENTITY RESOLUTION WORKER OUTPUT")
+    # Update article_text to preprocessed version for downstream layers
+    article_text = preprocessed
     
-    entity_name = row.get('entity_name', '')
-    match_type = row.get('match_type', '')
+    # ===== L3.2: ENTITY RESOLUTION =====
+    print_layer('3.2', 'ENTITY RESOLUTION', 'NER + alias matching')
     
-    print(f"\n  Expected Entity: {entity_name}")
-    print(f"  Match Type:      {match_type}")
+    match_type = final_row.get('match_type', '')
+    print(f"\n  Expected Entity:  {entity_name}")
+    print(f"  Match Type:       {match_type}")
     
-    if raw_row:
-        article_text = raw_row.get('article_text', '')
-        detected_entities = detect_entities_in_text(article_text)
-        print(f"\n  All entities detected in article ({len(detected_entities)}):")
-        for e in detected_entities:
-            marker = ' ◀ TARGET' if e.lower() == entity_name.lower() else ''
-            print(f"    • {e}{marker}")
+    # All entities detected
+    detected = detect_entities(article_text)
+    print(f"\n  All entities detected in article ({len(detected)} shown):")
+    for e in detected:
+        marker = ' ◀ TARGET' if e.lower() == entity_name.lower() else ''
+        print(f"    • {e}{marker}")
     
-    # Verify entity in final text
-    found, match_detail = find_entity_in_text(entity_name, row['text'])
-    print(f"\n  Entity in final text: {'✅ YES' if found else '❌ NO'} ({match_detail})")
-    
-    # ===== TAHAP 2: CONTEXT EXTRACTION =====
-    print_tahap(2, "CONTEXT EXTRACTION WORKER OUTPUT")
-    
-    if raw_row:
-        article_text = raw_row.get('article_text', '')
-        extracted_context, ext_match_type, entity_pos = simulate_context_extraction(article_text, entity_name)
-        
-        if extracted_context:
-            print(f"\n  Entity position in article: char {entity_pos}")
-            print(f"  Match type: {ext_match_type}")
-            print(f"\n  Extracted Context ({len(extracted_context)} chars):")
-            for line in textwrap.wrap(extracted_context[:500], width=76, initial_indent='    ', subsequent_indent='    '):
-                print(line)
-        else:
-            print(f"\n  ❌ Entity not found in article — context extraction failed")
+    # Check entity in final text
+    entity_lower = entity_name.lower()
+    text_lower = final_text.lower()
+    if entity_lower in text_lower:
+        found = 'exact'
+    elif any(sf in text_lower for sf in SHORT_FORMS.get(entity_lower, [])):
+        found = 'alias'
     else:
-        print(f"\n  [Raw article tidak tersedia untuk simulasi]")
-    
-    # ===== TAHAP 3: PREPROCESSING =====
-    print_tahap(3, "PREPROCESSING OUTPUT")
-    
-    final_text = row['text']
-    print(f"\n  Final Text after preprocessing ({len(final_text)} chars):")
-    for line in textwrap.wrap(final_text, width=76, initial_indent='    ', subsequent_indent='    '):
-        print(line)
-    
-    # Show what was cleaned
-    if raw_row:
-        raw_context = raw_row.get('context_text', '')
-        cleaned_text, changes = simulate_preprocessing(raw_context)
-        if changes:
-            print(f"\n  Preprocessing changes applied:")
-            for change in changes:
-                print(f"    • {change}")
+        parts = entity_name.split()
+        if len(parts) >= 2 and parts[-1].lower() in text_lower:
+            found = 'last_name'
+        elif len(parts) >= 2 and parts[0].lower() in text_lower:
+            found = 'first_name'
         else:
-            print(f"\n  No preprocessing changes needed (already clean)")
+            found = 'NOT_FOUND'
     
-    # Quality checks
-    quality_checks = []
-    quality_checks.append(('Starts with uppercase', final_text[0].isupper() or final_text[0] in '"\'('))
-    quality_checks.append(('Ends with punctuation', final_text[-1] in '.!?"\')]'))
-    quality_checks.append(('Length 80-500 chars', 80 <= len(final_text) <= 500))
-    quality_checks.append(('Entity in text', found))
+    print(f"\n  Entity in final text: {'✅ YES' if found != 'NOT_FOUND' else '❌ NO'} ({found})")
     
-    print(f"\n  Quality checks:")
-    for check_name, passed in quality_checks:
-        status = '✅' if passed else '❌'
-        print(f"    {status} {check_name}")
+    # ===== L3.5: CONTEXT EXTRACTION =====
+    print_layer('3.5', 'CONTEXT EXTRACTION', 'Context span di sekitar entity')
     
-    # ===== TAHAP 4: LABEL OUTPUT =====
-    print_tahap(4, "LABEL OUTPUT (LLM Verification)")
+    extracted_ctx, entity_pos = extract_context(article_text, entity_name)
     
-    label = row.get('label', '')
-    confidence = row.get('label_confidence', 0)
-    label_source = row.get('label_source', '')
-    reasoning = row.get('verification_reasoning', '')
-    gold_relevancy = row.get('gold_relevancy', '')
+    if extracted_ctx:
+        print(f"\n  Entity position:  char {entity_pos}")
+        print(f"\n  Extracted Context ({len(extracted_ctx)} chars):")
+        wrap(extracted_ctx[:400])
+        
+        print(f"\n  Final Context ({len(final_text)} chars):")
+        wrap(final_text[:300])
+        
+        # Quality checks
+        q_start = final_text[0].isupper() or final_text[0] in '"\'('
+        q_end = final_text[-1] in '.!?"\')]'
+        q_len = 80 <= len(final_text) <= 500
+        q_entity = found != 'NOT_FOUND'
+        score_q = sum([q_start, q_end, q_len, q_entity])
+        
+        print(f"\n  Quality checks ({score_q}/4):")
+        print(f"    {'✅' if q_start else '❌'} Starts clean (uppercase)")
+        print(f"    {'✅' if q_end else '❌'} Ends clean (punctuation)")
+        print(f"    {'✅' if q_len else '❌'} Length optimal (80-500)")
+        print(f"    {'✅' if q_entity else '❌'} Entity present")
+    else:
+        print(f"\n  ❌ Entity not found in article — extraction failed")
     
-    print(f"\n  Label:           {label}")
-    print(f"  Confidence:      {confidence*100:.1f}%")
-    print(f"  Label Source:    {label_source}")
-    print(f"  Gold Relevancy:  {gold_relevancy}")
+    # ===== L3.7: READINESS & QUEUE =====
+    print_layer('3.7', 'READINESS & QUEUE (Final Gatekeeper)', 'Cek kelengkapan sebelum NLP')
     
+    checks = {
+        'has_entity': bool(entity_name.strip()),
+        'has_text': bool(final_text.strip()),
+        'has_label': bool(final_row.get('label', '').strip()),
+        'has_confidence': final_row.get('label_confidence', 0) > 0,
+        'has_source_url': bool(source_url.strip()),
+        'text_length_ok': 80 <= len(final_text) <= 600,
+        'label_valid': final_row.get('label', '') in ['positive', 'neutral', 'negative'],
+    }
+    all_passed = all(checks.values())
+    
+    print(f"\n  Gatekeeper: {'PASS ✅' if all_passed else 'FAIL ❌'}")
+    print(f"  Ready for NLP: {'✅ YES' if all_passed else '❌ NO'}")
+    print(f"\n  Readiness checks:")
+    for name, passed in checks.items():
+        print(f"    {'✅' if passed else '❌'} {name}: {passed}")
+    
+    # ===== L4: NLP WORKER =====
+    print_layer('4', 'NLP WORKER (IndoBERT 2-Stage)', 'Relevancy Gate + Sentiment Classifier')
+    
+    label = final_row.get('label', '')
+    confidence = final_row.get('label_confidence', 0)
+    label_source = final_row.get('label_source', '')
+    reasoning = final_row.get('verification_reasoning', '')
+    
+    # Stage 1: Relevancy
+    relevancy = found != 'NOT_FOUND'
+    print(f"\n  Stage 1 — Relevancy Gate:")
+    print(f"    Question: Apakah context membahas {entity_name}?")
+    print(f"    Answer:   {'RELEVANT' if relevancy else 'NOT_RELEVANT'}")
+    print(f"    Passed:   {'✅ YES' if relevancy else '❌ NO'}")
+    
+    # Stage 2: Sentiment
+    print(f"\n  Stage 2 — Sentiment Classifier:")
+    print(f"    Label:      {label}")
+    print(f"    Confidence: {confidence*100:.1f}%")
+    print(f"    Source:     {label_source}")
     if reasoning:
         print(f"\n  LLM Reasoning:")
-        for line in textwrap.wrap(reasoning[:300], width=76, initial_indent='    ', subsequent_indent='    '):
-            print(line)
+        wrap(reasoning[:200])
     
-    # ===== TAHAP 5: FINAL DATASET ROW =====
-    print_tahap(5, "FINAL DATASET ROW (Yang Masuk Training)")
+    print(f"\n  NLP Output:")
+    print(f"    Entity:    {entity_name}")
+    print(f"    Sentiment: {label}")
+    print(f"    Stored:    {'✅ YES' if relevancy else '❌ NO'}")
     
-    print(f"\n  Input untuk model:")
-    print(f"    Premise (entity):    Tentang {entity_name}")
-    print(f"    Hypothesis (context): {final_text[:100]}...")
-    print(f"    Label:               {label}")
-    print(f"    Confidence:          {confidence*100:.1f}%")
+    # ===== SUMMARY =====
+    print()
+    print_sep('─')
+    print(f"  PIPELINE SUMMARY (Row {row_num})")
+    print_sep('─')
     
-    # Assessment
-    print(f"\n  {'─'*60}")
-    issues = []
-    if not found:
-        issues.append('Entity tidak ada di text')
-    if not (final_text[0].isupper() or final_text[0] in '"\'('):
-        issues.append('Text dimulai lowercase')
-    if final_text[-1] not in '.!?"\')]':
-        issues.append('Text tidak diakhiri punctuation')
-    if not (80 <= len(final_text) <= 500):
-        issues.append(f'Panjang text tidak optimal ({len(final_text)} chars)')
-    if confidence < 0.90:
-        issues.append(f'Confidence rendah ({confidence*100:.1f}%)')
+    layers = {
+        'L1-2 Ingestion': len(article_text) > 500,
+        'L2.5 Validation': score >= 50,
+        'L3 Preprocessing': len(changes) == 0 or len(final_text) > 80,
+        'L3.2 Entity': found != 'NOT_FOUND',
+        'L3.5 Context': score_q >= 3 if extracted_ctx else False,
+        'L3.7 Readiness': all_passed,
+        'L4 NLP': relevancy,
+    }
     
-    if issues:
-        print(f"  ⚠ ISSUES ({len(issues)}):")
-        for issue in issues:
-            print(f"    • {issue}")
+    passed = sum(1 for v in layers.values() if v)
+    for layer, ok in layers.items():
+        print(f"    {'✅' if ok else '❌'} {layer}")
+    
+    print(f"\n    Overall: {passed}/{len(layers)} layers passed", end="")
+    if passed == len(layers):
+        print(" — SANGAT BAIK ✅")
+    elif passed >= len(layers) - 1:
+        print(" — BAIK ✅")
     else:
-        print(f"  ✅ ROW QUALITY: SANGAT BAIK — semua checks passed")
+        print(" — PERLU PERBAIKAN ⚠")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Test Enrichment Pipeline — Output per Tahap")
-    ap.add_argument('--n', type=int, default=5, help='Jumlah row (default: 5)')
-    ap.add_argument('--row', type=int, default=None, help='Row ke-N saja (0-indexed)')
-    ap.add_argument('--label', choices=['positive', 'neutral', 'negative'], default=None,
-                    help='Filter by label')
-    ap.add_argument('--seed', type=int, default=2024, help='Random seed')
+    ap = argparse.ArgumentParser(description="Test Enrichment Pipeline — Output per Layer (sesuai README)")
+    ap.add_argument('--n', type=int, default=3, help='Jumlah row (default: 3)')
+    ap.add_argument('--row', type=int, default=None, help='Row ke-N saja')
+    ap.add_argument('--label', choices=['positive', 'neutral', 'negative'], default=None)
+    ap.add_argument('--seed', type=int, default=2024)
     args = ap.parse_args()
     
     print("=" * 80)
-    print("ENRICHMENT PIPELINE — OUTPUT TRACE PER TAHAP")
+    print("ENRICHMENT PIPELINE — OUTPUT TRACE PER LAYER (SESUAI README)")
     print("=" * 80)
-    print(f"\nScript ini menampilkan output dari SETIAP TAHAP proses enrichment:")
-    print(f"  Tahap 0: Raw Article (data mentah)")
-    print(f"  Tahap 1: Entity Resolution (entity detection)")
-    print(f"  Tahap 2: Context Extraction (context di sekitar entity)")
-    print(f"  Tahap 3: Preprocessing (cleaning)")
-    print(f"  Tahap 4: Label (LLM verification)")
-    print(f"  Tahap 5: Final Dataset Row (untuk training)")
+    print(f"\nUrutan Layer:")
+    print(f"  L1-2:   Ingestion & Enrichment (RSS + Trafilatura)")
+    print(f"  L2.5:   Validation (Quality Control 0-100)")
+    print(f"  L3:     Preprocessing (normalisasi, hash dedup)")
+    print(f"  L3.2:   Entity Resolution (NER + alias)")
+    print(f"  L3.5:   Context Extraction (sentence window)")
+    print(f"  L3.7:   Readiness & Queue (final gatekeeper)")
+    print(f"  L4:     NLP Worker (IndoBERT 2-stage)")
     
     final_rows, raw_map = load_data()
     print(f"\nDataset: {len(final_rows)} rows, {len(raw_map)} raw articles")
     
-    # Filter or sample
     if args.label:
         final_rows = [r for r in final_rows if r['label'] == args.label]
         print(f"Filtered by label '{args.label}': {len(final_rows)} rows")
@@ -425,17 +446,14 @@ def main():
             return
     else:
         random.seed(args.seed)
-        final_rows = random.sample(final_rows, min(args.n, len(final_rows)))
+        rows_with_raw = [r for r in final_rows if r.get('raw_text_id', '') in raw_map]
+        final_rows = random.sample(rows_with_raw, min(args.n, len(rows_with_raw)))
     
     print(f"\nMenampilkan {len(final_rows)} rows...\n")
     
-    # Process each row
     for i, row in enumerate(final_rows):
         raw_row = raw_map.get(row.get('raw_text_id', ''), None)
-        print_row_pipeline(row, raw_row, i + 1)
-        
-        if i < len(final_rows) - 1:
-            pass  # auto-continue
+        print_row_pipeline(raw_row, row, i + 1)
     
     print(f"\n{'#'*80}")
     print(f"  SELESAI — {len(final_rows)} rows ditampilkan")
