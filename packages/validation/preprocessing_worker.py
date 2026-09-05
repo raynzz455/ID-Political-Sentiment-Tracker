@@ -1,7 +1,7 @@
 """
-preprocessing_worker.py v10 — I/O & CPU Optimized
+preprocessing_worker.py v12 — I/O & CPU Optimized
 =============================================================
-FIX v10:
+FIX v12 (library-based):
   1. THREADED NORMALIZATION: Menggunakan ThreadPoolExecutor untuk memparalelkan 
      Regex cleaning & Hashing per artikel (Memanfaatkan CPU multi-core).
   2. I/O BATCHING: Menaikkan chunk size untuk query Duplikat (50 -> 100) dan 
@@ -19,6 +19,31 @@ import logging
 import argparse
 import random
 import html as html_lib
+
+# v12: Library-based imports
+try:
+    import ftfy
+    HAS_FTFY = True
+except ImportError:
+    HAS_FTFY = False
+
+# v12: Byline + source attr + bullet patterns
+BYLINE_SLASH_V12 = re.compile(r'\s*\([a-z]{2,5}/[a-z]{2,5}\)\s*', re.IGNORECASE)
+BYLINE_END_V12 = re.compile(r'\s*\([a-z]{2,5}(?:/[a-z]{2,5})?\)\s*$', re.IGNORECASE)
+KEEP_ABBREV_V12 = {'ratas', 'nobar', 'red', 'kapol', 'wabup', 'wagub', 'wali',
+                   'ist', 'dok', 'antara', 'foto', 'instagram', 'pmj', 'ls',
+                   'psht', 'pmp', 'kk', 'ak'}
+PROMO_V12 = [
+    r'(?i)Gabung\s+\w+\s*\.?\s*Plus\s*sekarang.*',
+    r'(?i)berkomitmen memberikan fakta jernih.*',
+    r'(?i)Dukung keberlanjutan jurnalisme.*',
+    r'(?i)KOMPAS\.com berkomitmen.*',
+]
+SOURCE_ATTR_V12 = [
+    r'^(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*\.?\w*|ANTARA/?\w*|Suara\.com|Republika)\s*[\-\u2013\u2014|:]\s*',
+    r'\.\s+(KOMPAS\.com|CNN Indonesia|TEMPO\.CO|TRIBUN\w*|Suara\.com|Republika)\s*[\-\u2013\u2014|:]\s*',
+]
+BULLET_V12 = r'(?:^|\.\s+)-\s+(?=[A-Z])'
 from datetime import datetime, timezone, timedelta  
 from pathlib import Path
 from dotenv import load_dotenv
@@ -36,7 +61,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-PIPELINE_VERSION = "v10_io_cpu_optimized"
+PIPELINE_VERSION = "v12_library_based"
 CHUNK_SIZE = 50  # Naikkan dari 25 ke 50 untuk mengurangi Network I/O
 MAX_WORKERS = 4  # Thread untuk Regex & Hashing paralel
 
@@ -45,6 +70,9 @@ MAX_WORKERS = 4  # Thread untuk Regex & Hashing paralel
 # ─────────────────────────────────────────────────────────────
 
 def normalize_unicode(text: str) -> str:
+    # v12: Use ftfy if available
+    if HAS_FTFY:
+        text = ftfy.fix_text(text)
     text = html_lib.unescape(text)
     text = unicodedata.normalize("NFKC", text)
     text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\xa0", " ")
@@ -57,7 +85,31 @@ def remove_urls_emails(text: str) -> tuple[str, int]:
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
     return text, int(len(urls) + len(emails))
 
-def strip_news_boilerplate_safe(text: str, title: str = "") -> str:    
+def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
+    # v12: Remove bullet points
+    text = re.sub(BULLET_V12, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+
+    # v12: Remove promo
+    for pattern in PROMO_V12:
+        text = re.sub(pattern, '', text, flags=re.DOTALL)
+
+    # v12: Remove byline (smart — keep abbreviations)
+    text = BYLINE_SLASH_V12.sub(' ', text)
+    match = BYLINE_END_V12.search(text)
+    if match:
+        byline_content = match.group().strip('() \n\r')
+        if byline_content.lower() not in KEEP_ABBREV_V12:
+            text = BYLINE_END_V12.sub('', text)
+    text = text.rstrip()
+
+    # v12: Remove source attribution (awal + tengah)
+    for pattern in SOURCE_ATTR_V12:
+        text = re.sub(pattern, '. ', text)
+    text = re.sub(r'\.\.\s+', '. ', text)
+    text = re.sub(r'^\.\s+', '', text)
+
     if title:
         title_words = re.findall(r'\w+', title)[:8]
         if title_words:
@@ -65,13 +117,13 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
             match = re.match(r'^\s*' + pattern_title, text, re.IGNORECASE)
             if match:
                 text = text[match.end():].lstrip(" :-\n\"'")
-    
+
     # Hapus nama domain yang nyangkut
     domain_pattern = r'^[\w\.\-]+\.(com|id|co|tv|news|net)\b\s*[\-\|:]*\s*'
     for _ in range(2):
-        text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)                
-    
-    text = re.sub(r'<[^>]+>', ' ', text)    
+        text = re.sub(domain_pattern, '', text, flags=re.IGNORECASE)
+
+    text = re.sub(r'<[^>]+>', ' ', text)
     patterns = [
         r"(?i)(baca juga|simak juga|berita terkait)\s*:[^.\n]*\.?",
         r"(?i)(reporter|editor|penulis|pewarta|jurnalis)\s*:\s*[^.\n]*\.?",
@@ -80,7 +132,7 @@ def strip_news_boilerplate_safe(text: str, title: str = "") -> str:
         r"(?i)(scroll ke bawah|mau berita terbaru|pilihan untuk lu)\s*[^.\n]*\.?"
     ]
     for p in patterns:
-        text = re.sub(p, '', text)        
+        text = re.sub(p, '', text)
     text = re.sub(r'\(\s*(Foto|Instagram|Dok|Istimewa|Antara)[^)]*\)', '', text, flags=re.IGNORECASE)
     return text.strip(" :-\n\"'")
 

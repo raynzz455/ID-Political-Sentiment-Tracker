@@ -118,34 +118,48 @@ class RapidFuzzMatcher:
         try:
             from rapidfuzz import fuzz, process
         except ImportError:
-            # Fallback to simple word boundary search (still no regex pattern)
             return self._fallback_find(article_text)
         
-        # Extract candidate words from text (noun-like tokens)
-        # Use simple split + filter, not regex
+        # Extract candidate words — optimized to reduce false positives
+        # Only consider PROPN-like words (not common words at sentence start)
+        COMMON_INDONESIAN_WORDS = {
+            'walau', 'khususnya', 'salah', 'entah', 'meski', 'mengingat',
+            'melalui', 'dalam', 'antara', 'sementara', 'namun', 'tetapi',
+            'akan', 'sehingga', 'karena', 'jika', 'saat', 'ketika',
+            'belum', 'teman-teman', 'selain', 'berikut', 'adapun',
+            'sebagai', 'oleh', 'tentang', 'untuk', 'dengan', 'dari',
+            'ke', 'di', 'yang', 'dan', 'atau', 'ini', 'itu',
+            'video', 'foto', 'audio', 'sumber', 'portal', 'berita',
+            'agustus', 'september', 'oktober', 'november', 'desember',
+            'januari', 'februari', 'maret', 'april', 'mei', 'juni',
+            'juli', 'senin', 'selasa', 'rabu', 'kamis', 'jumat',
+            'sabtu', 'minggu', 'kompas', 'cnn', 'tempo', 'tribun',
+            'detik', 'antara', 'suara', 'republika', 'viva',
+        }
+        
         words = article_text.split()
         candidates = set()
         for word in words:
-            # Clean punctuation
             clean = word.strip('.,;:!?("\')[]{}')
-            if len(clean) >= 3 and clean[0].isupper():  # capitalized = potential name
+            # Filter: must be capitalized AND not common word AND length >= 4
+            if (len(clean) >= 4 and 
+                clean[0].isupper() and 
+                clean.lower() not in COMMON_INDONESIAN_WORDS):
                 candidates.add(clean.lower())
         
-        # For each candidate, find best match in entity database
+        # For each candidate, find best match
         for candidate in candidates:
-            # rapidfuzz process.extract returns list of (match, score, key)
             matches = process.extract(
                 candidate, self.names_only,
                 scorer=fuzz.WRatio,
-                score_cutoff=90,  # raised from 85 to reduce false positives
+                score_cutoff=90,
                 limit=3
             )
             for match_name, score, idx in matches:
-                if score >= 90:  # raised from 85 to reduce false positives
+                if score >= 90:
                     canon_lower, canon, is_alias = self.match_list[idx]
                     ent_id = self.entity_db_map.get(canon.lower())
                     if ent_id:
-                        # Find all occurrences of candidate in text
                         start = 0
                         while True:
                             pos = article_text.lower().find(candidate, start)

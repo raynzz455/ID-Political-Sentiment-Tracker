@@ -70,6 +70,53 @@ RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
 RELEVANCY_THRESHOLD = 0.5
 _relevancy_pipeline = None
 
+# v23: Quality filter constants
+PROFILE_PATTERNS_V23 = [
+    r'(?i)merupakan\s+(seorang\s+)?(tokoh|ulama|politisi|ekonom|pengusaha|aktivis|jurnalis|akademisi)',
+    r'(?i)lahir\s+(pada|di)\s+\d',
+    r'(?i)putra\s+(dari|ke-)',
+    r'(?i)menjabat\s+sebagai\s+(Menteri|Gubernur|Walikota|Bupati|Ketua|Direktur)\s+(pada|di|tahun)\s+\d',
+    r'(?i)perjalanan\s+(karier|politik)',
+    r'(?i)berikut\s+(profil|biografi|perjalanan)',
+    r'(?i)\binformasi\s+pribadi\b',
+]
+
+SENTIMENT_KEYWORDS_V23 = {
+    'puji', 'dipuji', 'memuji', 'apresiasi', 'berhasil', 'menang', 'prestasi',
+    'penghargaan', 'mendukung', 'kritik', 'dikritik', 'mengkritik', 'korupsi',
+    'tersangka', 'divonis', 'ditahan', 'dicopot', 'mundur', 'gagal', 'skandal',
+    'menolak', 'kecewa', 'menyatakan', 'mengatakan', 'menegaskan', 'mengimbau',
+    'klarifikasi', 'menjelaskan', 'melantik',
+}
+
+def is_profile_sentence_v23(sentence):
+    import re
+    for pattern in PROFILE_PATTERNS_V23:
+        if re.search(pattern, sentence):
+            return True
+    return False
+
+def is_redundant_v23(sentence, previous_sentences, threshold=0.5):
+    if not previous_sentences:
+        return False
+    def get_words(s):
+        return set(w.lower().strip('.,;:!?()\"\'[]{}') for w in s.split() if len(w) > 2)
+    sent_words = get_words(sentence)
+    if not sent_words:
+        return False
+    for prev in previous_sentences:
+        prev_words = get_words(prev)
+        if not prev_words:
+            continue
+        intersection = len(sent_words & prev_words)
+        union = len(sent_words | prev_words)
+        if union > 0 and intersection / union >= threshold:
+            return True
+        overlap = intersection / min(len(sent_words), len(prev_words))
+        if overlap >= 0.6:
+            return True
+    return False
+
 def get_relevancy_pipeline():
     global _relevancy_pipeline
     if _relevancy_pipeline is None:
@@ -424,6 +471,24 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             "relevancy_score": round(relevancy_score, 3),
             "is_relevant": relevancy_score >= RELEVANCY_THRESHOLD,
         }
+
+        # v23: Apply quality filter — remove profile & redundant sentences
+        ctx_sentences = ctx_text.split('. ')
+        filtered_sentences = []
+        for sent in ctx_sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            # Skip profile sentences
+            if is_profile_sentence_v23(sent):
+                continue
+            # Skip redundant sentences
+            if is_redundant_v23(sent, filtered_sentences):
+                continue
+            filtered_sentences.append(sent)
+        ctx_text = '. '.join(filtered_sentences)
+        if ctx_text and not ctx_text.endswith('.'):
+            ctx_text += '.'
 
         all_spans.setdefault(entity_id, []).append((ctx_text, quality))
 
