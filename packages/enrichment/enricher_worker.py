@@ -146,7 +146,7 @@ def calculate_title_relevancy(title: str, text: str) -> float:
 
 def process_and_validate_text(html: str, title: str, rss_text: str) -> tuple[str | None, str]:
     if rss_text and len(rss_text) >= RSS_TEXT_MIN_LEN:
-        full_text = clean_boilerplate(rss_text, title) 
+        full_text = rss_text  # v21: cleaning dilakukan sekali di line 177, tidak perlu double
         extraction_method = "rss_fulltext"
     elif html:
         if len(html) > MAX_HTML_SIZE_BYTES:
