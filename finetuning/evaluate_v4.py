@@ -25,11 +25,14 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from peft import PeftModel
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classification_report
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent / "configs"))
 import hyperparams_v4 as H
 
 TASK_CFG = {
-    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_gold_standard_final.jsonl"},
-    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_gold_standard_final.jsonl"},
+    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_gold_standard_final.jsonl", "dir": "datasets"},
+    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_gold_standard_final.jsonl", "dir": "datasets"},
 }
 
 def load_jsonl(p):
@@ -132,7 +135,9 @@ def main(task, run_dir):
     model = model.merge_and_unload()  # merge LoRA for faster inference
 
     # data — reproduce the SAME stratified test split as finetune.py
-    rows = load_jsonl(cfg["data"])
+    # Load data from datasets/ directory
+    data_dir = Path(__file__).resolve().parent / cfg.get("dir", "datasets")
+    rows = load_jsonl(data_dir / cfg["data"])
     _, _, test = stratified_split(rows)
     print(f"Test set: {len(test)} rows | balance: {dict(Counter(r['label'] for r in test))}")
 

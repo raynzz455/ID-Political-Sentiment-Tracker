@@ -66,6 +66,19 @@ from transformers import (
 # v3.2: SWA (Stochastic Weight Averaging) — Izmailov et al. 2018
 # Averages model weights from SWA_START_EPOCH onwards for flatter optimum
 import copy
+
+# Fix: Uninstall incompatible torchao before importing peft
+# PEFT 0.16+ requires torchao >= 0.16.0, but Colab has 0.10.0
+import subprocess
+try:
+    import torchao
+    torchao_version = getattr(torchao, '__version__', '0.0.0')
+    if tuple(int(x) for x in torchao_version.split('.')[:2]) < (0, 16):
+        subprocess.run(['pip', 'uninstall', '-y', 'torchao'], capture_output=True)
+        print(f"[FIX] Uninstalled incompatible torchao {torchao_version}")
+except ImportError:
+    pass
+
 from peft import LoraConfig, get_peft_model, TaskType
 from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
 from sklearn.model_selection import StratifiedKFold, GroupKFold
