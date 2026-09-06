@@ -302,10 +302,56 @@ class FocalLossTrainerV4(Trainer):
 
         # Adversarial training (PGD on embeddings)
         if self.adversarial and is_training:
-            adv_loss = self._adversarial_loss(model, inputs, labels, sample_weights)
-            loss = loss + H.ADVERSARIAL_ALPHA * adv_loss
+            try:
+                adv_loss = self._adversarial_loss(model, inputs, labels, sample_weights)
+                loss = loss + H.ADVERSARIAL_ALPHA * adv_loss
+            except AttributeError:
+                # _adversarial_loss not available — skip adversarial
+                pass
 
         return (loss, outputs) if return_outputs else loss
+
+    def _adversarial_loss(self, model, inputs, labels, sample_weights):
+        """PGD adversarial perturbation on input_ids embeddings (Miyato et al. 2017)."""
+        try:
+            embed_layer = model.get_input_embeddings()
+            input_ids = inputs["input_ids"]
+            embeds = embed_layer(input_ids)
+            embeds = embeds.detach().requires_grad_(True)
+
+            with torch.enable_grad():
+                inputs_adv = {k: v for k, v in inputs.items() if k != "input_ids"}
+                inputs_adv["inputs_embeds"] = embeds
+                outputs_adv = model(**inputs_adv)
+                logits_adv = outputs_adv.logits
+                probs_adv = F.softmax(logits_adv, dim=-1)
+                pt_adv = probs_adv.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+                focal_adv = (1.0 - pt_adv) ** self.focal_gamma
+                ce_adv = F.cross_entropy(logits_adv, labels,
+                                          weight=self.class_weights.to(logits_adv.device),
+                                          label_smoothing=self.label_smoothing, reduction="none")
+                loss_adv = (focal_adv * ce_adv).mean()
+
+            grad = torch.autograd.grad(loss_adv, embeds)[0]
+            perturb = H.ADVERSARIAL_EPSILON * grad.sign()
+            embeds_perturbed = embeds + perturb
+
+            inputs_pert = {k: v for k, v in inputs.items() if k != "input_ids"}
+            inputs_pert["inputs_embeds"] = embeds_perturbed.detach()
+            outputs_pert = model(**inputs_pert)
+            logits_pert = outputs_pert.logits
+            probs_pert = F.softmax(logits_pert, dim=-1)
+            pt_pert = probs_pert.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+            focal_pert = (1.0 - pt_pert) ** self.focal_gamma
+            ce_pert = F.cross_entropy(logits_pert, labels,
+                                       weight=self.class_weights.to(logits_pert.device),
+                                       label_smoothing=self.label_smoothing, reduction="none")
+            per_sample_pert = focal_pert * ce_pert
+            if sample_weights is not None:
+                per_sample_pert = per_sample_pert * sample_weights.to(logits_pert.device)
+            return per_sample_pert.mean()
+        except Exception as e:
+            return torch.tensor(0.0, device=labels.device)
 
 # ---------------------------------------------------------------------------
 # v3.2: SWA (Stochastic Weight Averaging) Callback
@@ -357,58 +403,6 @@ class SWACallback(TrainerCallback):
                     p.copy_(self.swa_weights[n])
 
         logger.info(f"  [SWA] Applied {self.n_averaged}-epoch weight average to model")
-
-
-    def _adversarial_loss(self, model, inputs, labels, sample_weights):
-        """PGD adversarial perturbation on input_ids embeddings (Miyato et al. 2017)."""
-        try:
-            # Get embedding layer
-            embed_layer = model.get_input_embeddings()
-            input_ids = inputs["input_ids"]
-
-            # Get embeddings (require grad)
-            embeds = embed_layer(input_ids)
-            embeds = embeds.detach().requires_grad_(True)
-
-            # Forward with perturbed embeddings
-            with torch.enable_grad():
-                # Replace input_ids with embeddings in forward
-                inputs_adv = {k: v for k, v in inputs.items() if k != "input_ids"}
-                inputs_adv["inputs_embeds"] = embeds
-                outputs_adv = model(**inputs_adv)
-                logits_adv = outputs_adv.logits
-                probs_adv = F.softmax(logits_adv, dim=-1)
-                pt_adv = probs_adv.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
-                focal_adv = (1.0 - pt_adv) ** self.focal_gamma
-                ce_adv = F.cross_entropy(logits_adv, labels,
-                                          weight=self.class_weights.to(logits_adv.device),
-                                          label_smoothing=self.label_smoothing, reduction="none")
-                loss_adv = (focal_adv * ce_adv).mean()
-
-            # Compute gradient
-            grad = torch.autograd.grad(loss_adv, embeds)[0]
-            # PGD perturbation
-            perturb = H.ADVERSARIAL_EPSILON * grad.sign()
-            embeds_perturbed = embeds + perturb
-
-            # Forward with perturbed embeddings
-            inputs_pert = {k: v for k, v in inputs.items() if k != "input_ids"}
-            inputs_pert["inputs_embeds"] = embeds_perturbed.detach()
-            outputs_pert = model(**inputs_pert)
-            logits_pert = outputs_pert.logits
-            probs_pert = F.softmax(logits_pert, dim=-1)
-            pt_pert = probs_pert.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
-            focal_pert = (1.0 - pt_pert) ** self.focal_gamma
-            ce_pert = F.cross_entropy(logits_pert, labels,
-                                       weight=self.class_weights.to(logits_pert.device),
-                                       label_smoothing=self.label_smoothing, reduction="none")
-            per_sample_pert = focal_pert * ce_pert
-            if sample_weights is not None:
-                per_sample_pert = per_sample_pert * sample_weights.to(logits_pert.device)
-            return per_sample_pert.mean()
-        except Exception as e:
-            # Adversarial training can fail on some model architectures — skip gracefully
-            return torch.tensor(0.0, device=labels.device)
 
 
 # ---------------------------------------------------------------------------
