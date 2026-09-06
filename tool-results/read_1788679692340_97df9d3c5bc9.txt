@@ -1,0 +1,976 @@
+     1→"""
+     2→v4_all_in_one.py
+     3→================
+     4→Self-contained v4 fine-tuning script for Colab.
+     5→Combines: hyperparams + finetune + evaluate.
+     6→
+     7→Usage in Colab:
+     8→  1. Upload this file (v4_all_in_one.py) to /content/
+     9→  2. Upload dataset_gold_standard_final.jsonl to /content/finetuning/datasets/
+    10→  3. !pip install -q transformers peft scikit-learn accelerate sentencepiece
+    11→  4. !python v4_all_in_one.py finetune --task sentiment --kfold 5
+    12→  5. !python v4_all_in_one.py evaluate --task sentiment
+    13→"""
+    14→
+    15→# ============================================================================
+    16→# SECTION 1: HYPERPARAMETERS (from hyperparams_v4.py)
+    17→# ============================================================================
+    18→from dataclasses import dataclass
+    19→
+    20→RELEVANCY_BASE = "apriandito/indobert-relevancy-classifier"
+    21→SENTIMENT_BASE = "apriandito/indobert-sentiment-classifier"
+    22→FALLBACK_BASE  = "taufiqdp/indonesian-sentiment"
+    23→
+    24→MAX_SEQ_LENGTH = 256
+    25→PAIR_FORMAT    = True
+    26→
+    27→@dataclass
+    28→class LoRAConfig:
+    29→    r: int = 64
+    30→    alpha: int = 128
+    31→    dropout: float = 0.20
+    32→    bias: str = "none"
+    33→    task_type = "SEQ_CLS"
+    34→    target_modules = ["query", "key", "value", "dense"]
+    35→    target_modules_extended = ["query", "key", "value", "dense", "intermediate.dense"]
+    36→
+    37→LORA = LoRAConfig()
+    38→
+    39→LEARNING_RATE = 2.5e-5
+    40→WEIGHT_DECAY  = 0.03
+    41→ADAM_EPSILON  = 1e-8
+    42→ADAM_BETA1    = 0.9
+    43→ADAM_BETA2    = 0.999
+    44→MAX_GRAD_NORM = 1.0
+    45→
+    46→WARMUP_RATIO  = 0.06
+    47→SCHEDULER     = "cosine_with_restarts"
+    48→SCHEDULER_NUM_CYCLES = 2
+    49→
+    50→BATCH_SIZE        = 8
+    51→GRAD_ACCUM_STEPS  = 8
+    52→NUM_EPOCHS        = 18
+    53→EARLY_STOP_PATIENCE = 5
+    54→
+    55→FOCAL_GAMMA     = 3.0
+    56→LABEL_SMOOTHING = 0.07
+    57→CLASS_WEIGHT_FN  = "log"
+    58→
+    59→SWA_ENABLED       = True
+    60→SWA_START_EPOCH   = 4
+    61→SWA_LR            = 5e-6
+    62→SWA_ANNEAL_EPOCHS = 3
+    63→
+    64→ADVERSARIAL_ENABLED = True
+    65→ADVERSARIAL_EPSILON = 1e-5
+    66→ADVERSARIAL_ALPHA   = 0.5
+    67→
+    68→MIXUP_ENABLED = True
+    69→MIXUP_ALPHA   = 0.3
+    70→MIXUP_PROB    = 0.4
+    71→
+    72→OVERSAMPLING_ENABLED = True
+    73→OVERSAMPLING_TARGETS = {"negative": 400, "positive": 600}
+    74→
+    75→K_FOLD_ENABLED = True
+    76→K_FOLD_N       = 5
+    77→K_FOLD_STRATIFIED = True
+    78→K_FOLD_ENTITY_AWARE = True
+    79→
+    80→VAL_SPLIT   = 0.15
+    81→TEST_SPLIT  = 0.15
+    82→TRAIN_SPLIT = 1.0 - VAL_SPLIT - TEST_SPLIT
+    83→SEED        = 42
+    84→
+    85→SENTIMENT_LABELS = ["negative", "neutral", "positive"]
+    86→RELEVANCY_LABELS = ["not_relevant", "relevant"]
+    87→
+    88→TEMPERATURE    = 1.3
+    89→CONFIDENCE_TAU = 0.70
+    90→
+    91→OUT_DIR_RELEVANCY = "./runs/relevancy_v4"
+    92→OUT_DIR_SENTIMENT = "./runs/sentiment_v4"
+    93→
+    94→HF_ORG          = "raynzz455"
+    95→HF_MODEL_PREFIX = "id-political-sentiment"
+    96→HF_SENTIMENT_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-sentiment-v4"
+    97→HF_RELEVANCY_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-relevancy-v4"
+    98→
+    99→DETERMINISTIC = True
+   100→FP16          = True
+   101→
+   102→METHOD_DESCRIPTION = """
+   103→v4: Based on gold standard dataset (~2,200 rows, LLM-verified + re-verified)
+   104→  + Oversampling, Focal gamma=3.0, Entity-stratified K-fold
+   105→  + Mixup 0.3/40%, Label smoothing 0.07, Log class weights
+   106→Expected: macro-F1 0.70 → 0.75+, negative recall 0.45 → 0.60+
+   107→"""
+   108→
+   109→
+   110→# H alias for compatibility
+   111→H = None  # Will be populated below
+   112→
+   113→# ============================================================================
+   114→# SECTION 2: FINETUNE LOGIC
+   115→# ============================================================================
+   116→
+   117→import os
+   118→import json
+   119→import random
+   120→import argparse
+   121→import numpy as np
+   122→import logging
+   123→import logging
+   124→from pathlib import Path
+   125→logger = logging.getLogger(__name__)
+   126→logger = logging.getLogger(__name__)
+   127→from dataclasses import asdict
+   128→from collections import Counter
+   129→
+   130→# v3.1: Set CUDA memory allocator config BEFORE torch import
+   131→# Helps prevent OOM by using expandable segments (less fragmentation)
+   132→os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+   133→
+   134→import torch
+   135→import torch.nn.functional as F
+   136→from torch.utils.data import Dataset, DataLoader
+   137→from transformers import (
+   138→    AutoTokenizer, AutoModelForSequenceClassification,
+   139→    Trainer, TrainingArguments, EarlyStoppingCallback, TrainerCallback
+   140→)
+   141→# v3.2: SWA (Stochastic Weight Averaging) — Izmailov et al. 2018
+   142→# Averages model weights from SWA_START_EPOCH onwards for flatter optimum
+   143→import copy
+   144→from peft import LoraConfig, get_peft_model, TaskType
+   145→from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+   146→from sklearn.model_selection import StratifiedKFold, GroupKFold
+   147→
+   148→# Import hyperparams
+   149→# H is defined inline above (from hyperparams section)
+   150→
+   151→# ---------------------------------------------------------------------------
+   152→# 0. Reproducibility
+   153→# ---------------------------------------------------------------------------
+   154→torch.manual_seed(H.SEED)
+   155→random.seed(H.SEED)
+   156→np.random.seed(H.SEED)
+   157→
+   158→# ---------------------------------------------------------------------------
+   159→# 1. Dataset
+   160→# ---------------------------------------------------------------------------
+   161→TASK_CFG = {
+   162→    "relevancy": {
+   163→        "data_file": "dataset_gold_standard_final.jsonl",
+   164→        "label_field": "gold_relevancy",
+   165→        "text_field": "text",
+   166→        "entity_field": "entity_name",
+   167→        "entity_premise_field": "entity_premise",
+   168→        "base_model": H.RELEVANCY_BASE,
+   169→        "labels": H.RELEVANCY_LABELS,
+   170→        "out_dir": H.OUT_DIR_RELEVANCY,
+   171→        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+   172→        "oversample": False,
+   173→    },
+   174→    "sentiment": {
+   175→        "data_file": "dataset_gold_standard_final.jsonl",
+   176→        "label_field": "label",
+   177→        "text_field": "text",
+   178→        "entity_field": "entity_name",
+   179→        "entity_premise_field": "entity_premise",
+   180→        "base_model": H.SENTIMENT_BASE,
+   181→        "labels": H.SENTIMENT_LABELS,
+   182→        "out_dir": H.OUT_DIR_SENTIMENT,
+   183→        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+   184→        "oversample": True,
+   185→        "filter": lambda r: r.get("gold_relevancy", "relevant") == "relevant",
+   186→    },
+   187→}
+   188→
+   189→
+   190→def oversample_minority(rows, targets, seed=H.SEED):
+   191→    """Oversample minority classes to target counts via random duplication."""
+   192→    import random as _rng
+   193→    rng = _rng.Random(seed)
+   194→    by_label = {}
+   195→    for r in rows:
+   196→        by_label.setdefault(r["label"], []).append(r)
+   197→    result = []
+   198→    for label, items in by_label.items():
+   199→        target = targets.get(label, len(items))
+   200→        pool = list(items); rng.shuffle(pool)
+   201→        result.extend(pool)
+   202→        needed = target - len(pool)
+   203→        for _ in range(max(0, needed)):
+   204→            result.append(rng.choice(pool))
+   205→    rng.shuffle(result)
+   206→    return result
+   207→
+   208→
+   209→class PairDataset(Dataset):
+   210→    """Sentence-pair dataset with per-sample confidence weighting."""
+   211→
+   212→    def __init__(self, rows, tokenizer, label2id, max_len=H.MAX_SEQ_LENGTH):
+   213→        self.rows = rows
+   214→        self.tokenizer = tokenizer
+   215→        self.label2id = label2id
+   216→        self.max_len = max_len
+   217→
+   218→    def __len__(self):
+   219→        return len(self.rows)
+   220→
+   221→    def __getitem__(self, idx):
+   222→        r = self.rows[idx]
+   223→        enc = self.tokenizer(
+   224→            r["premise"], r["hypothesis"],
+   225→            truncation=True, max_length=self.max_len,
+   226→            padding="max_length", return_tensors="pt",
+   227→        )
+   228→        return {
+   229→            "input_ids": enc["input_ids"][0],
+   230→            "attention_mask": enc["attention_mask"][0],
+   231→            "token_type_ids": enc.get("token_type_ids", torch.zeros_like(enc["input_ids"][0]))[0]
+   232→                if self.tokenizer.model_max_length and "token_type_ids" in enc
+   233→                else torch.zeros(self.max_len, dtype=torch.long),
+   234→            "labels": torch.tensor(self.label2id[r["label"]], dtype=torch.long),
+   235→            "sample_weight": torch.tensor(r.get("confidence", 0.5), dtype=torch.float),
+   236→        }
+   237→
+   238→
+   239→def load_jsonl(path):
+   240→    return [json.loads(l) for l in open(path) if l.strip()]
+   241→
+   242→
+   243→def stratified_split(rows, label_key, train_p, val_p, seed=H.SEED):
+   244→    rng = random.Random(seed)
+   245→    by_label = {}
+   246→    for r in rows:
+   247→        by_label.setdefault(r[label_key], []).append(r)
+   248→    train, val, test = [], [], []
+   249→    for lab, items in by_label.items():
+   250→        items = list(items)
+   251→        rng.shuffle(items)
+   252→        n = len(items)
+   253→        n_test = max(1, int(round(n * H.TEST_SPLIT)))
+   254→        n_val = max(1, int(round(n * H.VAL_SPLIT)))
+   255→        n_train = max(1, n - n_test - n_val)
+   256→        train.extend(items[:n_train])
+   257→        val.extend(items[n_train:n_train + n_val])
+   258→        test.extend(items[n_train + n_val:n_train + n_val + n_test])
+   259→    rng.shuffle(train); rng.shuffle(val); rng.shuffle(test)
+   260→    return train, val, test
+   261→
+   262→
+   263→# ---------------------------------------------------------------------------
+   264→# 2. Class-balanced focal loss with mixup support
+   265→# ---------------------------------------------------------------------------
+   266→def class_weights_from_freq(labels, num_classes, method="log"):
+   267→    """Class reweighting. method='sqrt' (Cui 2019) or 'log' (v4, gentler)."""
+   268→    counts = np.bincount(labels, minlength=num_classes).astype(float)
+   269→    freq = counts / counts.sum()
+   270→    if method == "sqrt":
+   271→        w = 1.0 / np.sqrt(freq + 1e-8)
+   272→    else:
+   273→        w = 1.0 / np.log(freq + 1.0 + 1e-8)
+   274→    w = w / w.mean()
+   275→    return torch.tensor(w, dtype=torch.float)
+   276→
+   277→
+   278→def mixup_embeddings(embeds, labels, alpha=H.MIXUP_ALPHA):
+   279→    """Mixup augmentation on embeddings (Zhang et al. 2018).
+   280→
+   281→    Returns mixed embeddings + mixed labels (soft).
+   282→    """
+   283→    if alpha <= 0:
+   284→        return embeds, labels, labels, 1.0
+   285→
+   286→    lam = np.random.beta(alpha, alpha)
+   287→    batch_size = embeds.size(0)
+   288→    index = torch.randperm(batch_size, device=embeds.device)
+   289→    mixed_embeds = lam * embeds + (1 - lam) * embeds[index]
+   290→    return mixed_embeds, labels, labels[index], lam
+   291→
+   292→
+   293→class FocalLossTrainerV4(Trainer):
+   294→    """v4 Trainer: Focal Loss + log class weights + per-sample confidence +
+   295→    adversarial training + mixup."""
+   296→
+   297→    def __init__(self, *args, class_weights=None, focal_gamma=H.FOCAL_GAMMA,
+   298→                 label_smoothing=H.LABEL_SMOOTHING,
+   299→                 adversarial=H.ADVERSARIAL_ENABLED,
+   300→                 mixup=H.MIXUP_ENABLED, **kwargs):
+   301→        super().__init__(*args, **kwargs)
+   302→        self.class_weights = class_weights
+   303→        self.focal_gamma = focal_gamma
+   304→        self.label_smoothing = label_smoothing
+   305→        # v3.1: Auto-disable adversarial on low-memory GPUs (< 12GB) to prevent OOM
+   306→        if adversarial and torch.cuda.is_available():
+   307→            gpu_mem_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+   308→            if gpu_mem_gb < 12:
+   309→                logger.warning(f"GPU memory {gpu_mem_gb:.1f}GB < 12GB — disabling adversarial training (OOM prevention)")
+   310→                adversarial = False
+   311→        self.adversarial = adversarial
+   312→        self.mixup = mixup
+   313→
+   314→    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+   315→        labels = inputs.pop("labels")
+   316→        sample_weights = inputs.pop("sample_weight", None)
+   317→
+   318→        # Get embeddings (for mixup + adversarial)
+   319→        # NOTE: HuggingFace Trainer passes `model` param to compute_loss.
+   320→        # We use `model.training` to check if we're in train mode.
+   321→        is_training = model.training
+   322→        # v3.1: NEVER use output_hidden_states=True (saves ~2.8GB GPU memory)
+   323→        # Adversarial training uses model.get_input_embeddings() directly,
+   324→        # NOT output_hidden_states — so we don't need it at all.
+   325→        outputs = model(**inputs)
+   326→        logits = outputs.logits
+   327→        probs = F.softmax(logits, dim=-1)
+   328→
+   329→        # Mixup on logits (simpler than embedding-level)
+   330→        if self.mixup and is_training and random.random() < H.MIXUP_PROB:
+   331→            lam = np.random.beta(H.MIXUP_ALPHA, H.MIXUP_ALPHA)
+   332→            batch_size = logits.size(0)
+   333→            index = torch.randperm(batch_size, device=logits.device)
+   334→            mixed_logits = lam * logits + (1 - lam) * logits[index]
+   335→            mixed_labels = labels[index]
+   336→
+   337→            # Soft labels for mixup
+   338→            onehot_orig = F.one_hot(labels, num_classes=logits.size(-1)).float()
+   339→            onehot_mixed = F.one_hot(mixed_labels, num_classes=logits.size(-1)).float()
+   340→            soft_labels = lam * onehot_orig + (1 - lam) * onehot_mixed
+   341→            soft_labels = (1 - self.label_smoothing) * soft_labels + \
+   342→                          self.label_smoothing / logits.size(-1)
+   343→
+   344→            log_probs = F.log_softmax(mixed_logits, dim=-1)
+   345→            ce = -(soft_labels * log_probs).sum(dim=-1)
+   346→            pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   347→            focal = (1.0 - pt) ** self.focal_gamma
+   348→            per_sample = focal * ce
+   349→        else:
+   350→            # Standard focal loss with label smoothing
+   351→            pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   352→            focal = (1.0 - pt) ** self.focal_gamma
+   353→            ce = F.cross_entropy(logits, labels, weight=self.class_weights.to(logits.device),
+   354→                                  label_smoothing=self.label_smoothing, reduction="none")
+   355→            per_sample = focal * ce
+   356→
+   357→        # Per-sample confidence weighting
+   358→        if sample_weights is not None:
+   359→            per_sample = per_sample * sample_weights.to(logits.device)
+   360→
+   361→        loss = per_sample.mean()
+   362→
+   363→        # Adversarial training (PGD on embeddings)
+   364→        if self.adversarial and is_training:
+   365→            adv_loss = self._adversarial_loss(model, inputs, labels, sample_weights)
+   366→            loss = loss + H.ADVERSARIAL_ALPHA * adv_loss
+   367→
+   368→        return (loss, outputs) if return_outputs else loss
+   369→
+   370→# ---------------------------------------------------------------------------
+   371→# v3.2: SWA (Stochastic Weight Averaging) Callback
+   372→# ---------------------------------------------------------------------------
+   373→class SWACallback(TrainerCallback):
+   374→    """Averages LoRA weights from SWA_START_EPOCH for flatter optimum.
+   375→    
+   376→    Paper: Izmailov et al. (2018) "Averaging Weights Leads to Wider Optima"
+   377→    Expected: +1-2% F1, better generalization on small datasets.
+   378→    """
+   379→    def __init__(self, start_epoch=5, anneal_epochs=3):
+   380→        self.start_epoch = start_epoch
+   381→        self.anneal_epochs = anneal_epochs
+   382→        self.swa_weights = None
+   383→        self.swa_count = 0
+   384→        self.n_averaged = 0
+   385→
+   386→    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+   387→        current_epoch = int(state.epoch)
+   388→        if current_epoch < self.start_epoch:
+   389→            return
+   390→
+   391→        # Get LoRA parameters (only adapter weights, not frozen base)
+   392→        lora_params = {n: p.detach().clone() for n, p in model.named_parameters() if 'lora_' in n.lower()}
+   393→
+   394→        if self.swa_weights is None:
+   395→            # First SWA epoch — initialize
+   396→            self.swa_weights = lora_params
+   397→            self.n_averaged = 1
+   398→        else:
+   399→            # Running average: swa = (swa * n + new) / (n + 1)
+   400→            for n in lora_params:
+   401→                self.swa_weights[n] = (
+   402→                    self.swa_weights[n] * self.n_averaged + lora_params[n]
+   403→                ) / (self.n_averaged + 1)
+   404→            self.n_averaged += 1
+   405→
+   406→        logger.info(f"  [SWA] Epoch {current_epoch}: averaged {self.n_averaged} weight snapshots")
+   407→
+   408→    def on_train_end(self, args, state, control, model=None, **kwargs):
+   409→        """Apply SWA weights to model at end of training."""
+   410→        if self.swa_weights is None or self.n_averaged < 2:
+   411→            return
+   412→
+   413→        # Replace LoRA weights with SWA-averaged version
+   414→        with torch.no_grad():
+   415→            for n, p in model.named_parameters():
+   416→                if n in self.swa_weights:
+   417→                    p.copy_(self.swa_weights[n])
+   418→
+   419→        logger.info(f"  [SWA] Applied {self.n_averaged}-epoch weight average to model")
+   420→
+   421→
+   422→    def _adversarial_loss(self, model, inputs, labels, sample_weights):
+   423→        """PGD adversarial perturbation on input_ids embeddings (Miyato et al. 2017)."""
+   424→        try:
+   425→            # Get embedding layer
+   426→            embed_layer = model.get_input_embeddings()
+   427→            input_ids = inputs["input_ids"]
+   428→
+   429→            # Get embeddings (require grad)
+   430→            embeds = embed_layer(input_ids)
+   431→            embeds = embeds.detach().requires_grad_(True)
+   432→
+   433→            # Forward with perturbed embeddings
+   434→            with torch.enable_grad():
+   435→                # Replace input_ids with embeddings in forward
+   436→                inputs_adv = {k: v for k, v in inputs.items() if k != "input_ids"}
+   437→                inputs_adv["inputs_embeds"] = embeds
+   438→                outputs_adv = model(**inputs_adv)
+   439→                logits_adv = outputs_adv.logits
+   440→                probs_adv = F.softmax(logits_adv, dim=-1)
+   441→                pt_adv = probs_adv.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   442→                focal_adv = (1.0 - pt_adv) ** self.focal_gamma
+   443→                ce_adv = F.cross_entropy(logits_adv, labels,
+   444→                                          weight=self.class_weights.to(logits_adv.device),
+   445→                                          label_smoothing=self.label_smoothing, reduction="none")
+   446→                loss_adv = (focal_adv * ce_adv).mean()
+   447→
+   448→            # Compute gradient
+   449→            grad = torch.autograd.grad(loss_adv, embeds)[0]
+   450→            # PGD perturbation
+   451→            perturb = H.ADVERSARIAL_EPSILON * grad.sign()
+   452→            embeds_perturbed = embeds + perturb
+   453→
+   454→            # Forward with perturbed embeddings
+   455→            inputs_pert = {k: v for k, v in inputs.items() if k != "input_ids"}
+   456→            inputs_pert["inputs_embeds"] = embeds_perturbed.detach()
+   457→            outputs_pert = model(**inputs_pert)
+   458→            logits_pert = outputs_pert.logits
+   459→            probs_pert = F.softmax(logits_pert, dim=-1)
+   460→            pt_pert = probs_pert.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   461→            focal_pert = (1.0 - pt_pert) ** self.focal_gamma
+   462→            ce_pert = F.cross_entropy(logits_pert, labels,
+   463→                                       weight=self.class_weights.to(logits_pert.device),
+   464→                                       label_smoothing=self.label_smoothing, reduction="none")
+   465→            per_sample_pert = focal_pert * ce_pert
+   466→            if sample_weights is not None:
+   467→                per_sample_pert = per_sample_pert * sample_weights.to(logits_pert.device)
+   468→            return per_sample_pert.mean()
+   469→        except Exception as e:
+   470→            # Adversarial training can fail on some model architectures — skip gracefully
+   471→            return torch.tensor(0.0, device=labels.device)
+   472→
+   473→
+   474→# ---------------------------------------------------------------------------
+   475→# 3. Temperature scaling (Guo et al. 2017)
+   476→# ---------------------------------------------------------------------------
+   477→@torch.no_grad()
+   478→def calibrate_temperature(model, val_ds, tokenizer, device=None):
+   479→    if device is None:
+   480→        device = "cuda" if torch.cuda.is_available() else "cpu"
+   481→    model.eval().to(device)
+   482→    logits_all, labels_all = [], []
+   483→    for i in range(len(val_ds)):
+   484→        item = {k: v.unsqueeze(0).to(device) for k, v in val_ds[i].items()}
+   485→        labels_all.append(int(item.pop("labels").item()))
+   486→        out = model(**item)
+   487→        logits_all.append(out.logits.squeeze(0).cpu())
+   488→    logits = torch.stack(logits_all)
+   489→    labels = torch.tensor(labels_all)
+   490→
+   491→    T = torch.ones(1, requires_grad=True)
+   492→    opt = torch.optim.LBFGS([T], lr=0.1, max_iter=50)
+   493→    def closure():
+   494→        opt.zero_grad()
+   495→        loss = F.cross_entropy(logits / T, labels)
+   496→        loss.backward()
+   497→        return loss
+   498→    opt.step(closure)
+   499→    return float(T.clamp(0.05, 10.0).item())
+   500→
+   501→
+   502→# ---------------------------------------------------------------------------
+   503→# 4. K-Fold Cross-Validation
+   504→# ---------------------------------------------------------------------------
+   505→def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
+   506→    """Run entity-aware K-fold CV. Uses GroupKFold by entity to prevent leakage."""
+   507→    print(f"\n{'='*70}")
+   508→    print(f"K-FOLD CV (entity-aware, k={k})")
+   509→    print(f"{'='*70}")
+   510→
+   511→    labels_array = np.array([label2id[r["label"]] for r in all_rows])
+   512→    groups = [r.get("entity", r.get("entity_name", "unknown")) for r in all_rows]
+   513→    n_entities = len(set(groups))
+   514→    print(f"  Rows: {len(all_rows)}, Unique entities: {n_entities}")
+   515→
+   516→    # Use GroupKFold if enough entities, else StratifiedKFold
+   517→    if n_entities >= k * 3:
+   518→        gkf = GroupKFold(n_splits=k)
+   519→        splits = gkf.split(np.zeros(len(all_rows)), labels_array, groups)
+   520→    else:
+   521→        print(f"  Warning: too few entities for GroupKFold, using StratifiedKFold")
+   522→        skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=H.SEED)
+   523→        splits = skf.split(np.zeros(len(all_rows)), labels_array)
+   524→
+   525→    cfg = TASK_CFG[task]
+   526→    fold_results = []
+   527→    for fold, (train_idx, val_idx) in enumerate(splits):
+   528→        print(f"\n--- Fold {fold+1}/{k} ---")
+   529→        train_rows = [all_rows[i] for i in train_idx]
+   530→        val_rows = [all_rows[i] for i in val_idx]
+   531→
+   532→        # v4: Oversample training set only
+   533→        if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
+   534→            print(f"  Oversampling train: {len(train_rows)} -> ", end="")
+   535→            train_rows = oversample_minority(train_rows, H.OVERSAMPLING_TARGETS, seed=H.SEED + fold)
+   536→            print(f"{len(train_rows)}")
+   537→
+   538→        print(f"  train: {len(train_rows)} | val: {len(val_rows)}")
+   539→        print(f"  train balance: {dict(Counter(r['label'] for r in train_rows))}")
+   540→        print(f"  val   balance: {dict(Counter(r['label'] for r in val_rows))}")
+   541→
+   542→        metrics = train_single_fold(task, train_rows, val_rows, label2id, id2label,
+   543→                                     out_suffix=f"_fold{fold+1}")
+   544→        fold_results.append(metrics)
+   545→        print(f"  metrics: {metrics}")
+   546→
+   547→    # v3.1: Clear GPU memory after each fold
+   548→    import gc
+   549→    gc.collect()
+   550→    torch.cuda.empty_cache()
+   551→
+   552→    # Aggregate
+   553→    print(f"\n{'='*70}")
+   554→    print(f"K-FOLD RESULTS (k={k})")
+   555→    print(f"{'='*70}")
+   556→    avg_metrics = {}
+   557→    for key in fold_results[0]:
+   558→        if isinstance(fold_results[0][key], (int, float)):
+   559→            values = [r[key] for r in fold_results]
+   560→            avg = np.mean(values)
+   561→            std = np.std(values)
+   562→            avg_metrics[key] = {"mean": avg, "std": std, "values": values}
+   563→            print(f"  {key:20s}: {avg:.4f} ± {std:.4f}")
+   564→
+   565→    return {"folds": fold_results, "aggregate": avg_metrics}
+   566→
+   567→
+   568→# ---------------------------------------------------------------------------
+   569→# 5. Single fold training
+   570→# ---------------------------------------------------------------------------
+   571→def train_single_fold(task, train_rows, val_rows, label2id, id2label,
+   572→                       out_suffix=""):
+   573→    cfg = TASK_CFG[task]
+   574→    out_dir = Path(cfg["out_dir"])
+   575→    out_dir.mkdir(parents=True, exist_ok=True)
+   576→
+   577→    tok = AutoTokenizer.from_pretrained(cfg["base_model"])
+   578→    model = AutoModelForSequenceClassification.from_pretrained(
+   579→        cfg["base_model"], num_labels=len(cfg["labels"]),
+   580→        id2label=id2label, label2id=label2id,
+   581→        ignore_mismatched_sizes=True,
+   582→    )
+   583→
+   584→    lora_cfg = LoraConfig(
+   585→        r=H.LORA.r, lora_alpha=H.LORA.alpha, lora_dropout=H.LORA.dropout,
+   586→        bias=H.LORA.bias, task_type=TaskType.SEQ_CLS,
+   587→        target_modules=H.LORA.target_modules,
+   588→    )
+   589→    model = get_peft_model(model, lora_cfg)
+   590→    if not out_suffix:
+   591→        model.print_trainable_parameters()
+   592→
+   593→    # Class weights
+   594→    train_label_ids = [label2id[r["label"]] for r in train_rows]
+   595→    cw = class_weights_from_freq(train_label_ids, len(cfg["labels"]))
+   596→
+   597→    # Datasets
+   598→    train_ds = PairDataset(train_rows, tok, label2id)
+   599→    val_ds = PairDataset(val_rows, tok, label2id)
+   600→
+   601→    steps_per_epoch = max(1, len(train_ds) // (H.BATCH_SIZE * H.GRAD_ACCUM_STEPS))
+   602→    warmup_steps = int(H.WARMUP_RATIO * steps_per_epoch * H.NUM_EPOCHS)
+   603→
+   604→    # Build TrainingArguments dict (compatible with transformers 4.40+)
+   605→    train_args_dict = dict(
+   606→        output_dir=str(out_dir),
+   607→        num_train_epochs=H.NUM_EPOCHS,
+   608→        per_device_train_batch_size=H.BATCH_SIZE,
+   609→        per_device_eval_batch_size=H.BATCH_SIZE,  # v3.1: reduced from *2 (OOM fix)
+   610→        # v3.1: OOM prevention settings
+   611→        dataloader_pin_memory=False,  # saves pinned memory
+   612→        gradient_checkpointing=False,
+   613→        gradient_accumulation_steps=H.GRAD_ACCUM_STEPS,
+   614→        learning_rate=H.LEARNING_RATE,
+   615→        weight_decay=H.WEIGHT_DECAY,
+   616→        adam_beta1=H.ADAM_BETA1, adam_beta2=H.ADAM_BETA2, adam_epsilon=H.ADAM_EPSILON,
+   617→        max_grad_norm=H.MAX_GRAD_NORM,
+   618→        warmup_steps=warmup_steps,
+   619→        lr_scheduler_type=H.SCHEDULER,
+   620→        # v3.2: pass num_cycles for cosine_with_restarts
+   621→        lr_scheduler_kwargs={"num_cycles": H.SCHEDULER_NUM_CYCLES} if H.SCHEDULER == "cosine_with_restarts" else None,
+   622→        fp16=H.FP16,
+   623→        save_strategy="epoch",
+   624→        save_total_limit=1,
+   625→        load_best_model_at_end=True,
+   626→        metric_for_best_model="eval_macro_f1",  # v3.2: full key for transformers 5.x
+   627→        greater_is_better=True,
+   628→        seed=H.SEED,
+   629→        report_to="none",
+   630→        logging_steps=max(1, steps_per_epoch // 4),
+   631→    )
+   632→    # eval_strategy: renamed in 4.46+ (try new name, fallback to old)
+   633→    try:
+   634→        train_args_dict["eval_strategy"] = "epoch"
+   635→        targs = TrainingArguments(**train_args_dict)
+   636→    except TypeError:
+   637→        # Old transformers (< 4.46) uses evaluation_strategy
+   638→        train_args_dict["evaluation_strategy"] = "epoch"
+   639→        targs = TrainingArguments(**train_args_dict)
+   640→
+   641→    def compute_metrics(eval_pred):
+   642→        logits, labels = eval_pred
+   643→        preds = np.argmax(logits, axis=-1)
+   644→        return {
+   645→            "accuracy": accuracy_score(labels, preds),
+   646→            "macro_f1": f1_score(labels, preds, average="macro"),
+   647→            "weighted_f1": f1_score(labels, preds, average="weighted"),
+   648→        }
+   649→
+   650→    trainer = FocalLossTrainerV4(
+   651→        model=model,
+   652→        args=targs,
+   653→        train_dataset=train_ds,
+   654→        eval_dataset=val_ds,
+   655→        processing_class=tok,
+   656→        compute_metrics=compute_metrics,
+   657→        class_weights=cw,
+   658→        focal_gamma=H.FOCAL_GAMMA,
+   659→        adversarial=H.ADVERSARIAL_ENABLED,
+   660→        mixup=H.MIXUP_ENABLED,
+   661→        callbacks=[
+   662→            EarlyStoppingCallback(early_stopping_patience=H.EARLY_STOP_PATIENCE),
+   663→        ] + ([SWACallback(start_epoch=H.SWA_START_EPOCH, anneal_epochs=H.SWA_ANNEAL_EPOCHS)]
+   664→             if H.SWA_ENABLED else []),
+   665→    )
+   666→
+   667→    trainer.train()
+   668→    # v3.1: Clear cache before eval to prevent OOM
+   669→    import gc
+   670→    gc.collect()
+   671→    torch.cuda.empty_cache()
+   672→    val_metrics = trainer.evaluate(val_ds, metric_key_prefix="val")
+   673→
+   674→    # Temperature calibration
+   675→    T = calibrate_temperature(model, val_ds, tok)
+   676→
+   677→    # Save (only for non-K-fold mode)
+   678→    if not out_suffix:
+   679→        model.save_pretrained(out_dir / "lora")
+   680→        tok.save_pretrained(out_dir / "tokenizer")
+   681→        with open(out_dir / "metrics.json", "w") as f:
+   682→            json.dump({
+   683→                "task": task,
+   684→                "val_metrics": val_metrics,
+   685→                "temperature": T,
+   686→                "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
+   687→                                for k, v in vars(H).items() if k.isupper()},
+   688→                "train_size": len(train_rows),
+   689→                "val_size": len(val_rows),
+   690→                "class_weights": dict(zip(cfg['labels'], cw.tolist())),
+   691→            }, f, indent=2)
+   692→        print(f"\nSaved LoRA adapter + metrics -> {out_dir}")
+   693→
+   694→    return {
+   695→        "accuracy": float(val_metrics.get("val_accuracy", 0)),
+   696→        "macro_f1": float(val_metrics.get("val_macro_f1", 0)),
+   697→        "weighted_f1": float(val_metrics.get("val_weighted_f1", 0)),
+   698→        "temperature": T,
+   699→    }
+   700→
+   701→
+   702→# ---------------------------------------------------------------------------
+   703→# 6. Main
+   704→# ---------------------------------------------------------------------------
+   705→def main(task: str, kfold: int = 0, dataset: str = None):
+   706→    cfg = TASK_CFG[task]
+   707→    print(f"\n{'='*70}")
+   708→    print(f"FINETUNE v3 TASK: {task}")
+   709→    print(f"base: {cfg['base_model']}")
+   710→    print(f"out:  {cfg['out_dir']}")
+   711→    print(f"{'='*70}\n")
+   712→
+   713→    # Load dataset
+   714→    data_path = Path("/content/finetuning/datasets") / (dataset or cfg["data_file"])
+   715→    all_rows = load_jsonl(str(data_path))
+   716→    print(f"Loaded {len(all_rows)} rows from {cfg['data_file']}")
+   717→
+   718→    label2id = {l: i for i, l in enumerate(cfg["labels"])}
+   719→    id2label = {i: l for l, i in label2id.items()}
+   720→    label_field = cfg.get("label_field", "label")
+   721→    exclude_flags = cfg.get("exclude_flags", [])
+   722→    filter_fn = cfg.get("filter")
+   723→
+   724→    # v4: Normalize rows — handle gold standard field names
+   725→    text_field = cfg.get("text_field", "text")
+   726→    entity_field = cfg.get("entity_field", "entity_name")
+   727→    entity_premise_field = cfg.get("entity_premise_field", "entity_premise")
+   728→    rows = []
+   729→    excluded = {"bad_flag": 0, "filter": 0, "no_label": 0, "no_text": 0}
+   730→    for r in all_rows:
+   731→        if r.get("context_flag") in exclude_flags:
+   732→            excluded["bad_flag"] += 1
+   733→            continue
+   734→        label = r.get(label_field) or r.get("gold_label") or r.get("pseudo_label")
+   735→        if not label or label not in label2id:
+   736→            excluded["no_label"] += 1
+   737→            continue
+   738→        text = r.get(text_field) or r.get("context_text") or r.get("hypothesis", "")
+   739→        if not text or len(text.strip()) < 10:
+   740→            excluded["no_text"] += 1
+   741→            continue
+   742→        if filter_fn and not filter_fn(r):
+   743→            excluded["filter"] += 1
+   744→            continue
+   745→        entity = r.get(entity_field, "")
+   746→        premise = r.get(entity_premise_field) or f"Tentang {entity}" or entity
+   747→        rows.append({
+   748→            "premise": premise,
+   749→            "hypothesis": text,
+   750→            "label": label,
+   751→            "confidence": r.get("label_confidence", 0.5),
+   752→            "label_source": r.get("label_source", "unknown"),
+   753→            "entity": entity,
+   754→        })
+   755→    print(f"After filter: {len(rows)} rows (excluded: {excluded})")
+   756→
+   757→    if kfold > 1:
+   758→        # K-fold mode
+   759→        results = run_kfold(task, rows, label2id, id2label, k=kfold)
+   760→        out_dir = Path(cfg["out_dir"])
+   761→        out_dir.mkdir(parents=True, exist_ok=True)
+   762→        with open(out_dir / "kfold_results.json", "w") as f:
+   763→            json.dump(results, f, indent=2)
+   764→        print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
+   765→    else:
+   766→        # Single train/val/test split
+   767→        train_rows, val_rows, test_rows = stratified_split(rows, "label", H.TRAIN_SPLIT, H.VAL_SPLIT)
+   768→        # v4: Oversample training set
+   769→        if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
+   770→            print(f"Oversampling train: {len(train_rows)} -> ", end="")
+   771→            train_rows = oversample_minority(train_rows, H.OVERSAMPLING_TARGETS, seed=H.SEED)
+   772→            print(f"{len(train_rows)}")
+   773→        print(f"Split: train={len(train_rows)} val={len(val_rows)} test={len(test_rows)}")
+   774→        print(f"Train class balance: {dict(Counter(r['label'] for r in train_rows))}")
+   775→        print(f"Val   class balance: {dict(Counter(r['label'] for r in val_rows))}")
+   776→        print(f"Test  class balance: {dict(Counter(r['label'] for r in test_rows))}")
+   777→
+   778→        metrics = train_single_fold(task, train_rows, val_rows, label2id, id2label)
+   779→        print(f"\nFinal metrics: {metrics}")
+   780→
+   781→
+   782→if __name__ == "__main__":
+   783→    ap = argparse.ArgumentParser()
+   784→    ap.add_argument("--task", choices=["relevancy", "sentiment"], required=True)
+   785→    ap.add_argument("--dataset", default=None, help="Override dataset file")
+   786→    ap.add_argument("--kfold", type=int, default=0,
+   787→                    help="K-fold CV (0=disabled, 5=recommended)")
+   788→    args = ap.parse_args()
+   789→    main(args.task, kfold=args.kfold, dataset=args.dataset)
+   790→
+   791→
+   792→# ============================================================================
+   793→# SECTION 3: EVALUATE LOGIC
+   794→# ============================================================================
+   795→
+   796→from __future__ import annotations
+   797→import json, argparse, math
+   798→from pathlib import Path
+   799→from collections import Counter
+   800→
+   801→import numpy as np
+   802→import torch
+   803→import torch.nn.functional as F
+   804→from transformers import AutoTokenizer, AutoModelForSequenceClassification
+   805→from peft import PeftModel
+   806→from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classification_report
+   807→
+   808→import hyperparams_v4 as H
+   809→
+   810→TASK_CFG = {
+   811→    "relevancy": {"labels": H.RELEVANCY_LABELS, "data": "dataset_gold_standard_final.jsonl"},
+   812→    "sentiment": {"labels": H.SENTIMENT_LABELS, "data": "dataset_gold_standard_final.jsonl"},
+   813→}
+   814→
+   815→def load_jsonl(p):
+   816→    return [json.loads(l) for l in open(p) if l.strip()]
+   817→
+   818→def stratified_split(rows, seed=H.SEED):
+   819→    import random
+   820→    rng = random.Random(seed)
+   821→    by = {}
+   822→    for r in rows: by.setdefault(r["label"], []).append(r)
+   823→    tr, va, te = [], [], []
+   824→    for lab, items in by.items():
+   825→        items = list(items); rng.shuffle(items)
+   826→        n = len(items)
+   827→        nt = max(1, int(round(n*H.TEST_SPLIT)))
+   828→        nv = max(1, int(round(n*H.VAL_SPLIT)))
+   829→        ntr = max(1, n - nt - nv)
+   830→        tr.extend(items[:ntr]); va.extend(items[ntr:ntr+nv]); te.extend(items[ntr+nv:])
+   831→    rng.shuffle(tr); rng.shuffle(va); rng.shuffle(te)
+   832→    return tr, va, te
+   833→
+   834→@torch.no_grad()
+   835→def score_all(model, tok, rows, labels, device=None, max_len=H.MAX_SEQ_LENGTH):
+   836→    if device is None:
+   837→        device = "cuda" if torch.cuda.is_available() else "cpu"
+   838→    model.eval().to(device)
+   839→    label2id = {l:i for i,l in enumerate(labels)}
+   840→    probs, golds = [], []
+   841→    for r in rows:
+   842→        enc = tok(r["premise"], r["hypothesis"], truncation=True,
+   843→                  max_length=max_len, return_tensors="pt").to(device)
+   844→        out = model(**enc)
+   845→        p = F.softmax(out.logits / 1.0, dim=-1)[0].cpu().numpy()
+   846→        probs.append(p)
+   847→        golds.append(label2id[r["label"]])
+   848→    return np.array(probs), np.array(golds)
+   849→
+   850→def apply_temperature(probs, T):
+   851→    # re-softmax with temperature on logits: but we only have probs.
+   852→    # Approximate by sharpening: p' = p^(1/T) / sum. Valid for calibration
+   853→    # comparison; for exact, re-run score_all with T. We re-run instead.
+   854→    return probs  # placeholder; real T applied in score_all via logits/T
+   855→
+   856→@torch.no_grad()
+   857→def score_all_calibrated(model, tok, rows, labels, T, device=None, max_len=H.MAX_SEQ_LENGTH):
+   858→    """Score with temperature scaling on logits."""
+   859→    if device is None:
+   860→        device = "cuda" if torch.cuda.is_available() else "cpu"
+   861→    model.eval().to(device)
+   862→    label2id = {l:i for i,l in enumerate(labels)}
+   863→    probs, golds = [], []
+   864→    for r in rows:
+   865→        enc = tok(r["premise"], r["hypothesis"], truncation=True,
+   866→                  max_length=max_len, return_tensors="pt").to(device)
+   867→        out = model(**enc)
+   868→        p = F.softmax(out.logits / T, dim=-1)[0].cpu().numpy()
+   869→        probs.append(p)
+   870→        golds.append(label2id[r["label"]])
+   871→    return np.array(probs), np.array(golds)
+   872→
+   873→def confidence_threshold_sweep(probs, golds, taus=None):
+   874→    """Return list of (tau, kept_acc, coverage, macro_f1_kept, n_kept, n_deferred)."""
+   875→    if taus is None:
+   876→        taus = np.arange(0.30, 0.98, 0.03)
+   877→    preds = probs.argmax(axis=1)
+   878→    confs = probs.max(axis=1)
+   879→    rows = []
+   880→    for tau in taus:
+   881→        keep = confs >= tau
+   882→        n_kept = int(keep.sum())
+   883→        n_def = int((~keep).sum())
+   884→        if n_kept == 0:
+   885→            continue
+   886→        kept_acc = accuracy_score(golds[keep], preds[keep])
+   887→        kept_f1 = f1_score(golds[keep], preds[keep], average="macro",
+   888→                           labels=list(range(probs.shape[1])), zero_division=0)
+   889→        rows.append({
+   890→            "tau": round(float(tau), 3),
+   891→            "kept_accuracy": round(float(kept_acc), 4),
+   892→            "coverage": round(n_kept / len(golds), 4),
+   893→            "kept_macro_f1": round(float(kept_f1), 4),
+   894→            "n_kept": n_kept,
+   895→            "n_deferred": n_def,
+   896→        })
+   897→    return rows
+   898→
+   899→def main(task, run_dir):
+   900→    cfg = TASK_CFG[task]
+   901→    run_dir = Path(run_dir)
+   902→    metrics_path = run_dir / "metrics.json"
+   903→    metrics = json.load(open(metrics_path)) if metrics_path.exists() else {}
+   904→    T = metrics.get("temperature", 1.0)
+   905→    print(f"Task: {task} | run_dir: {run_dir} | temperature: {T}")
+   906→
+   907→    # load base + LoRA
+   908→    base = cfg["base_model"] if task == "sentiment" else H.RELEVANCY_BASE
+   909→    tok = AutoTokenizer.from_pretrained(run_dir / "tokenizer")
+   910→    model = AutoModelForSequenceClassification.from_pretrained(base)
+   911→    model = PeftModel.from_pretrained(model, run_dir / "lora")
+   912→    model = model.merge_and_unload()  # merge LoRA for faster inference
+   913→
+   914→    # data — reproduce the SAME stratified test split as finetune.py
+   915→    rows = load_jsonl(cfg["data"])
+   916→    _, _, test = stratified_split(rows)
+   917→    print(f"Test set: {len(test)} rows | balance: {dict(Counter(r['label'] for r in test))}")
+   918→
+   919→    # score (calibrated)
+   920→    probs, golds = score_all_calibrated(model, tok, test, cfg["labels"], T)
+   921→
+   922→    # full-coverage metrics
+   923→    preds = probs.argmax(axis=1)
+   924→    full_acc = accuracy_score(golds, preds)
+   925→    full_f1 = f1_score(golds, preds, average="macro",
+   926→                       labels=list(range(len(cfg["labels"]))), zero_division=0)
+   927→    cm = confusion_matrix(golds, preds, labels=list(range(len(cfg["labels"]))))
+   928→    print("\n=== FULL-COVERAGE METRICS (no deferral) ===")
+   929→    print(f"  accuracy : {full_acc:.4f}")
+   930→    print(f"  macro-F1 : {full_f1:.4f}")
+   931→    print(f"  confusion matrix (rows=true, cols=pred):")
+   932→    print(f"    labels: {cfg['labels']}")
+   933→    print(f"    {cm.tolist()}")
+   934→    print(classification_report(golds, preds, target_names=cfg["labels"], zero_division=0))
+   935→
+   936→    # confidence-threshold sweep
+   937→    sweep = confidence_threshold_sweep(probs, golds)
+   938→    print("\n=== CONFIDENCE-THRESHOLD SWEEP (kept-set accuracy vs coverage) ===")
+   939→    print(f"  {'tau':>5} {'kept_acc':>9} {'coverage':>9} {'kept_F1':>8} {'kept':>5} {'defer':>6}")
+   940→    for s in sweep:
+   941→        flag = "  <-- 97% target" if s["kept_accuracy"] >= 0.97 else ""
+   942→        print(f"  {s['tau']:>5} {s['kept_accuracy']:>9.4f} {s['coverage']:>9.4f} "
+   943→              f"{s['kept_macro_f1']:>8.4f} {s['n_kept']:>5} {s['n_deferred']:>6}{flag}")
+   944→
+   945→    # find the tau that hits >=97% with max coverage
+   946→    hits_97 = [s for s in sweep if s["kept_accuracy"] >= 0.97]
+   947→    best = max(hits_97, key=lambda s: s["coverage"]) if hits_97 else None
+   948→    if best:
+   949→        print(f"\n>> >=97% kept-accuracy ACHIEVED at tau={best['tau']} "
+   950→              f"with coverage={best['coverage']:.1%} ({best['n_kept']}/{len(test)} kept, "
+   951→              f"{best['n_deferred']} deferred to human/LLM).")
+   952→    else:
+   953→        max_acc = max(s["kept_accuracy"] for s in sweep)
+   954→        print(f"\n>> 97% NOT reached on this test split. Max kept-acc={max_acc:.4f}.")
+   955→        print("   Options: (a) label more gold data, (b) raise tau, (c) add the LLM second-pass for deferred.")
+   956→
+   957→    # save
+   958→    out = {
+   959→        "task": task,
+   960→        "temperature": T,
+   961→        "full_coverage": {"accuracy": full_acc, "macro_f1": full_f1,
+   962→                          "confusion_matrix": cm.tolist(), "labels": cfg["labels"]},
+   963→        "sweep": sweep,
+   964→        "best_97": best,
+   965→    }
+   966→    with open(run_dir / "evaluation.json", "w") as f:
+   967→        json.dump(out, f, indent=2)
+   968→    print(f"\nSaved -> {run_dir / 'evaluation.json'}")
+   969→
+   970→if __name__ == "__main__":
+   971→    ap = argparse.ArgumentParser()
+   972→    ap.add_argument("--task", choices=["relevancy", "sentiment"], required=True)
+   973→    ap.add_argument("--run-dir", required=True)
+   974→    a = ap.parse_args()
+   975→    main(a.task, a.run_dir)
+   976→

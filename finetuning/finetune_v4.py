@@ -12,17 +12,13 @@ UPGRADES over v3:
   6. Entity as explicit premise: "Tentang {entity}"
   7. Epochs: 20→18, SWA start: 5→4
 
-Usage:
-  python finetune_v4.py --task sentiment --kfold 5
-  python finetune_v4.py --task relevancy --kfold 5
-
 UPGRADES over finetune.py (v1):
   1. K-Fold Cross-Validation (5-fold stratified) — robust evaluation
   2. Adversarial Training (PGD on embeddings) — fights input perturbations
   3. Mixup Augmentation — interpolates sentence pairs to fight overfitting
   4. LoRA r=64 (upgraded from 16/32) — more capacity
-  5. Effective batch 64 (batch=16 x grad_accum=4)
-  6. 20 epochs + SWA from epoch 5
+  5. Effective batch 64 (batch=8 x grad_accum=8)
+  6. 18 epochs + SWA from epoch 4
   7. Per-sample confidence weighting (kept from v1)
 
 Scientific basis:
@@ -36,8 +32,9 @@ Scientific basis:
   - LoRA: Hu et al. (2021) — parameter-efficient fine-tuning
 
 Usage:
-  python finetune_v3.py --task sentiment --dataset datasets/dataset_v9.jsonl
-  python finetune_v3.py --task sentiment --kfold 5  # K-fold CV mode
+  python finetune_v4.py --task sentiment --kfold 5
+  python finetune_v4.py --task relevancy --kfold 5
+  python finetune_v4.py --task sentiment            # single split mode
 """
 import os
 import json
@@ -45,12 +42,16 @@ import random
 import argparse
 import numpy as np
 import logging
-import logging
 from pathlib import Path
-logger = logging.getLogger(__name__)
-logger = logging.getLogger(__name__)
 from dataclasses import asdict
 from collections import Counter
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(_h)
 
 # v3.1: Set CUDA memory allocator config BEFORE torch import
 # Helps prevent OOM by using expandable segments (less fragmentation)
@@ -180,7 +181,11 @@ def load_jsonl(path):
     return [json.loads(l) for l in open(path) if l.strip()]
 
 
-def stratified_split(rows, label_key, train_p, val_p, seed=H.SEED):
+def stratified_split(rows, label_key="label", seed=H.SEED):
+    """Stratified train/val/test split by label_key.
+
+    Uses H.VAL_SPLIT and H.TEST_SPLIT for proportions.
+    """
     rng = random.Random(seed)
     by_label = {}
     for r in rows:
@@ -215,21 +220,6 @@ def class_weights_from_freq(labels, num_classes, method="log"):
     return torch.tensor(w, dtype=torch.float)
 
 
-def mixup_embeddings(embeds, labels, alpha=H.MIXUP_ALPHA):
-    """Mixup augmentation on embeddings (Zhang et al. 2018).
-
-    Returns mixed embeddings + mixed labels (soft).
-    """
-    if alpha <= 0:
-        return embeds, labels, labels, 1.0
-
-    lam = np.random.beta(alpha, alpha)
-    batch_size = embeds.size(0)
-    index = torch.randperm(batch_size, device=embeds.device)
-    mixed_embeds = lam * embeds + (1 - lam) * embeds[index]
-    return mixed_embeds, labels, labels[index], lam
-
-
 class FocalLossTrainerV4(Trainer):
     """v4 Trainer: Focal Loss + log class weights + per-sample confidence +
     adversarial training + mixup."""
@@ -239,9 +229,12 @@ class FocalLossTrainerV4(Trainer):
                  adversarial=H.ADVERSARIAL_ENABLED,
                  mixup=H.MIXUP_ENABLED, **kwargs):
         super().__init__(*args, **kwargs)
-        self.class_weights = class_weights
         self.focal_gamma = focal_gamma
         self.label_smoothing = label_smoothing
+        # Move class_weights to GPU once (avoid repeated .to(device) every forward)
+        if class_weights is not None and torch.cuda.is_available():
+            class_weights = class_weights.to("cuda")
+        self.class_weights = class_weights
         # v3.1: Auto-disable adversarial on low-memory GPUs (< 12GB) to prevent OOM
         if adversarial and torch.cuda.is_available():
             gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -264,7 +257,10 @@ class FocalLossTrainerV4(Trainer):
         # NOT output_hidden_states — so we don't need it at all.
         outputs = model(**inputs)
         logits = outputs.logits
-        probs = F.softmax(logits, dim=-1)
+
+        cw = self.class_weights
+        if cw is not None and cw.device != logits.device:
+            cw = cw.to(logits.device)
 
         # Mixup on logits (simpler than embedding-level)
         if self.mixup and is_training and random.random() < H.MIXUP_PROB:
@@ -282,15 +278,25 @@ class FocalLossTrainerV4(Trainer):
                           self.label_smoothing / logits.size(-1)
 
             log_probs = F.log_softmax(mixed_logits, dim=-1)
+            # FIX C5: compute per-sample CE from mixed logits + soft labels
             ce = -(soft_labels * log_probs).sum(dim=-1)
-            pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+            # FIX C5: focal pt must come from MIXED probs (not original probs)
+            mixed_probs = F.softmax(mixed_logits, dim=-1)
+            pt = (soft_labels * mixed_probs).sum(dim=-1).clamp(min=1e-8)
             focal = (1.0 - pt) ** self.focal_gamma
-            per_sample = focal * ce
+            # FIX C5: apply class weights in mixup branch too (was missing)
+            if cw is not None:
+                # weight each sample by its original-label class weight
+                sample_cw = cw[labels]
+                per_sample = focal * ce * sample_cw
+            else:
+                per_sample = focal * ce
         else:
             # Standard focal loss with label smoothing
+            probs = F.softmax(logits, dim=-1)
             pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
             focal = (1.0 - pt) ** self.focal_gamma
-            ce = F.cross_entropy(logits, labels, weight=self.class_weights.to(logits.device),
+            ce = F.cross_entropy(logits, labels, weight=cw,
                                   label_smoothing=self.label_smoothing, reduction="none")
             per_sample = focal * ce
 
@@ -319,6 +325,10 @@ class FocalLossTrainerV4(Trainer):
             embeds = embed_layer(input_ids)
             embeds = embeds.detach().requires_grad_(True)
 
+            cw = self.class_weights
+            if cw is not None and cw.device != embeds.device:
+                cw = cw.to(embeds.device)
+
             with torch.enable_grad():
                 inputs_adv = {k: v for k, v in inputs.items() if k != "input_ids"}
                 inputs_adv["inputs_embeds"] = embeds
@@ -328,7 +338,7 @@ class FocalLossTrainerV4(Trainer):
                 pt_adv = probs_adv.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
                 focal_adv = (1.0 - pt_adv) ** self.focal_gamma
                 ce_adv = F.cross_entropy(logits_adv, labels,
-                                          weight=self.class_weights.to(logits_adv.device),
+                                          weight=cw,
                                           label_smoothing=self.label_smoothing, reduction="none")
                 loss_adv = (focal_adv * ce_adv).mean()
 
@@ -344,7 +354,7 @@ class FocalLossTrainerV4(Trainer):
             pt_pert = probs_pert.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
             focal_pert = (1.0 - pt_pert) ** self.focal_gamma
             ce_pert = F.cross_entropy(logits_pert, labels,
-                                       weight=self.class_weights.to(logits_pert.device),
+                                       weight=cw,
                                        label_smoothing=self.label_smoothing, reduction="none")
             per_sample_pert = focal_pert * ce_pert
             if sample_weights is not None:
@@ -408,20 +418,31 @@ class SWACallback(TrainerCallback):
 # ---------------------------------------------------------------------------
 # 3. Temperature scaling (Guo et al. 2017)
 # ---------------------------------------------------------------------------
-@torch.no_grad()
 def calibrate_temperature(model, val_ds, tokenizer, device=None):
+    """Fit a scalar temperature T on the validation set via LBFGS.
+
+    FIX C4: Previously decorated with @torch.no_grad(), which disabled the
+    autograd graph for the ENTIRE function — including the LBFGS closure that
+    calls loss.backward(). That raised RuntimeError("element 0 of tensors does
+    not require grad"). Now we only wrap the INFERENCE loop in no_grad, and run
+    the optimization outside that context so gradients flow for T.
+    """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     model.eval().to(device)
+
+    # --- Phase 1: collect logits under no_grad (pure inference) ---
     logits_all, labels_all = [], []
-    for i in range(len(val_ds)):
-        item = {k: v.unsqueeze(0).to(device) for k, v in val_ds[i].items()}
-        labels_all.append(int(item.pop("labels").item()))
-        out = model(**item)
-        logits_all.append(out.logits.squeeze(0).cpu())
+    with torch.no_grad():
+        for i in range(len(val_ds)):
+            item = {k: v.unsqueeze(0).to(device) for k, v in val_ds[i].items()}
+            labels_all.append(int(item.pop("labels").item()))
+            out = model(**item)
+            logits_all.append(out.logits.squeeze(0).cpu())
     logits = torch.stack(logits_all)
     labels = torch.tensor(labels_all)
 
+    # --- Phase 2: fit temperature T WITH grad enabled (LBFGS needs autograd) ---
     T = torch.ones(1, requires_grad=True)
     opt = torch.optim.LBFGS([T], lr=0.1, max_iter=50)
     def closure():
@@ -458,6 +479,7 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
 
     cfg = TASK_CFG[task]
     fold_results = []
+    import gc
     for fold, (train_idx, val_idx) in enumerate(splits):
         print(f"\n--- Fold {fold+1}/{k} ---")
         train_rows = [all_rows[i] for i in train_idx]
@@ -475,13 +497,15 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
 
         metrics = train_single_fold(task, train_rows, val_rows, label2id, id2label,
                                      out_suffix=f"_fold{fold+1}")
+        # FIX C6: tag each fold result with its fold index for downstream consumers
+        metrics["fold"] = fold + 1
         fold_results.append(metrics)
         print(f"  metrics: {metrics}")
 
-    # v3.1: Clear GPU memory after each fold
-    import gc
-    gc.collect()
-    torch.cuda.empty_cache()
+        # FIX H2: Clear GPU memory AFTER EACH fold (was outside the loop before)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # Aggregate
     print(f"\n{'='*70}")
@@ -496,7 +520,30 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
             avg_metrics[key] = {"mean": avg, "std": std, "values": values}
             print(f"  {key:20s}: {avg:.4f} ± {std:.4f}")
 
-    return {"folds": fold_results, "aggregate": avg_metrics}
+    # FIX C6: Return a format compatible with evaluate_v4.py and colab pipeline.
+    # Consumers expect flat keys: mean_accuracy, std_accuracy, mean_macro_f1,
+    # std_macro_f1, plus fold_results list (each with "fold" key) and "k".
+    def _flat(metric_key):
+        a = avg_metrics.get(metric_key, {"mean": 0.0, "std": 0.0})
+        return a["mean"], a["std"]
+
+    mean_acc, std_acc = _flat("accuracy")
+    mean_f1, std_f1 = _flat("macro_f1")
+    mean_wf1, std_wf1 = _flat("weighted_f1")
+
+    return {
+        "k": k,
+        "task": task,
+        "fold_results": fold_results,
+        "folds": fold_results,  # backward-compat alias
+        "mean_accuracy": mean_acc,
+        "std_accuracy": std_acc,
+        "mean_macro_f1": mean_f1,
+        "std_macro_f1": std_f1,
+        "mean_weighted_f1": mean_wf1,
+        "std_weighted_f1": std_wf1,
+        "aggregate": avg_metrics,  # backward-compat: detailed per-key breakdown
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -602,34 +649,47 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     # v3.1: Clear cache before eval to prevent OOM
     import gc
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     val_metrics = trainer.evaluate(val_ds, metric_key_prefix="val")
 
     # Temperature calibration
     T = calibrate_temperature(model, val_ds, tok)
 
-    # Save (only for non-K-fold mode)
-    if not out_suffix:
-        model.save_pretrained(out_dir / "lora")
-        tok.save_pretrained(out_dir / "tokenizer")
-        with open(out_dir / "metrics.json", "w") as f:
-            json.dump({
-                "task": task,
-                "val_metrics": val_metrics,
-                "temperature": T,
-                "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
-                                for k, v in vars(H).items() if k.isupper()},
-                "train_size": len(train_rows),
-                "val_size": len(val_rows),
-                "class_weights": dict(zip(cfg['labels'], cw.tolist())),
-            }, f, indent=2)
-        print(f"\nSaved LoRA adapter + metrics -> {out_dir}")
+    # FIX C7: Save model for BOTH single-split and K-fold modes.
+    # Previously K-fold skipped save entirely (if not out_suffix), leaving
+    # colab_complete_pipeline_v4.py unable to find per-fold dirs to upload.
+    # Now: single-split → out_dir/lora; K-fold → out_dir/fold_{N}/lora
+    if out_suffix:
+        fold_dir = out_dir / f"fold_{out_suffix.replace('_fold', '')}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        save_dir = fold_dir
+    else:
+        save_dir = out_dir
+
+    model.save_pretrained(save_dir / "lora")
+    tok.save_pretrained(save_dir / "tokenizer")
+    metrics_payload = {
+        "task": task,
+        "fold": int(out_suffix.replace("_fold", "")) if out_suffix else None,
+        "val_metrics": val_metrics,
+        "temperature": T,
+        "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
+                        for k, v in vars(H).items() if k.isupper()},
+        "train_size": len(train_rows),
+        "val_size": len(val_rows),
+        "class_weights": dict(zip(cfg['labels'], cw.tolist())),
+    }
+    with open(save_dir / "metrics.json", "w") as f:
+        json.dump(metrics_payload, f, indent=2)
+    print(f"\nSaved LoRA adapter + metrics -> {save_dir}")
 
     return {
         "accuracy": float(val_metrics.get("val_accuracy", 0)),
         "macro_f1": float(val_metrics.get("val_macro_f1", 0)),
         "weighted_f1": float(val_metrics.get("val_weighted_f1", 0)),
         "temperature": T,
+        "saved_to": str(save_dir),
     }
 
 
@@ -639,7 +699,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
 def main(task: str, kfold: int = 0, dataset: str = None):
     cfg = TASK_CFG[task]
     print(f"\n{'='*70}")
-    print(f"FINETUNE v3 TASK: {task}")
+    print(f"FINETUNE v4 TASK: {task}")
     print(f"base: {cfg['base_model']}")
     print(f"out:  {cfg['out_dir']}")
     print(f"{'='*70}\n")
@@ -677,7 +737,12 @@ def main(task: str, kfold: int = 0, dataset: str = None):
             excluded["filter"] += 1
             continue
         entity = r.get(entity_field, "")
-        premise = r.get(entity_premise_field) or f"Tentang {entity}" or entity
+        # FIX H4: premise fallback was `r.get(field) or f"Tentang {entity}" or entity`
+        # but the f-string is always truthy, so `or entity` was dead code.
+        # Now: prefer stored entity_premise, else synthesize from entity.
+        premise = r.get(entity_premise_field)
+        if not premise:
+            premise = f"Tentang {entity}" if entity else ""
         rows.append({
             "premise": premise,
             "hypothesis": text,
@@ -698,7 +763,7 @@ def main(task: str, kfold: int = 0, dataset: str = None):
         print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
     else:
         # Single train/val/test split
-        train_rows, val_rows, test_rows = stratified_split(rows, "label", H.TRAIN_SPLIT, H.VAL_SPLIT)
+        train_rows, val_rows, test_rows = stratified_split(rows, "label")
         # v4: Oversample training set
         if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
             print(f"Oversampling train: {len(train_rows)} -> ", end="")

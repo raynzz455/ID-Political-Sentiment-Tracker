@@ -958,3 +958,87 @@ Stage Summary:
   - test_entity_resolution.py, test_context_extraction.py (formal test scripts)
 - Repo: https://github.com/raynzz455/ID-Political-Sentiment-Tracker
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 51
+Agent: Z.ai Code (main)
+Task: Audit menyeluruh code/script finetuning & hyperparameter v4 — periksa dengan teliti semua bug.
+
+Work Log:
+- Step 1: Baca lengkap 5 file utama:
+  - finetune/finetune_v4.py (724→784 baris)
+  - finetune/configs/hyperparams_v4.py (105 baris)
+  - finetuning/evaluate_v4.py (216→325 baris, rewritten)
+  - finetuning/v4_all_in_one.py (976→683 baris, rewritten)
+  - finetuning/colab_complete_pipeline_v4.py (105 baris, verified compatible)
+
+- Step 2: Syntax check awal → v4_all_in_one.py SyntaxError (from __future__ di baris 796)
+
+- Step 3: Identifikasi 9 CRITICAL + 5 HIGH + 5 MEDIUM bugs (total 19 bugs)
+
+- Step 4: Fix finetune_v4.py:
+  - C4: calibrate_temperature — hapus @torch.no_grad(), ganti dengan with torch.no_grad() hanya untuk inference loop. LBFGS optimization sekarang jalan dengan grad enabled.
+  - C5: Mixup branch — pt sekarang dari mixed_probs (bukan original probs). Class weights sekarang dipakai di mixup branch via cw[labels].
+  - C6: run_kfold return format ditambah flat keys (mean_accuracy, std_accuracy, mean_macro_f1, std_macro_f1, fold_results dengan "fold" key, "k"). Backward-compat alias "folds" + "aggregate" dipertahankan.
+  - C7: train_single_fold sekarang save model untuk K-fold mode juga → out_dir/fold_N/{lora,tokenizer,metrics.json}
+  - H1: stratified_split signature disederhanakan — hapus train_p/val_p dead params
+  - H2: gc.collect() + torch.cuda.empty_cache() dipindah ke DALAM loop fold (cuma jalan di Colab dengan CUDA)
+  - H3: mixup_embeddings() dead code dihapus
+  - H4: premise fallback `or entity` dead code diperbaiki ke if/else
+  - M1: duplicate import logging + logger dihapus
+  - M2: docstring "batch=16×4"→"8×8", "20 epochs SWA 5"→"18/4", usage "v3"→"v4", print "v3"→"v4"
+  - M3: class_weights dipindah ke GPU sekali di __init__, bukan setiap forward pass
+
+- Step 5: Rewrite evaluate_v4.py (dari awal):
+  - C8: Tambah normalize_rows() yang replicate finetune_v4.py normalization → premise/hypothesis fields ada, filter sentiment relevancy, exclude_flags applied
+  - C9: base_model dari TASK_CFG["base_model"] (H.SENTIMENT_BASE/H.RELEVANCY_BASE), bukan cfg["base_model"] yang tidak ada
+  - H5: relevancy task stratify by gold_relevancy (via label_field di TASK_CFG)
+  - M4: apply_temperature() dead code dihapus
+  - C6: summarize_kfold() baca format baru dengan backward-compat fallback ke aggregate
+
+- Step 6: Rewrite v4_all_in_one.py (dari awal, 683 baris):
+  - C1: from __future__ import annotations di baris 1 (bukan 796)
+  - C2: H = SimpleNamespace(...) dengan semua konstanta — tidak ada H = None
+  - C3: single main() dengan subcommand dispatch (finetune/evaluate/kfold-summary), single if __name__
+  - Semua fix C4-C9, H1-H5, M1-M4 diterapkan konsisten
+
+- Step 7: Final syntax check — SEMUA 5 file lulus (finetune_v4.py, evaluate_v4.py, v4_all_in_one.py, hyperparams_v4.py, colab_complete_pipeline_v4.py)
+
+- Step 8: Verifikasi konsistensi format K-fold antara finetune_v4.py ↔ evaluate_v4.py ↔ colab_complete_pipeline_v4.py:
+  - finetune PRODUCES: {k, task, fold_results:[{fold,accuracy,macro_f1,...}], mean_accuracy, std_accuracy, mean_macro_f1, std_macro_f1, folds(alias), aggregate(detail)}
+  - evaluate READS: fold_results || folds, mean_accuracy || aggregate.accuracy.mean
+  - pipeline READS: fold_results, mean_accuracy, std_accuracy, fold key, fold_N/ dirs
+  - ✓ All consistent
+
+Stage Summary:
+- ✅ 19 bug ditemukan dan diperbaiki (9 CRITICAL + 5 HIGH + 5 MEDIUM)
+- ✅ Semua 5 file lulus py_compile syntax check
+- ✅ K-fold format sekarang konsisten end-to-end (finetune → evaluate → upload)
+- ✅ Temperature calibration sekarang akan jalan (tidak crash di loss.backward)
+- ✅ Mixup focal loss sekarang mathematically correct (focal weight cocok dengan loss)
+- ✅ K-fold mode sekarang menyimpan model per-fold (upload possible)
+- ✅ evaluate_v4.py sekarang bisa jalan (normalize rows + correct base_model)
+- ✅ v4_all_in_one.py sekarang self-contained dan runnable di Colab
+- ⚠️ Catatan: Tidak bisa test runtime (PyTorch tidak terinstall di sandbox Next.js ini — finetuning dijalankan di Colab)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+Bug Detail (untuk referensi):
+- C1: v4_all_in_one.py:796 from __future__ di tengah file → SyntaxError
+- C2: v4_all_in_one.py:111 H=None sebelum dipakai di baris 154,505
+- C3: v4_all_in_one.py duplicate main() (705,899) + duplicate __main__ (782,970)
+- C4: finetune_v4.py:411 @torch.no_grad() wrap loss.backward() → RuntimeError
+- C5: finetune_v4.py:286 mixup focal pt dari non-mixed probs + class_weights hilang
+- C6: K-fold JSON {folds,aggregate} vs expected {fold_results,mean_accuracy,...}
+- C7: finetune_v4.py:612 K-fold skip save → no model to upload
+- C8: evaluate_v4.py:65,88 pakai r["premise"]/r["hypothesis"] yang tidak ada di dataset
+- C9: evaluate_v4.py:131 cfg["base_model"] KeyError (key tidak ada di TASK_CFG)
+- H1: stratified_split train_p/val_p diabaikan
+- H2: GPU memory clear di luar loop fold
+- H3: mixup_embeddings() dead code
+- H4: premise `or entity` dead code
+- H5: evaluate relevancy pakai r["label"] (sentiment) bukan gold_relevancy
+- M1: duplicate import logging
+- M2: docstring/print bilang v3, bukan v4
+- M3: class_weights.to(device) setiap forward pass
+- M4: apply_temperature() placeholder dead code
+- M5: v4_all_in_one TASK_CFG missing "dir" key

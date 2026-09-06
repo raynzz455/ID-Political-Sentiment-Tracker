@@ -1,0 +1,724 @@
+     1→     1→"""
+     2→     2→finetune_v4.py
+     3→     3→==============
+     4→     4→v4 ENHANCED finetuning script — for gold standard dataset (LLM-verified + re-verified).
+     5→     5→
+     6→     6→UPGRADES over v3:
+     7→     7→  1. Oversampling: negative→400, positive→600 (reduces imbalance)
+     8→     8→  2. Focal gamma: 2.5→3.0, Label smoothing: 0.05→0.07
+     9→     9→  3. LoRA dropout: 0.15→0.20, Mixup alpha: 0.2→0.3, prob: 40%
+    10→    10→  4. Class weights: 1/sqrt(freq)→1/log(freq+1) (gentler)
+    11→    11→  5. Entity-stratified K-fold (GroupKFold by entity)
+    12→    12→  6. Entity as explicit premise: "Tentang {entity}"
+    13→    13→  7. Epochs: 20→18, SWA start: 5→4
+    14→    14→
+    15→    15→Usage:
+    16→    16→  python finetune_v4.py --task sentiment --kfold 5
+    17→    17→  python finetune_v4.py --task relevancy --kfold 5
+    18→    18→
+    19→    19→UPGRADES over finetune.py (v1):
+    20→    20→  1. K-Fold Cross-Validation (5-fold stratified) — robust evaluation
+    21→    21→  2. Adversarial Training (PGD on embeddings) — fights input perturbations
+    22→    22→  3. Mixup Augmentation — interpolates sentence pairs to fight overfitting
+    23→    23→  4. LoRA r=64 (upgraded from 16/32) — more capacity
+    24→    24→  5. Effective batch 64 (batch=16 x grad_accum=4)
+    25→    25→  6. 20 epochs + SWA from epoch 5
+    26→    26→  7. Per-sample confidence weighting (kept from v1)
+    27→    27→
+    28→    28→Scientific basis:
+    29→    29→  - K-fold CV: Kohavi (1995) — 5-fold has optimal bias/variance tradeoff
+    30→    30→  - Adversarial: Miyato et al. (2017) — Virtual Adversarial Training
+    31→    31→  - Mixup: Zhang et al. (2018) — mixup: Beyond Empirical Risk Minimization
+    32→    32→  - SWA: Izmailov et al. (2018) — Averaging Weights Leads to Wider Optima
+    33→    33→  - Focal Loss: Lin et al. (2017) — down-weights easy examples
+    34→    34→  - Label Smoothing: Szegedy et al. (2016) — prevents overconfidence
+    35→    35→  - Temperature: Guo et al. (2017) — calibrates softmax
+    36→    36→  - LoRA: Hu et al. (2021) — parameter-efficient fine-tuning
+    37→    37→
+    38→    38→Usage:
+    39→    39→  python finetune_v3.py --task sentiment --dataset datasets/dataset_v9.jsonl
+    40→    40→  python finetune_v3.py --task sentiment --kfold 5  # K-fold CV mode
+    41→    41→"""
+    42→    42→import os
+    43→    43→import json
+    44→    44→import random
+    45→    45→import argparse
+    46→    46→import numpy as np
+    47→    47→import logging
+    48→    48→import logging
+    49→    49→from pathlib import Path
+    50→    50→logger = logging.getLogger(__name__)
+    51→    51→logger = logging.getLogger(__name__)
+    52→    52→from dataclasses import asdict
+    53→    53→from collections import Counter
+    54→    54→
+    55→    55→# v3.1: Set CUDA memory allocator config BEFORE torch import
+    56→    56→# Helps prevent OOM by using expandable segments (less fragmentation)
+    57→    57→os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    58→    58→
+    59→    59→import torch
+    60→    60→import torch.nn.functional as F
+    61→    61→from torch.utils.data import Dataset, DataLoader
+    62→    62→from transformers import (
+    63→    63→    AutoTokenizer, AutoModelForSequenceClassification,
+    64→    64→    Trainer, TrainingArguments, EarlyStoppingCallback, TrainerCallback
+    65→    65→)
+    66→    66→# v3.2: SWA (Stochastic Weight Averaging) — Izmailov et al. 2018
+    67→    67→# Averages model weights from SWA_START_EPOCH onwards for flatter optimum
+    68→    68→import copy
+    69→    69→
+    70→    70→# Fix: Uninstall incompatible torchao before importing peft
+    71→    71→# PEFT 0.16+ requires torchao >= 0.16.0, but Colab has 0.10.0
+    72→    72→import subprocess
+    73→    73→try:
+    74→    74→    import torchao
+    75→    75→    torchao_version = getattr(torchao, '__version__', '0.0.0')
+    76→    76→    if tuple(int(x) for x in torchao_version.split('.')[:2]) < (0, 16):
+    77→    77→        subprocess.run(['pip', 'uninstall', '-y', 'torchao'], capture_output=True)
+    78→    78→        print(f"[FIX] Uninstalled incompatible torchao {torchao_version}")
+    79→    79→except ImportError:
+    80→    80→    pass
+    81→    81→
+    82→    82→from peft import LoraConfig, get_peft_model, TaskType
+    83→    83→from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+    84→    84→from sklearn.model_selection import StratifiedKFold, GroupKFold
+    85→    85→
+    86→    86→# Import hyperparams
+    87→    87→import sys
+    88→    88→sys.path.insert(0, str(Path(__file__).resolve().parent / "configs"))
+    89→    89→import hyperparams_v4 as H
+    90→    90→
+    91→    91→# ---------------------------------------------------------------------------
+    92→    92→# 0. Reproducibility
+    93→    93→# ---------------------------------------------------------------------------
+    94→    94→torch.manual_seed(H.SEED)
+    95→    95→random.seed(H.SEED)
+    96→    96→np.random.seed(H.SEED)
+    97→    97→
+    98→    98→# ---------------------------------------------------------------------------
+    99→    99→# 1. Dataset
+   100→   100→# ---------------------------------------------------------------------------
+   101→   101→TASK_CFG = {
+   102→   102→    "relevancy": {
+   103→   103→        "data_file": "dataset_gold_standard_final.jsonl",
+   104→   104→        "label_field": "gold_relevancy",
+   105→   105→        "text_field": "text",
+   106→   106→        "entity_field": "entity_name",
+   107→   107→        "entity_premise_field": "entity_premise",
+   108→   108→        "base_model": H.RELEVANCY_BASE,
+   109→   109→        "labels": H.RELEVANCY_LABELS,
+   110→   110→        "out_dir": H.OUT_DIR_RELEVANCY,
+   111→   111→        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+   112→   112→        "oversample": False,
+   113→   113→    },
+   114→   114→    "sentiment": {
+   115→   115→        "data_file": "dataset_gold_standard_final.jsonl",
+   116→   116→        "label_field": "label",
+   117→   117→        "text_field": "text",
+   118→   118→        "entity_field": "entity_name",
+   119→   119→        "entity_premise_field": "entity_premise",
+   120→   120→        "base_model": H.SENTIMENT_BASE,
+   121→   121→        "labels": H.SENTIMENT_LABELS,
+   122→   122→        "out_dir": H.OUT_DIR_SENTIMENT,
+   123→   123→        "exclude_flags": ["corruption_stitch", "wrong_entity"],
+   124→   124→        "oversample": True,
+   125→   125→        "filter": lambda r: r.get("gold_relevancy", "relevant") == "relevant",
+   126→   126→    },
+   127→   127→}
+   128→   128→
+   129→   129→
+   130→   130→def oversample_minority(rows, targets, seed=H.SEED):
+   131→   131→    """Oversample minority classes to target counts via random duplication."""
+   132→   132→    import random as _rng
+   133→   133→    rng = _rng.Random(seed)
+   134→   134→    by_label = {}
+   135→   135→    for r in rows:
+   136→   136→        by_label.setdefault(r["label"], []).append(r)
+   137→   137→    result = []
+   138→   138→    for label, items in by_label.items():
+   139→   139→        target = targets.get(label, len(items))
+   140→   140→        pool = list(items); rng.shuffle(pool)
+   141→   141→        result.extend(pool)
+   142→   142→        needed = target - len(pool)
+   143→   143→        for _ in range(max(0, needed)):
+   144→   144→            result.append(rng.choice(pool))
+   145→   145→    rng.shuffle(result)
+   146→   146→    return result
+   147→   147→
+   148→   148→
+   149→   149→class PairDataset(Dataset):
+   150→   150→    """Sentence-pair dataset with per-sample confidence weighting."""
+   151→   151→
+   152→   152→    def __init__(self, rows, tokenizer, label2id, max_len=H.MAX_SEQ_LENGTH):
+   153→   153→        self.rows = rows
+   154→   154→        self.tokenizer = tokenizer
+   155→   155→        self.label2id = label2id
+   156→   156→        self.max_len = max_len
+   157→   157→
+   158→   158→    def __len__(self):
+   159→   159→        return len(self.rows)
+   160→   160→
+   161→   161→    def __getitem__(self, idx):
+   162→   162→        r = self.rows[idx]
+   163→   163→        enc = self.tokenizer(
+   164→   164→            r["premise"], r["hypothesis"],
+   165→   165→            truncation=True, max_length=self.max_len,
+   166→   166→            padding="max_length", return_tensors="pt",
+   167→   167→        )
+   168→   168→        return {
+   169→   169→            "input_ids": enc["input_ids"][0],
+   170→   170→            "attention_mask": enc["attention_mask"][0],
+   171→   171→            "token_type_ids": enc.get("token_type_ids", torch.zeros_like(enc["input_ids"][0]))[0]
+   172→   172→                if self.tokenizer.model_max_length and "token_type_ids" in enc
+   173→   173→                else torch.zeros(self.max_len, dtype=torch.long),
+   174→   174→            "labels": torch.tensor(self.label2id[r["label"]], dtype=torch.long),
+   175→   175→            "sample_weight": torch.tensor(r.get("confidence", 0.5), dtype=torch.float),
+   176→   176→        }
+   177→   177→
+   178→   178→
+   179→   179→def load_jsonl(path):
+   180→   180→    return [json.loads(l) for l in open(path) if l.strip()]
+   181→   181→
+   182→   182→
+   183→   183→def stratified_split(rows, label_key, train_p, val_p, seed=H.SEED):
+   184→   184→    rng = random.Random(seed)
+   185→   185→    by_label = {}
+   186→   186→    for r in rows:
+   187→   187→        by_label.setdefault(r[label_key], []).append(r)
+   188→   188→    train, val, test = [], [], []
+   189→   189→    for lab, items in by_label.items():
+   190→   190→        items = list(items)
+   191→   191→        rng.shuffle(items)
+   192→   192→        n = len(items)
+   193→   193→        n_test = max(1, int(round(n * H.TEST_SPLIT)))
+   194→   194→        n_val = max(1, int(round(n * H.VAL_SPLIT)))
+   195→   195→        n_train = max(1, n - n_test - n_val)
+   196→   196→        train.extend(items[:n_train])
+   197→   197→        val.extend(items[n_train:n_train + n_val])
+   198→   198→        test.extend(items[n_train + n_val:n_train + n_val + n_test])
+   199→   199→    rng.shuffle(train); rng.shuffle(val); rng.shuffle(test)
+   200→   200→    return train, val, test
+   201→   201→
+   202→   202→
+   203→   203→# ---------------------------------------------------------------------------
+   204→   204→# 2. Class-balanced focal loss with mixup support
+   205→   205→# ---------------------------------------------------------------------------
+   206→   206→def class_weights_from_freq(labels, num_classes, method="log"):
+   207→   207→    """Class reweighting. method='sqrt' (Cui 2019) or 'log' (v4, gentler)."""
+   208→   208→    counts = np.bincount(labels, minlength=num_classes).astype(float)
+   209→   209→    freq = counts / counts.sum()
+   210→   210→    if method == "sqrt":
+   211→   211→        w = 1.0 / np.sqrt(freq + 1e-8)
+   212→   212→    else:
+   213→   213→        w = 1.0 / np.log(freq + 1.0 + 1e-8)
+   214→   214→    w = w / w.mean()
+   215→   215→    return torch.tensor(w, dtype=torch.float)
+   216→   216→
+   217→   217→
+   218→   218→def mixup_embeddings(embeds, labels, alpha=H.MIXUP_ALPHA):
+   219→   219→    """Mixup augmentation on embeddings (Zhang et al. 2018).
+   220→   220→
+   221→   221→    Returns mixed embeddings + mixed labels (soft).
+   222→   222→    """
+   223→   223→    if alpha <= 0:
+   224→   224→        return embeds, labels, labels, 1.0
+   225→   225→
+   226→   226→    lam = np.random.beta(alpha, alpha)
+   227→   227→    batch_size = embeds.size(0)
+   228→   228→    index = torch.randperm(batch_size, device=embeds.device)
+   229→   229→    mixed_embeds = lam * embeds + (1 - lam) * embeds[index]
+   230→   230→    return mixed_embeds, labels, labels[index], lam
+   231→   231→
+   232→   232→
+   233→   233→class FocalLossTrainerV4(Trainer):
+   234→   234→    """v4 Trainer: Focal Loss + log class weights + per-sample confidence +
+   235→   235→    adversarial training + mixup."""
+   236→   236→
+   237→   237→    def __init__(self, *args, class_weights=None, focal_gamma=H.FOCAL_GAMMA,
+   238→   238→                 label_smoothing=H.LABEL_SMOOTHING,
+   239→   239→                 adversarial=H.ADVERSARIAL_ENABLED,
+   240→   240→                 mixup=H.MIXUP_ENABLED, **kwargs):
+   241→   241→        super().__init__(*args, **kwargs)
+   242→   242→        self.class_weights = class_weights
+   243→   243→        self.focal_gamma = focal_gamma
+   244→   244→        self.label_smoothing = label_smoothing
+   245→   245→        # v3.1: Auto-disable adversarial on low-memory GPUs (< 12GB) to prevent OOM
+   246→   246→        if adversarial and torch.cuda.is_available():
+   247→   247→            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+   248→   248→            if gpu_mem_gb < 12:
+   249→   249→                logger.warning(f"GPU memory {gpu_mem_gb:.1f}GB < 12GB — disabling adversarial training (OOM prevention)")
+   250→   250→                adversarial = False
+   251→   251→        self.adversarial = adversarial
+   252→   252→        self.mixup = mixup
+   253→   253→
+   254→   254→    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+   255→   255→        labels = inputs.pop("labels")
+   256→   256→        sample_weights = inputs.pop("sample_weight", None)
+   257→   257→
+   258→   258→        # Get embeddings (for mixup + adversarial)
+   259→   259→        # NOTE: HuggingFace Trainer passes `model` param to compute_loss.
+   260→   260→        # We use `model.training` to check if we're in train mode.
+   261→   261→        is_training = model.training
+   262→   262→        # v3.1: NEVER use output_hidden_states=True (saves ~2.8GB GPU memory)
+   263→   263→        # Adversarial training uses model.get_input_embeddings() directly,
+   264→   264→        # NOT output_hidden_states — so we don't need it at all.
+   265→   265→        outputs = model(**inputs)
+   266→   266→        logits = outputs.logits
+   267→   267→        probs = F.softmax(logits, dim=-1)
+   268→   268→
+   269→   269→        # Mixup on logits (simpler than embedding-level)
+   270→   270→        if self.mixup and is_training and random.random() < H.MIXUP_PROB:
+   271→   271→            lam = np.random.beta(H.MIXUP_ALPHA, H.MIXUP_ALPHA)
+   272→   272→            batch_size = logits.size(0)
+   273→   273→            index = torch.randperm(batch_size, device=logits.device)
+   274→   274→            mixed_logits = lam * logits + (1 - lam) * logits[index]
+   275→   275→            mixed_labels = labels[index]
+   276→   276→
+   277→   277→            # Soft labels for mixup
+   278→   278→            onehot_orig = F.one_hot(labels, num_classes=logits.size(-1)).float()
+   279→   279→            onehot_mixed = F.one_hot(mixed_labels, num_classes=logits.size(-1)).float()
+   280→   280→            soft_labels = lam * onehot_orig + (1 - lam) * onehot_mixed
+   281→   281→            soft_labels = (1 - self.label_smoothing) * soft_labels + \
+   282→   282→                          self.label_smoothing / logits.size(-1)
+   283→   283→
+   284→   284→            log_probs = F.log_softmax(mixed_logits, dim=-1)
+   285→   285→            ce = -(soft_labels * log_probs).sum(dim=-1)
+   286→   286→            pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   287→   287→            focal = (1.0 - pt) ** self.focal_gamma
+   288→   288→            per_sample = focal * ce
+   289→   289→        else:
+   290→   290→            # Standard focal loss with label smoothing
+   291→   291→            pt = probs.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   292→   292→            focal = (1.0 - pt) ** self.focal_gamma
+   293→   293→            ce = F.cross_entropy(logits, labels, weight=self.class_weights.to(logits.device),
+   294→   294→                                  label_smoothing=self.label_smoothing, reduction="none")
+   295→   295→            per_sample = focal * ce
+   296→   296→
+   297→   297→        # Per-sample confidence weighting
+   298→   298→        if sample_weights is not None:
+   299→   299→            per_sample = per_sample * sample_weights.to(logits.device)
+   300→   300→
+   301→   301→        loss = per_sample.mean()
+   302→   302→
+   303→   303→        # Adversarial training (PGD on embeddings)
+   304→   304→        if self.adversarial and is_training:
+   305→   305→            try:
+   306→   306→                adv_loss = self._adversarial_loss(model, inputs, labels, sample_weights)
+   307→   307→                loss = loss + H.ADVERSARIAL_ALPHA * adv_loss
+   308→   308→            except AttributeError:
+   309→   309→                # _adversarial_loss not available — skip adversarial
+   310→   310→                pass
+   311→   311→
+   312→   312→        return (loss, outputs) if return_outputs else loss
+   313→   313→
+   314→   314→    def _adversarial_loss(self, model, inputs, labels, sample_weights):
+   315→   315→        """PGD adversarial perturbation on input_ids embeddings (Miyato et al. 2017)."""
+   316→   316→        try:
+   317→   317→            embed_layer = model.get_input_embeddings()
+   318→   318→            input_ids = inputs["input_ids"]
+   319→   319→            embeds = embed_layer(input_ids)
+   320→   320→            embeds = embeds.detach().requires_grad_(True)
+   321→   321→
+   322→   322→            with torch.enable_grad():
+   323→   323→                inputs_adv = {k: v for k, v in inputs.items() if k != "input_ids"}
+   324→   324→                inputs_adv["inputs_embeds"] = embeds
+   325→   325→                outputs_adv = model(**inputs_adv)
+   326→   326→                logits_adv = outputs_adv.logits
+   327→   327→                probs_adv = F.softmax(logits_adv, dim=-1)
+   328→   328→                pt_adv = probs_adv.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   329→   329→                focal_adv = (1.0 - pt_adv) ** self.focal_gamma
+   330→   330→                ce_adv = F.cross_entropy(logits_adv, labels,
+   331→   331→                                          weight=self.class_weights.to(logits_adv.device),
+   332→   332→                                          label_smoothing=self.label_smoothing, reduction="none")
+   333→   333→                loss_adv = (focal_adv * ce_adv).mean()
+   334→   334→
+   335→   335→            grad = torch.autograd.grad(loss_adv, embeds)[0]
+   336→   336→            perturb = H.ADVERSARIAL_EPSILON * grad.sign()
+   337→   337→            embeds_perturbed = embeds + perturb
+   338→   338→
+   339→   339→            inputs_pert = {k: v for k, v in inputs.items() if k != "input_ids"}
+   340→   340→            inputs_pert["inputs_embeds"] = embeds_perturbed.detach()
+   341→   341→            outputs_pert = model(**inputs_pert)
+   342→   342→            logits_pert = outputs_pert.logits
+   343→   343→            probs_pert = F.softmax(logits_pert, dim=-1)
+   344→   344→            pt_pert = probs_pert.gather(1, labels.unsqueeze(1)).squeeze(1).clamp(min=1e-8)
+   345→   345→            focal_pert = (1.0 - pt_pert) ** self.focal_gamma
+   346→   346→            ce_pert = F.cross_entropy(logits_pert, labels,
+   347→   347→                                       weight=self.class_weights.to(logits_pert.device),
+   348→   348→                                       label_smoothing=self.label_smoothing, reduction="none")
+   349→   349→            per_sample_pert = focal_pert * ce_pert
+   350→   350→            if sample_weights is not None:
+   351→   351→                per_sample_pert = per_sample_pert * sample_weights.to(logits_pert.device)
+   352→   352→            return per_sample_pert.mean()
+   353→   353→        except Exception as e:
+   354→   354→            return torch.tensor(0.0, device=labels.device)
+   355→   355→
+   356→   356→# ---------------------------------------------------------------------------
+   357→   357→# v3.2: SWA (Stochastic Weight Averaging) Callback
+   358→   358→# ---------------------------------------------------------------------------
+   359→   359→class SWACallback(TrainerCallback):
+   360→   360→    """Averages LoRA weights from SWA_START_EPOCH for flatter optimum.
+   361→   361→    
+   362→   362→    Paper: Izmailov et al. (2018) "Averaging Weights Leads to Wider Optima"
+   363→   363→    Expected: +1-2% F1, better generalization on small datasets.
+   364→   364→    """
+   365→   365→    def __init__(self, start_epoch=5, anneal_epochs=3):
+   366→   366→        self.start_epoch = start_epoch
+   367→   367→        self.anneal_epochs = anneal_epochs
+   368→   368→        self.swa_weights = None
+   369→   369→        self.swa_count = 0
+   370→   370→        self.n_averaged = 0
+   371→   371→
+   372→   372→    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+   373→   373→        current_epoch = int(state.epoch)
+   374→   374→        if current_epoch < self.start_epoch:
+   375→   375→            return
+   376→   376→
+   377→   377→        # Get LoRA parameters (only adapter weights, not frozen base)
+   378→   378→        lora_params = {n: p.detach().clone() for n, p in model.named_parameters() if 'lora_' in n.lower()}
+   379→   379→
+   380→   380→        if self.swa_weights is None:
+   381→   381→            # First SWA epoch — initialize
+   382→   382→            self.swa_weights = lora_params
+   383→   383→            self.n_averaged = 1
+   384→   384→        else:
+   385→   385→            # Running average: swa = (swa * n + new) / (n + 1)
+   386→   386→            for n in lora_params:
+   387→   387→                self.swa_weights[n] = (
+   388→   388→                    self.swa_weights[n] * self.n_averaged + lora_params[n]
+   389→   389→                ) / (self.n_averaged + 1)
+   390→   390→            self.n_averaged += 1
+   391→   391→
+   392→   392→        logger.info(f"  [SWA] Epoch {current_epoch}: averaged {self.n_averaged} weight snapshots")
+   393→   393→
+   394→   394→    def on_train_end(self, args, state, control, model=None, **kwargs):
+   395→   395→        """Apply SWA weights to model at end of training."""
+   396→   396→        if self.swa_weights is None or self.n_averaged < 2:
+   397→   397→            return
+   398→   398→
+   399→   399→        # Replace LoRA weights with SWA-averaged version
+   400→   400→        with torch.no_grad():
+   401→   401→            for n, p in model.named_parameters():
+   402→   402→                if n in self.swa_weights:
+   403→   403→                    p.copy_(self.swa_weights[n])
+   404→   404→
+   405→   405→        logger.info(f"  [SWA] Applied {self.n_averaged}-epoch weight average to model")
+   406→   406→
+   407→   407→
+   408→   408→# ---------------------------------------------------------------------------
+   409→   409→# 3. Temperature scaling (Guo et al. 2017)
+   410→   410→# ---------------------------------------------------------------------------
+   411→   411→@torch.no_grad()
+   412→   412→def calibrate_temperature(model, val_ds, tokenizer, device=None):
+   413→   413→    if device is None:
+   414→   414→        device = "cuda" if torch.cuda.is_available() else "cpu"
+   415→   415→    model.eval().to(device)
+   416→   416→    logits_all, labels_all = [], []
+   417→   417→    for i in range(len(val_ds)):
+   418→   418→        item = {k: v.unsqueeze(0).to(device) for k, v in val_ds[i].items()}
+   419→   419→        labels_all.append(int(item.pop("labels").item()))
+   420→   420→        out = model(**item)
+   421→   421→        logits_all.append(out.logits.squeeze(0).cpu())
+   422→   422→    logits = torch.stack(logits_all)
+   423→   423→    labels = torch.tensor(labels_all)
+   424→   424→
+   425→   425→    T = torch.ones(1, requires_grad=True)
+   426→   426→    opt = torch.optim.LBFGS([T], lr=0.1, max_iter=50)
+   427→   427→    def closure():
+   428→   428→        opt.zero_grad()
+   429→   429→        loss = F.cross_entropy(logits / T, labels)
+   430→   430→        loss.backward()
+   431→   431→        return loss
+   432→   432→    opt.step(closure)
+   433→   433→    return float(T.clamp(0.05, 10.0).item())
+   434→   434→
+   435→   435→
+   436→   436→# ---------------------------------------------------------------------------
+   437→   437→# 4. K-Fold Cross-Validation
+   438→   438→# ---------------------------------------------------------------------------
+   439→   439→def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
+   440→   440→    """Run entity-aware K-fold CV. Uses GroupKFold by entity to prevent leakage."""
+   441→   441→    print(f"\n{'='*70}")
+   442→   442→    print(f"K-FOLD CV (entity-aware, k={k})")
+   443→   443→    print(f"{'='*70}")
+   444→   444→
+   445→   445→    labels_array = np.array([label2id[r["label"]] for r in all_rows])
+   446→   446→    groups = [r.get("entity", r.get("entity_name", "unknown")) for r in all_rows]
+   447→   447→    n_entities = len(set(groups))
+   448→   448→    print(f"  Rows: {len(all_rows)}, Unique entities: {n_entities}")
+   449→   449→
+   450→   450→    # Use GroupKFold if enough entities, else StratifiedKFold
+   451→   451→    if n_entities >= k * 3:
+   452→   452→        gkf = GroupKFold(n_splits=k)
+   453→   453→        splits = gkf.split(np.zeros(len(all_rows)), labels_array, groups)
+   454→   454→    else:
+   455→   455→        print(f"  Warning: too few entities for GroupKFold, using StratifiedKFold")
+   456→   456→        skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=H.SEED)
+   457→   457→        splits = skf.split(np.zeros(len(all_rows)), labels_array)
+   458→   458→
+   459→   459→    cfg = TASK_CFG[task]
+   460→   460→    fold_results = []
+   461→   461→    for fold, (train_idx, val_idx) in enumerate(splits):
+   462→   462→        print(f"\n--- Fold {fold+1}/{k} ---")
+   463→   463→        train_rows = [all_rows[i] for i in train_idx]
+   464→   464→        val_rows = [all_rows[i] for i in val_idx]
+   465→   465→
+   466→   466→        # v4: Oversample training set only
+   467→   467→        if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
+   468→   468→            print(f"  Oversampling train: {len(train_rows)} -> ", end="")
+   469→   469→            train_rows = oversample_minority(train_rows, H.OVERSAMPLING_TARGETS, seed=H.SEED + fold)
+   470→   470→            print(f"{len(train_rows)}")
+   471→   471→
+   472→   472→        print(f"  train: {len(train_rows)} | val: {len(val_rows)}")
+   473→   473→        print(f"  train balance: {dict(Counter(r['label'] for r in train_rows))}")
+   474→   474→        print(f"  val   balance: {dict(Counter(r['label'] for r in val_rows))}")
+   475→   475→
+   476→   476→        metrics = train_single_fold(task, train_rows, val_rows, label2id, id2label,
+   477→   477→                                     out_suffix=f"_fold{fold+1}")
+   478→   478→        fold_results.append(metrics)
+   479→   479→        print(f"  metrics: {metrics}")
+   480→   480→
+   481→   481→    # v3.1: Clear GPU memory after each fold
+   482→   482→    import gc
+   483→   483→    gc.collect()
+   484→   484→    torch.cuda.empty_cache()
+   485→   485→
+   486→   486→    # Aggregate
+   487→   487→    print(f"\n{'='*70}")
+   488→   488→    print(f"K-FOLD RESULTS (k={k})")
+   489→   489→    print(f"{'='*70}")
+   490→   490→    avg_metrics = {}
+   491→   491→    for key in fold_results[0]:
+   492→   492→        if isinstance(fold_results[0][key], (int, float)):
+   493→   493→            values = [r[key] for r in fold_results]
+   494→   494→            avg = np.mean(values)
+   495→   495→            std = np.std(values)
+   496→   496→            avg_metrics[key] = {"mean": avg, "std": std, "values": values}
+   497→   497→            print(f"  {key:20s}: {avg:.4f} ± {std:.4f}")
+   498→   498→
+   499→   499→    return {"folds": fold_results, "aggregate": avg_metrics}
+   500→   500→
+   501→   501→
+   502→   502→# ---------------------------------------------------------------------------
+   503→   503→# 5. Single fold training
+   504→   504→# ---------------------------------------------------------------------------
+   505→   505→def train_single_fold(task, train_rows, val_rows, label2id, id2label,
+   506→   506→                       out_suffix=""):
+   507→   507→    cfg = TASK_CFG[task]
+   508→   508→    out_dir = Path(cfg["out_dir"])
+   509→   509→    out_dir.mkdir(parents=True, exist_ok=True)
+   510→   510→
+   511→   511→    tok = AutoTokenizer.from_pretrained(cfg["base_model"])
+   512→   512→    model = AutoModelForSequenceClassification.from_pretrained(
+   513→   513→        cfg["base_model"], num_labels=len(cfg["labels"]),
+   514→   514→        id2label=id2label, label2id=label2id,
+   515→   515→        ignore_mismatched_sizes=True,
+   516→   516→    )
+   517→   517→
+   518→   518→    lora_cfg = LoraConfig(
+   519→   519→        r=H.LORA.r, lora_alpha=H.LORA.alpha, lora_dropout=H.LORA.dropout,
+   520→   520→        bias=H.LORA.bias, task_type=TaskType.SEQ_CLS,
+   521→   521→        target_modules=H.LORA.target_modules,
+   522→   522→    )
+   523→   523→    model = get_peft_model(model, lora_cfg)
+   524→   524→    if not out_suffix:
+   525→   525→        model.print_trainable_parameters()
+   526→   526→
+   527→   527→    # Class weights
+   528→   528→    train_label_ids = [label2id[r["label"]] for r in train_rows]
+   529→   529→    cw = class_weights_from_freq(train_label_ids, len(cfg["labels"]))
+   530→   530→
+   531→   531→    # Datasets
+   532→   532→    train_ds = PairDataset(train_rows, tok, label2id)
+   533→   533→    val_ds = PairDataset(val_rows, tok, label2id)
+   534→   534→
+   535→   535→    steps_per_epoch = max(1, len(train_ds) // (H.BATCH_SIZE * H.GRAD_ACCUM_STEPS))
+   536→   536→    warmup_steps = int(H.WARMUP_RATIO * steps_per_epoch * H.NUM_EPOCHS)
+   537→   537→
+   538→   538→    # Build TrainingArguments dict (compatible with transformers 4.40+)
+   539→   539→    train_args_dict = dict(
+   540→   540→        output_dir=str(out_dir),
+   541→   541→        num_train_epochs=H.NUM_EPOCHS,
+   542→   542→        per_device_train_batch_size=H.BATCH_SIZE,
+   543→   543→        per_device_eval_batch_size=H.BATCH_SIZE,  # v3.1: reduced from *2 (OOM fix)
+   544→   544→        # v3.1: OOM prevention settings
+   545→   545→        dataloader_pin_memory=False,  # saves pinned memory
+   546→   546→        gradient_checkpointing=False,
+   547→   547→        gradient_accumulation_steps=H.GRAD_ACCUM_STEPS,
+   548→   548→        learning_rate=H.LEARNING_RATE,
+   549→   549→        weight_decay=H.WEIGHT_DECAY,
+   550→   550→        adam_beta1=H.ADAM_BETA1, adam_beta2=H.ADAM_BETA2, adam_epsilon=H.ADAM_EPSILON,
+   551→   551→        max_grad_norm=H.MAX_GRAD_NORM,
+   552→   552→        warmup_steps=warmup_steps,
+   553→   553→        lr_scheduler_type=H.SCHEDULER,
+   554→   554→        # v3.2: pass num_cycles for cosine_with_restarts
+   555→   555→        lr_scheduler_kwargs={"num_cycles": H.SCHEDULER_NUM_CYCLES} if H.SCHEDULER == "cosine_with_restarts" else None,
+   556→   556→        fp16=H.FP16,
+   557→   557→        save_strategy="epoch",
+   558→   558→        save_total_limit=1,
+   559→   559→        load_best_model_at_end=True,
+   560→   560→        metric_for_best_model="eval_macro_f1",  # v3.2: full key for transformers 5.x
+   561→   561→        greater_is_better=True,
+   562→   562→        seed=H.SEED,
+   563→   563→        report_to="none",
+   564→   564→        logging_steps=max(1, steps_per_epoch // 4),
+   565→   565→    )
+   566→   566→    # eval_strategy: renamed in 4.46+ (try new name, fallback to old)
+   567→   567→    try:
+   568→   568→        train_args_dict["eval_strategy"] = "epoch"
+   569→   569→        targs = TrainingArguments(**train_args_dict)
+   570→   570→    except TypeError:
+   571→   571→        # Old transformers (< 4.46) uses evaluation_strategy
+   572→   572→        train_args_dict["evaluation_strategy"] = "epoch"
+   573→   573→        targs = TrainingArguments(**train_args_dict)
+   574→   574→
+   575→   575→    def compute_metrics(eval_pred):
+   576→   576→        logits, labels = eval_pred
+   577→   577→        preds = np.argmax(logits, axis=-1)
+   578→   578→        return {
+   579→   579→            "accuracy": accuracy_score(labels, preds),
+   580→   580→            "macro_f1": f1_score(labels, preds, average="macro"),
+   581→   581→            "weighted_f1": f1_score(labels, preds, average="weighted"),
+   582→   582→        }
+   583→   583→
+   584→   584→    trainer = FocalLossTrainerV4(
+   585→   585→        model=model,
+   586→   586→        args=targs,
+   587→   587→        train_dataset=train_ds,
+   588→   588→        eval_dataset=val_ds,
+   589→   589→        processing_class=tok,
+   590→   590→        compute_metrics=compute_metrics,
+   591→   591→        class_weights=cw,
+   592→   592→        focal_gamma=H.FOCAL_GAMMA,
+   593→   593→        adversarial=H.ADVERSARIAL_ENABLED,
+   594→   594→        mixup=H.MIXUP_ENABLED,
+   595→   595→        callbacks=[
+   596→   596→            EarlyStoppingCallback(early_stopping_patience=H.EARLY_STOP_PATIENCE),
+   597→   597→        ] + ([SWACallback(start_epoch=H.SWA_START_EPOCH, anneal_epochs=H.SWA_ANNEAL_EPOCHS)]
+   598→   598→             if H.SWA_ENABLED else []),
+   599→   599→    )
+   600→   600→
+   601→   601→    trainer.train()
+   602→   602→    # v3.1: Clear cache before eval to prevent OOM
+   603→   603→    import gc
+   604→   604→    gc.collect()
+   605→   605→    torch.cuda.empty_cache()
+   606→   606→    val_metrics = trainer.evaluate(val_ds, metric_key_prefix="val")
+   607→   607→
+   608→   608→    # Temperature calibration
+   609→   609→    T = calibrate_temperature(model, val_ds, tok)
+   610→   610→
+   611→   611→    # Save (only for non-K-fold mode)
+   612→   612→    if not out_suffix:
+   613→   613→        model.save_pretrained(out_dir / "lora")
+   614→   614→        tok.save_pretrained(out_dir / "tokenizer")
+   615→   615→        with open(out_dir / "metrics.json", "w") as f:
+   616→   616→            json.dump({
+   617→   617→                "task": task,
+   618→   618→                "val_metrics": val_metrics,
+   619→   619→                "temperature": T,
+   620→   620→                "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
+   621→   621→                                for k, v in vars(H).items() if k.isupper()},
+   622→   622→                "train_size": len(train_rows),
+   623→   623→                "val_size": len(val_rows),
+   624→   624→                "class_weights": dict(zip(cfg['labels'], cw.tolist())),
+   625→   625→            }, f, indent=2)
+   626→   626→        print(f"\nSaved LoRA adapter + metrics -> {out_dir}")
+   627→   627→
+   628→   628→    return {
+   629→   629→        "accuracy": float(val_metrics.get("val_accuracy", 0)),
+   630→   630→        "macro_f1": float(val_metrics.get("val_macro_f1", 0)),
+   631→   631→        "weighted_f1": float(val_metrics.get("val_weighted_f1", 0)),
+   632→   632→        "temperature": T,
+   633→   633→    }
+   634→   634→
+   635→   635→
+   636→   636→# ---------------------------------------------------------------------------
+   637→   637→# 6. Main
+   638→   638→# ---------------------------------------------------------------------------
+   639→   639→def main(task: str, kfold: int = 0, dataset: str = None):
+   640→   640→    cfg = TASK_CFG[task]
+   641→   641→    print(f"\n{'='*70}")
+   642→   642→    print(f"FINETUNE v3 TASK: {task}")
+   643→   643→    print(f"base: {cfg['base_model']}")
+   644→   644→    print(f"out:  {cfg['out_dir']}")
+   645→   645→    print(f"{'='*70}\n")
+   646→   646→
+   647→   647→    # Load dataset
+   648→   648→    data_path = Path(__file__).resolve().parent / "datasets" / (dataset or cfg["data_file"])
+   649→   649→    all_rows = load_jsonl(str(data_path))
+   650→   650→    print(f"Loaded {len(all_rows)} rows from {cfg['data_file']}")
+   651→   651→
+   652→   652→    label2id = {l: i for i, l in enumerate(cfg["labels"])}
+   653→   653→    id2label = {i: l for l, i in label2id.items()}
+   654→   654→    label_field = cfg.get("label_field", "label")
+   655→   655→    exclude_flags = cfg.get("exclude_flags", [])
+   656→   656→    filter_fn = cfg.get("filter")
+   657→   657→
+   658→   658→    # v4: Normalize rows — handle gold standard field names
+   659→   659→    text_field = cfg.get("text_field", "text")
+   660→   660→    entity_field = cfg.get("entity_field", "entity_name")
+   661→   661→    entity_premise_field = cfg.get("entity_premise_field", "entity_premise")
+   662→   662→    rows = []
+   663→   663→    excluded = {"bad_flag": 0, "filter": 0, "no_label": 0, "no_text": 0}
+   664→   664→    for r in all_rows:
+   665→   665→        if r.get("context_flag") in exclude_flags:
+   666→   666→            excluded["bad_flag"] += 1
+   667→   667→            continue
+   668→   668→        label = r.get(label_field) or r.get("gold_label") or r.get("pseudo_label")
+   669→   669→        if not label or label not in label2id:
+   670→   670→            excluded["no_label"] += 1
+   671→   671→            continue
+   672→   672→        text = r.get(text_field) or r.get("context_text") or r.get("hypothesis", "")
+   673→   673→        if not text or len(text.strip()) < 10:
+   674→   674→            excluded["no_text"] += 1
+   675→   675→            continue
+   676→   676→        if filter_fn and not filter_fn(r):
+   677→   677→            excluded["filter"] += 1
+   678→   678→            continue
+   679→   679→        entity = r.get(entity_field, "")
+   680→   680→        premise = r.get(entity_premise_field) or f"Tentang {entity}" or entity
+   681→   681→        rows.append({
+   682→   682→            "premise": premise,
+   683→   683→            "hypothesis": text,
+   684→   684→            "label": label,
+   685→   685→            "confidence": r.get("label_confidence", 0.5),
+   686→   686→            "label_source": r.get("label_source", "unknown"),
+   687→   687→            "entity": entity,
+   688→   688→        })
+   689→   689→    print(f"After filter: {len(rows)} rows (excluded: {excluded})")
+   690→   690→
+   691→   691→    if kfold > 1:
+   692→   692→        # K-fold mode
+   693→   693→        results = run_kfold(task, rows, label2id, id2label, k=kfold)
+   694→   694→        out_dir = Path(cfg["out_dir"])
+   695→   695→        out_dir.mkdir(parents=True, exist_ok=True)
+   696→   696→        with open(out_dir / "kfold_results.json", "w") as f:
+   697→   697→            json.dump(results, f, indent=2)
+   698→   698→        print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
+   699→   699→    else:
+   700→   700→        # Single train/val/test split
+   701→   701→        train_rows, val_rows, test_rows = stratified_split(rows, "label", H.TRAIN_SPLIT, H.VAL_SPLIT)
+   702→   702→        # v4: Oversample training set
+   703→   703→        if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
+   704→   704→            print(f"Oversampling train: {len(train_rows)} -> ", end="")
+   705→   705→            train_rows = oversample_minority(train_rows, H.OVERSAMPLING_TARGETS, seed=H.SEED)
+   706→   706→            print(f"{len(train_rows)}")
+   707→   707→        print(f"Split: train={len(train_rows)} val={len(val_rows)} test={len(test_rows)}")
+   708→   708→        print(f"Train class balance: {dict(Counter(r['label'] for r in train_rows))}")
+   709→   709→        print(f"Val   class balance: {dict(Counter(r['label'] for r in val_rows))}")
+   710→   710→        print(f"Test  class balance: {dict(Counter(r['label'] for r in test_rows))}")
+   711→   711→
+   712→   712→        metrics = train_single_fold(task, train_rows, val_rows, label2id, id2label)
+   713→   713→        print(f"\nFinal metrics: {metrics}")
+   714→   714→
+   715→   715→
+   716→   716→if __name__ == "__main__":
+   717→   717→    ap = argparse.ArgumentParser()
+   718→   718→    ap.add_argument("--task", choices=["relevancy", "sentiment"], required=True)
+   719→   719→    ap.add_argument("--dataset", default=None, help="Override dataset file")
+   720→   720→    ap.add_argument("--kfold", type=int, default=0,
+   721→   721→                    help="K-fold CV (0=disabled, 5=recommended)")
+   722→   722→    args = ap.parse_args()
+   723→   723→    main(args.task, kfold=args.kfold, dataset=args.dataset)
+   724→   724→
