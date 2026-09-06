@@ -52,3 +52,22 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Python caches (should never be tracked)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+
+# Tool artifacts (Read/Grep tool output — not source code)
+/tool-results/
+
+# Fine-tuning outputs (model weights, metrics — too large for git)
+/finetuning/runs/
+finetuning/runs/
+
+# Backup bundles
+*.bundle
