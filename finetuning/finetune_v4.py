@@ -59,7 +59,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset  # FIX: removed dead import DataLoader
 from transformers import (
     AutoTokenizer, AutoModelForSequenceClassification,
     Trainer, TrainingArguments, EarlyStoppingCallback, TrainerCallback
@@ -81,7 +81,7 @@ except ImportError:
     pass
 
 from peft import LoraConfig, get_peft_model, TaskType
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+from sklearn.metrics import f1_score, accuracy_score  # FIX: removed dead import confusion_matrix
 from sklearn.model_selection import StratifiedKFold, GroupKFold
 
 # Import hyperparams
@@ -151,12 +151,18 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
                            base_adversarial=H.ADVERSARIAL_ENABLED,
                            base_grad_accum=H.GRAD_ACCUM_STEPS,
                            verbose=True):
-    """Return config dict tuned to GPU VRAM.
+    """Return config dict tuned to GPU VRAM (v4.2).
 
-    v4.2: returns dict with keys:
-      batch, seq, adversarial, grad_accum, grad_checkpoint, precision,
-      num_workers, torch_compile
+    FIX BUG#19/20/21: If user passes --batch-size / --max-seq-length / --grad-accum
+    via CLI, those override the tier lookup (H.BATCH_SIZE etc. are mutated in
+    __main__ before this is called). We detect overrides by checking env vars
+    set by the CLI handler, and skip the corresponding tier field.
     """
+    # Detect which fields the user overrode via CLI
+    user_batch = os.environ.get("USER_OVERRIDE_BATCH")
+    user_seq = os.environ.get("USER_OVERRIDE_SEQ")
+    user_accum = os.environ.get("USER_OVERRIDE_ACCUM")
+
     if not torch.cuda.is_available():
         cfg = dict(batch=base_batch, seq=base_seq, adversarial=False,
                    grad_accum=base_grad_accum, grad_checkpoint=False,
@@ -176,7 +182,7 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
     props = torch.cuda.get_device_properties(0)
     vram_gb = props.total_memory / (1024 ** 3)
     name = props.name
-    cc_major = getattr(props, "major", 0)  # compute capability
+    cc_major = getattr(props, "major", 0)
 
     # Find matching tier
     batch, seq, adv, accum, gc, prec = 8, 256, False, 8, False, "fp16"
@@ -184,18 +190,25 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
         if vram_gb >= threshold:
             batch, seq, adv, accum, gc, prec = b, s, a, ga, gck, p
 
-    # bf16 requires Ampere+ (compute capability 8.0+)
+    # FIX BUG#19/20/21: Respect user CLI overrides (skip tier value for that field)
+    if user_batch is not None:
+        batch = int(user_batch)
+    if user_seq is not None:
+        seq = int(user_seq)
+    # bf16 requires Ampere+ (CC 8.0+)
     if prec == "bf16" and cc_major < 8:
-        prec = "fp16"  # fallback for older GPUs (T4 = 7.5, V100 = 7.0)
+        prec = "fp16"
 
-    # Preserve effective batch size
-    target_effective = base_batch * base_grad_accum
-    new_accum = max(1, target_effective // batch)
+    # Preserve effective batch size — UNLESS user overrode grad_accum
+    if user_accum is not None:
+        new_accum = int(user_accum)
+    else:
+        target_effective = base_batch * base_grad_accum
+        new_accum = max(1, target_effective // batch)
 
     if not base_adversarial:
         adv = False
 
-    # torch.compile only on PyTorch 2.0+ and Ampere+ (stable)
     has_torch_compile = hasattr(torch, "compile")
     torch_compile = has_torch_compile and cc_major >= 7 and not gc
 
@@ -207,11 +220,16 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
     )
     if verbose:
         eff = batch * new_accum
+        overrides = []
+        if user_batch is not None: overrides.append(f"batch(user={user_batch})")
+        if user_seq is not None: overrides.append(f"seq(user={user_seq})")
+        if user_accum is not None: overrides.append(f"accum(user={user_accum})")
+        ovr = f" [overrides: {', '.join(overrides)}]" if overrides else ""
         logger.info(
             f"[GPU] {name} ({vram_gb:.1f} GB, CC {cc_major}.x) → "
             f"batch={batch}, seq={seq}, accum={new_accum} (eff={eff}), "
             f"adv={adv}, gc={gc}, prec={prec}, "
-            f"workers={cfg['num_workers']}, compile={torch_compile}"
+            f"workers={cfg['num_workers']}, compile={torch_compile}{ovr}"
         )
     return cfg
 
@@ -493,9 +511,12 @@ class SWACallback(TrainerCallback):
     """
     def __init__(self, start_epoch=5, anneal_epochs=3):
         self.start_epoch = start_epoch
-        self.anneal_epochs = anneal_epochs
+        # FIX BUG#11: anneal_epochs was stored but never used. Keep for API
+        # compat (callers pass it), but document that SWA here uses simple
+        # running average instead of LR annealing.
+        self.anneal_epochs = anneal_epochs  # kept for API compat, not used
         self.swa_weights = None
-        self.swa_count = 0
+        # FIX BUG#10: removed dead `swa_count` variable (was set to 0, never used)
         self.n_averaged = 0
 
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
@@ -631,13 +652,19 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
     print(f"K-FOLD RESULTS (k={k})")
     print(f"{'='*70}")
     avg_metrics = {}
-    for key in fold_results[0]:
-        if isinstance(fold_results[0][key], (int, float)):
-            values = [r[key] for r in fold_results]
-            avg = np.mean(values)
-            std = np.std(values)
-            avg_metrics[key] = {"mean": avg, "std": std, "values": values}
-            print(f"  {key:20s}: {avg:.4f} ± {std:.4f}")
+    # FIX BUG#16: skip non-metric keys (fold, saved_to, task) from aggregation.
+    # Previously "fold" (an int index) was being averaged — meaningless and
+    # polluting the output with a spurious "fold: 3.0 ± 1.58" line.
+    NON_METRIC_KEYS = {"fold", "saved_to", "task"}
+    metric_keys = [k for k in fold_results[0]
+                   if k not in NON_METRIC_KEYS
+                   and isinstance(fold_results[0][k], (int, float))]
+    for key in metric_keys:
+        values = [r[key] for r in fold_results]
+        avg = np.mean(values)
+        std = np.std(values)
+        avg_metrics[key] = {"mean": avg, "std": std, "values": values}
+        print(f"  {key:20s}: {avg:.4f} ± {std:.4f}")
 
     # FIX C6: Return a format compatible with evaluate_v4.py and colab pipeline.
     # Consumers expect flat keys: mean_accuracy, std_accuracy, mean_macro_f1,
@@ -917,7 +944,9 @@ def main(task: str, kfold: int = 0, dataset: str = None):
         print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
     else:
         # Single train/val/test split
-        train_rows, val_rows, test_rows = stratified_split(rows, "label")
+        # FIX BUG#25: test_rows not used in single-fold mode (train_single_fold
+        # only takes train+val). Use _ to mark intentionally unused.
+        train_rows, val_rows, _test_rows = stratified_split(rows, "label")
         # v4: Oversample training set
         if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
             print(f"Oversampling train: {len(train_rows)} -> ", end="")
@@ -952,12 +981,17 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     # Apply manual overrides to hyperparams before running
+    # FIX BUG#19/20/21: Set env vars so auto_scale_gpu_config respects user
+    # overrides instead of using tier lookup values.
     if args.batch_size is not None:
         H.BATCH_SIZE = args.batch_size
+        os.environ["USER_OVERRIDE_BATCH"] = str(args.batch_size)
     if args.max_seq_length is not None:
         H.MAX_SEQ_LENGTH = args.max_seq_length
+        os.environ["USER_OVERRIDE_SEQ"] = str(args.max_seq_length)
     if args.grad_accum is not None:
         H.GRAD_ACCUM_STEPS = args.grad_accum
+        os.environ["USER_OVERRIDE_ACCUM"] = str(args.grad_accum)
     if args.no_adversarial:
         H.ADVERSARIAL_ENABLED = False
     if args.no_auto_scale:

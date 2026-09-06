@@ -231,7 +231,15 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
                            base_adversarial=H.ADVERSARIAL_ENABLED,
                            base_grad_accum=H.GRAD_ACCUM_STEPS,
                            verbose=True):
-    """Return config dict tuned to GPU VRAM (v4.2)."""
+    """Return config dict tuned to GPU VRAM (v4.2).
+
+    FIX BUG#19/20/21: Respect user CLI overrides via env vars.
+    """
+    # Detect which fields the user overrode via CLI
+    user_batch = os.environ.get("USER_OVERRIDE_BATCH")
+    user_seq = os.environ.get("USER_OVERRIDE_SEQ")
+    user_accum = os.environ.get("USER_OVERRIDE_ACCUM")
+
     if not torch.cuda.is_available():
         cfg = dict(batch=base_batch, seq=base_seq, adversarial=False,
                    grad_accum=base_grad_accum, grad_checkpoint=False,
@@ -258,12 +266,20 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
         if vram_gb >= threshold:
             batch, seq, adv, accum, gc, prec = b, s, a, ga, gck, p
 
+    # FIX BUG#19/20/21: Respect user CLI overrides
+    if user_batch is not None:
+        batch = int(user_batch)
+    if user_seq is not None:
+        seq = int(user_seq)
     # bf16 requires Ampere+ (CC 8.0+)
     if prec == "bf16" and cc_major < 8:
         prec = "fp16"
 
-    target_effective = base_batch * base_grad_accum
-    new_accum = max(1, target_effective // batch)
+    if user_accum is not None:
+        new_accum = int(user_accum)
+    else:
+        target_effective = base_batch * base_grad_accum
+        new_accum = max(1, target_effective // batch)
 
     if not base_adversarial:
         adv = False
@@ -279,11 +295,16 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
     )
     if verbose:
         eff = batch * new_accum
+        overrides = []
+        if user_batch is not None: overrides.append(f"batch(user={user_batch})")
+        if user_seq is not None: overrides.append(f"seq(user={user_seq})")
+        if user_accum is not None: overrides.append(f"accum(user={user_accum})")
+        ovr = f" [overrides: {', '.join(overrides)}]" if overrides else ""
         logger.info(
             f"[GPU] {name} ({vram_gb:.1f} GB, CC {cc_major}.x) → "
             f"batch={batch}, seq={seq}, accum={new_accum} (eff={eff}), "
             f"adv={adv}, gc={gc}, prec={prec}, "
-            f"workers={cfg['num_workers']}, compile={torch_compile}"
+            f"workers={cfg['num_workers']}, compile={torch_compile}{ovr}"
         )
     return cfg
 
@@ -592,6 +613,7 @@ class SWACallback(TrainerCallback):
 
     def __init__(self, start_epoch=5, anneal_epochs=3):
         self.start_epoch = start_epoch
+        # FIX BUG#11: anneal_epochs kept for API compat but not used (simple running average)
         self.anneal_epochs = anneal_epochs
         self.swa_weights = None
         self.n_averaged = 0
@@ -703,12 +725,16 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
 
     print(f"\n{'=' * 70}\nK-FOLD RESULTS (k={k})\n{'=' * 70}")
     avg_metrics = {}
-    for key in fold_results[0]:
-        if isinstance(fold_results[0][key], (int, float)):
-            values = [r[key] for r in fold_results]
-            avg_metrics[key] = {"mean": float(np.mean(values)),
-                                "std": float(np.std(values)), "values": values}
-            print(f"  {key:20s}: {avg_metrics[key]['mean']:.4f} ± {avg_metrics[key]['std']:.4f}")
+    # FIX BUG#16: skip non-metric keys (fold, saved_to, task) from aggregation
+    NON_METRIC_KEYS = {"fold", "saved_to", "task"}
+    metric_keys = [k for k in fold_results[0]
+                   if k not in NON_METRIC_KEYS
+                   and isinstance(fold_results[0][k], (int, float))]
+    for key in metric_keys:
+        values = [r[key] for r in fold_results]
+        avg_metrics[key] = {"mean": float(np.mean(values)),
+                            "std": float(np.std(values)), "values": values}
+        print(f"  {key:20s}: {avg_metrics[key]['mean']:.4f} ± {avg_metrics[key]['std']:.4f}")
 
     def _flat(mk):
         a = avg_metrics.get(mk, {"mean": 0.0, "std": 0.0})
@@ -922,12 +948,16 @@ def cmd_finetune(args):
     if getattr(args, "out_dir", None):
         cfg["out_dir"] = args.out_dir
     # v4.1: Apply GPU overrides (mutates H namespace so auto_scale picks them up)
+    # FIX BUG#19/20/21: Set env vars so auto_scale_gpu_config respects overrides
     if getattr(args, "batch_size", None) is not None:
         H.BATCH_SIZE = args.batch_size
+        os.environ["USER_OVERRIDE_BATCH"] = str(args.batch_size)
     if getattr(args, "max_seq_length", None) is not None:
         H.MAX_SEQ_LENGTH = args.max_seq_length
+        os.environ["USER_OVERRIDE_SEQ"] = str(args.max_seq_length)
     if getattr(args, "grad_accum", None) is not None:
         H.GRAD_ACCUM_STEPS = args.grad_accum
+        os.environ["USER_OVERRIDE_ACCUM"] = str(args.grad_accum)
     if getattr(args, "no_adversarial", False):
         H.ADVERSARIAL_ENABLED = False
     if getattr(args, "no_auto_scale", False):
