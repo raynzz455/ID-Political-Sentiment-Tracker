@@ -50,8 +50,8 @@ from packages.nlp.sentiment_model import get_pipeline
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-MODEL_VERSION_FALLBACK = "indobert-fallback-v3-body-only-batch"
-MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v3-batch"
+MODEL_VERSION_FALLBACK = "indobert-fallback-v16-body-only-batch"
+MODEL_VERSION_GATED    = "indobert-ctx-relevancy-gated-v16-batch"
 NLP_VERSION = "v16_batch_resilient"
 
 MAX_GPU_WORKERS = 8 if torch.cuda.is_available() else 1
@@ -125,6 +125,11 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
             continue
 
         # v15: MULTI-MENTION AGGREGATION
+        # BUG N3 FIX: If context_worker already confirmed is_relevant=True,
+        # pass skip_relevancy=True to avoid running the same model twice.
+        ctx_is_relevant = metadata.get("is_relevant")
+        skip_rel = ctx_is_relevant is True  # only skip when explicitly True
+
         all_spans = metadata.get("all_spans", [context_text])
         if len(all_spans) > 1:
             # aggregate sentiment across all spans
@@ -132,7 +137,8 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
             total_w = 0.0
             for span_text in all_spans[:5]:  # cap at 5 spans
                 if len(span_text.strip()) < 10: continue
-                result = pipeline.predict_gated(text=span_text, context=entity_name)
+                result = pipeline.predict_gated(text=span_text, context=entity_name,
+                                                 skip_relevancy=skip_rel)
                 if not result.is_relevant:
                     stats["gate_rejected"] += 1
                     continue
@@ -149,7 +155,8 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
             scores = tuple(agg_scores)
         else:
             # single span (backward compat with v17 contexts)
-            result = pipeline.predict_gated(text=context_text, context=entity_name)
+            result = pipeline.predict_gated(text=context_text, context=entity_name,
+                                             skip_relevancy=skip_rel)
             if not result.is_relevant:
                 stats["gate_rejected"] += 1
                 continue
@@ -301,13 +308,13 @@ def main(target: int = 500, batch_size: int = 50, run_all: bool = False):
     print(f"v16 BATCH RESILIENCE: each sentiment inserted immediately.")
     print(f"If timeout/error mid-batch: completed results stay in DB,")
     print(f"failed items stay in queue for retry on next run.")
-    finish_run(run_id=run_id, processed=processed, succeeded=stats["acked"], failed=stats["ack_error"])
+    finish_run(run_id=run_id, processed=processed, succeeded=stats["acked"], failed=stats["ack_failed"])
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Drain pgmq queue (NLP Worker v15)")
     parser.add_argument("--target", type=int, default=500)
-    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args()
     main(target=args.target, batch_size=args.batch_size, run_all=args.all)

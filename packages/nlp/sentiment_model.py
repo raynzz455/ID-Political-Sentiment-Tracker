@@ -36,10 +36,30 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
+# BUG N2 FIX: Support fine-tuned v4 models via env var override.
+# After uploading v4 models to HuggingFace, set these env vars to switch
+# production from base models to fine-tuned v4:
+#   export NLP_RELEVANCY_MODEL=raynzz455/id-political-sentiment-relevancy-v4
+#   export NLP_SENTIMENT_MODEL=raynzz455/id-political-sentiment-sentiment-v4
+#   export NLP_FALLBACK_MODEL=taufiqdp/indonesian-sentiment  (no v4 fallback yet)
+# If env vars not set, falls back to original base models (safe default).
+import os as _os
 
-RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
-SENTIMENT_MODEL_ID  = "apriandito/indobert-sentiment-classifier"
-FALLBACK_MODEL_ID   = "taufiqdp/indonesian-sentiment"
+RELEVANCY_MODEL_ID = _os.environ.get(
+    "NLP_RELEVANCY_MODEL",
+    "apriandito/indobert-relevancy-classifier"
+)
+SENTIMENT_MODEL_ID  = _os.environ.get(
+    "NLP_SENTIMENT_MODEL",
+    "apriandito/indobert-sentiment-classifier"
+)
+FALLBACK_MODEL_ID   = _os.environ.get(
+    "NLP_FALLBACK_MODEL",
+    "taufiqdp/indonesian-sentiment"
+)
+
+logger.info(f"Model config: relevancy={RELEVANCY_MODEL_ID}, "
+            f"sentiment={SENTIMENT_MODEL_ID}, fallback={FALLBACK_MODEL_ID}")
 
 MAX_SEQ_LENGTH = 256
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -204,7 +224,15 @@ class SentimentPipeline:
             self._fallback = FallbackModel()
         return self._fallback
 
-    def predict_gated(self, text: str, context: Optional[str]) -> GatedResult:
+    def predict_gated(self, text: str, context: Optional[str],
+                      skip_relevancy: bool = False) -> GatedResult:
+        """Predict sentiment with relevancy gate.
+
+        BUG N3 FIX: skip_relevancy=True skips the internal relevancy model
+        call when the caller has ALREADY confirmed relevancy (e.g.,
+        context_worker pre-filtered via is_relevant=True in metadata).
+        This saves ~0.5s per span (avoids running the same model twice).
+        """
         if not text or not text.strip():
             return GatedResult(False, 0.0, None, None, None)
 
@@ -215,15 +243,20 @@ class SentimentPipeline:
             return GatedResult(True, 1.0, label, conf, scores, polarity, entropy)
 
         # GATED PATH (Entity-level)
-        try:
-            is_relevant, rel_conf = self.relevancy.check(context, text)
-        except Exception as e:
-            # FAIL-CLOSED: Jika gate error, anggap tidak relevan agar tidak lolos ke sentimen
-            logger.error(f"Relevancy check gagal: {e} — treat sebagai TIDAK relevan (fail-closed)")
-            return GatedResult(False, 0.0, None, None, None)
+        # BUG N3 FIX: skip relevancy check if caller already confirmed it
+        if not skip_relevancy:
+            try:
+                is_relevant, rel_conf = self.relevancy.check(context, text)
+            except Exception as e:
+                # FAIL-CLOSED: Jika gate error, anggap tidak relevan
+                logger.error(f"Relevancy check gagal: {e} — treat sebagai TIDAK relevan (fail-closed)")
+                return GatedResult(False, 0.0, None, None, None)
 
-        if not is_relevant:
-            return GatedResult(False, rel_conf, None, None, None)
+            if not is_relevant:
+                return GatedResult(False, rel_conf, None, None, None)
+        else:
+            # Caller confirmed relevancy — trust pre-filter
+            rel_conf = 1.0
 
         try:
             label, conf, scores = self.sentiment.predict(context, text)

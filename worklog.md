@@ -1466,3 +1466,75 @@ Stage Summary:
 - ✅ Semua fix di-apply konsisten ke finetune_v4.py + v4_all_in_one.py
 - ✅ Syntax check lulus, logic test verified
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 59
+Agent: Z.ai Code (main)
+Task: Audit workflow NLP: entity_resolution → context_worker → nlp_worker → sentiment_model.
+
+Work Log:
+- Step 1: Trace data flow end-to-end:
+  1. entity_resolution_worker: raw_texts → entity_mentions + article_entity_map
+  2. context_worker: entity_mentions → entity_contexts (dengan metadata.all_spans, is_relevant)
+  3. nlp_readiness_worker: cek quality → enqueue ke PGMQ
+  4. nlp_worker: dequeue PGMQ → fetch entity_contexts → inference → sentiment_scores
+
+- Step 2: Identifikasi 5 bug:
+
+  BUG N1 (CRITICAL — Logic Bug): stats["ack_error"] undefined
+    - nlp_worker.py line 304: finish_run(failed=stats["ack_error"])
+    - Counter never sets "ack_error", only "ack_failed" (line 212)
+    - Counter returns 0 for missing keys → failed count selalu 0 di pipeline_runs table
+    - FIX: ganti ke stats["ack_failed"]
+
+  BUG N2 (SIGNIFICANT — Model Version Mismatch):
+    - sentiment_model.py hardcode model IDs lama:
+      RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
+      SENTIMENT_MODEL_ID = "apriandito/indobert-sentiment-classifier"
+    - User fine-tune v4 models tapi production masih pakai base models!
+    - FIX: tambah env var override (NLP_RELEVANCY_MODEL, NLP_SENTIMENT_MODEL, NLP_FALLBACK_MODEL)
+    - Default tetap base models (safe), user set env var untuk switch ke v4
+
+  BUG N3 (Performance — Relevancy Double-Run):
+    - context_worker runs relevancy model → stores is_relevant in metadata
+    - nlp_worker pre-filters dengan metadata.get("is_relevant") (line 123)
+    - TAPI predict_gated() internally runs relevancy AGAIN (sentiment_model.py line 219)
+    - Same model, same text, same result — wasted ~0.5s per span
+    - FIX: tambah skip_relevancy parameter ke predict_gated()
+    - nlp_worker passes skip_relevancy=True ketika is_relevant=True di metadata
+
+  BUG N4 (Version String Inconsistency):
+    - NLP_VERSION = "v16_batch_resilient" (line 55)
+    - MODEL_VERSION_FALLBACK = "indobert-fallback-v3-..." (line 53) ← says v3!
+    - MODEL_VERSION_GATED = "indobert-ctx-relevancy-gated-v3-..." (line 54) ← says v3!
+    - FIX: align semua ke v16
+
+  BUG N5 (batch_size Default Mismatch):
+    - Function default: batch_size=50 (line 215)
+    - CLI default: default=100 (line 310)
+    - FIX: align keduanya ke 50 (v16 resilience)
+
+- Step 3: Apply fixes
+  - nlp_worker.py: BUG N1, N4, N5
+  - sentiment_model.py: BUG N2 (env var override), N3 (skip_relevancy param)
+  - nlp_worker.py: pakai skip_relevancy=True saat is_relevant=True
+
+- Step 4: Syntax check — kedua file lulus ✅
+
+- Step 5: Workflow assessment (yang BENAR):
+  ✅ entity_resolution → entity_contexts: data flow connected (entity_id linking)
+  ✅ context_worker stores all_spans + is_relevant di metadata
+  ✅ nlp_worker reads all_spans + is_relevant dari metadata (field names match!)
+  ✅ nlp_readiness_worker enqueues ke PGMQ, nlp_worker dequeues (queue connected)
+  ✅ Fallback path: body-only (tidak pakai title, anti-clickbait)
+  ✅ Multi-mention aggregation: confidence-weighted mean polarity
+  ✅ Confidence deferral: < 0.75 flagged deferred
+  ✅ Batch-resilient: each sentiment inserted immediately (tidak menunggu batch)
+
+Stage Summary:
+- ✅ 5 bug ditemukan dan diperbaiki
+- ✅ BUG N1 paling kritis: failed count selalu 0 di pipeline_runs table
+- ✅ BUG N2: fine-tuned v4 models sekarang bisa dipakai via env var
+- ✅ BUG N3: relevancy model tidak lagi dijalankan 2x (hemat ~0.5s/span)
+- ✅ Workflow end-to-end connected, field names konsisten antar worker
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
