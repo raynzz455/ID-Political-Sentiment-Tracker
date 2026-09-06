@@ -1276,3 +1276,60 @@ Stage Summary:
 - ✅ CLI flags untuk override manual (--batch-size, --no-auto-scale, dll)
 - ✅ runtime_gpu_config tersimpan di metrics.json untuk reproducibility
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 56
+Agent: Z.ai Code (main)
+Task: Deep clean repo — hapus folder/file yang tidak diperlukan agar repo terlihat clean.
+
+Work Log:
+- Step 1: Audit struktur repo — identifikasi 8 item yang tidak diperlukan:
+  - v4-finetuning-bundle.git (10MB git bundle artifact)
+  - stanza-fix.patch (applied patch, no refs)
+  - project-schafold.md (outdated scaffold plan dengan typo, no refs)
+  - upload/ (2 file "Pasted Content" scratch, no refs)
+  - download/ (placeholder README kosong, no refs)
+  - supabase/.temp/linked-project.json (temp config, duplikat infra/supabase/)
+  - db/custom.db (SQLite binary, local-only, changes constantly)
+  - .zscripts/dev.pid (ephemeral process ID file)
+
+- Step 2: Hapus 3 artifact files (git rm):
+  - v4-finetuning-bundle.git, stanza-fix.patch, project-schafold.md
+
+- Step 3: Hapus 3 folder sampah (git rm -r):
+  - upload/ (2 files), download/ (1 file), supabase/ (1 file)
+
+- Step 4: Untrack 2 binary/ephemeral files (git rm --cached, keep local):
+  - db/custom.db (tetap di disk untuk local dev via .env DATABASE_URL)
+  - .zscripts/dev.pid (tetap di disk, ephemeral)
+
+- Step 5: Update .gitignore untuk prevent re-tracking:
+  - db/*.db, db/*.sqlite, db/*.sqlite3 (local databases)
+  - *.pid (process files)
+  - *.patch (applied patches)
+  - /upload/, /download/ (scratch folders)
+  - /supabase/ (temp config)
+  - *.bundle, *.git.bundle (backup artifacts)
+  - Thumbs.db, ehthumbs.db (OS files)
+
+- Step 6: Commit + push ke GitHub (commit 2835451)
+  - 9 files removed from tracking (412 → 403 files tracked)
+  - Working tree clean
+  - IN SYNC dengan GitHub
+
+- Step 7: Hapus folder kosong di disk (upload/, download/, supabase/)
+
+Stage Summary:
+- ✅ 9 files dihapus dari git tracking
+- ✅ 3 folder kosong dihapus dari disk
+- ✅ .gitignore di-update untuk prevent re-tracking
+- ✅ Repo sekarang clean: no binaries, no temp files, no scratch folders
+- ✅ db/custom.db tetap di disk untuk local dev (DATABASE_URL di .env)
+- ✅ Working tree clean, IN SYNC dengan GitHub
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+Repo structure sekarang (root):
+  .github/      apps/         finetuning/   mini-services/ packages/     src/
+  Caddyfile     db/           infra/        prisma/        public/        tests/
+  README.md     devtools/     examples/     main.py        requirements.txt
+  worklog.md    docs/         .zscripts/    (config files)
