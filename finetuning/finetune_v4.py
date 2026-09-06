@@ -97,6 +97,30 @@ random.seed(H.SEED)
 np.random.seed(H.SEED)
 
 # ---------------------------------------------------------------------------
+# 0.1 Path helpers — resolve dataset/output dirs relative to THIS script so
+# the script works no matter what cwd it is launched from.
+# (BUG#2 fix: OUT_DIR_* in hyperparams are relative strings like
+#  './runs/sentiment_v4'. Without resolution, running from project root vs
+#  finetuning/ would scatter outputs to different places.)
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_out_dir(cfg):
+    """Return absolute path to the output directory, creating it if needed.
+
+    Resolves cfg['out_dir'] against the script directory when it is a
+    relative path, so outputs always land next to the script regardless of cwd.
+    """
+    d = cfg["out_dir"]
+    p = Path(d)
+    if not p.is_absolute():
+        # strip leading ./ so './runs/x' -> 'runs/x' before joining
+        p = _SCRIPT_DIR / p.as_posix().lstrip("./").lstrip("/")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+# ---------------------------------------------------------------------------
 # 1. Dataset
 # ---------------------------------------------------------------------------
 TASK_CFG = {
@@ -552,8 +576,7 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
 def train_single_fold(task, train_rows, val_rows, label2id, id2label,
                        out_suffix=""):
     cfg = TASK_CFG[task]
-    out_dir = Path(cfg["out_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir(cfg)  # FIX BUG#2: absolute via script dir
 
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -756,8 +779,7 @@ def main(task: str, kfold: int = 0, dataset: str = None):
     if kfold > 1:
         # K-fold mode
         results = run_kfold(task, rows, label2id, id2label, k=kfold)
-        out_dir = Path(cfg["out_dir"])
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = resolve_out_dir(cfg)  # FIX BUG#2
         with open(out_dir / "kfold_results.json", "w") as f:
             json.dump(results, f, indent=2)
         print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")

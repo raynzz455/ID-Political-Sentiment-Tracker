@@ -170,6 +170,45 @@ torch.manual_seed(H.SEED)
 random.seed(H.SEED)
 np.random.seed(H.SEED)
 
+# ---------------------------------------------------------------------------
+# Path helpers — resolve dataset/output dirs relative to THIS script so the
+# script works no matter what cwd it is launched from.
+# (BUG#1+BUG#2 fix: previously data_dir and out_dir were relative to cwd, so
+#  launching from project root vs finetuning/ vs /content/ produced different
+#  paths and the script could not find the dataset / scattered outputs.)
+# ---------------------------------------------------------------------------
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_data_dir(cfg):
+    """Return absolute path to the dataset directory.
+
+    Priority:
+      1. --data-dir CLI flag (handled in cmd_finetune via cfg override)
+      2. cfg['data_dir'] resolved against script dir
+    """
+    d = cfg.get("data_dir", "datasets")
+    p = Path(d)
+    if not p.is_absolute():
+        p = _SCRIPT_DIR / p
+    return p
+
+
+def resolve_out_dir(cfg):
+    """Return absolute path to the output directory, creating it if needed.
+
+    Resolves cfg['out_dir'] (which may be a relative string like
+    './runs/sentiment_v4') against the script directory so outputs always
+    land next to the script regardless of cwd.
+    """
+    d = cfg["out_dir"]
+    p = Path(d)
+    if not p.is_absolute():
+        # strip leading ./ so './runs/x' -> 'runs/x' before joining
+        p = _SCRIPT_DIR / p.as_posix().lstrip("./").lstrip("/")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
 
 # ============================================================================
 # SECTION 3: TASK CONFIG + DATASET
@@ -613,8 +652,7 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
 
 def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix=""):
     cfg = TASK_CFG[task]
-    out_dir = Path(cfg["out_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_out_dir(cfg)  # FIX BUG#2: absolute path via script dir
 
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -781,12 +819,22 @@ def confidence_threshold_sweep(probs, golds, taus=None):
 def cmd_finetune(args):
     task = args.task
     cfg = TASK_CFG[task]
+    # Apply CLI overrides for data-dir / out-dir before anything else
+    if getattr(args, "data_dir", None):
+        cfg["data_dir"] = args.data_dir
+    if getattr(args, "out_dir", None):
+        cfg["out_dir"] = args.out_dir
     print(f"\n{'=' * 70}\nFINETUNE v4 TASK: {task}\nbase: {cfg['base_model']}\n"
-          f"out:  {cfg['out_dir']}\n{'=' * 70}\n")
+          f"out:  {resolve_out_dir(cfg)}\n{'=' * 70}\n")
 
-    data_path = Path(cfg["data_dir"]) / (args.dataset or cfg["data_file"])
+    data_path = resolve_data_dir(cfg) / (args.dataset or cfg["data_file"])
+    # FIX BUG#1: absolute path via __file__, not cwd
+    if not data_path.exists():
+        print(f"ERROR: dataset not found at {data_path}")
+        print(f"  Place dataset_gold_standard_final.jsonl in: {resolve_data_dir(cfg)}")
+        sys.exit(1)
     all_rows = load_jsonl(str(data_path))
-    print(f"Loaded {len(all_rows)} rows from {cfg['data_file']}")
+    print(f"Loaded {len(all_rows)} rows from {data_path}")
 
     label2id = {l: i for i, l in enumerate(cfg["labels"])}
     id2label = {i: l for l, i in label2id.items()}
@@ -794,8 +842,7 @@ def cmd_finetune(args):
 
     if args.kfold > 1:
         results = run_kfold(task, rows, label2id, id2label, k=args.kfold)
-        out_dir = Path(cfg["out_dir"])
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = resolve_out_dir(cfg)  # FIX BUG#2
         with open(out_dir / "kfold_results.json", "w") as f:
             json.dump(results, f, indent=2)
         print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
@@ -825,7 +872,7 @@ def cmd_evaluate(args):
     model = PeftModel.from_pretrained(model, run_dir / "lora")
     model = model.merge_and_unload()
 
-    all_rows = load_jsonl(str(Path(cfg["data_dir"]) / cfg["data_file"]))
+    all_rows = load_jsonl(str(resolve_data_dir(cfg) / cfg["data_file"]))
     label2id = {l: i for i, l in enumerate(cfg["labels"])}
     rows = normalize_rows(all_rows, cfg, label2id)
     _, _, test = stratified_split(rows)
@@ -905,8 +952,12 @@ def main():
 
     p_ft = sub.add_parser("finetune", help="Run fine-tuning")
     p_ft.add_argument("--task", choices=["relevancy", "sentiment"], required=True)
-    p_ft.add_argument("--dataset", default=None)
+    p_ft.add_argument("--dataset", default=None, help="Override dataset filename")
+    p_ft.add_argument("--data-dir", default=None,
+                     help="Override dataset directory (absolute or relative to script)")
     p_ft.add_argument("--kfold", type=int, default=0, help="0=disabled, 5=recommended")
+    p_ft.add_argument("--out-dir", default=None,
+                     help="Override output directory (absolute or relative to script)")
 
     p_ev = sub.add_parser("evaluate", help="Evaluate a single-fold model")
     p_ev.add_argument("--task", choices=["relevancy", "sentiment"], required=True)

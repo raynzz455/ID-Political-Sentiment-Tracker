@@ -1042,3 +1042,83 @@ Bug Detail (untuk referensi):
 - M3: class_weights.to(device) setiap forward pass
 - M4: apply_temperature() placeholder dead code
 - M5: v4_all_in_one TASK_CFG missing "dir" key
+
+---
+Task ID: 52
+Agent: Z.ai Code (main)
+Task: Re-check finetuning + hyperparameter + dataset flow + output saving + buat runner script.
+
+Work Log:
+- Step 1: Verifikasi dataset flow
+  - Dataset: finetuning/datasets/dataset_gold_standard_final.jsonl (2,238 rows) ✅
+  - Fields: text, entity_name, entity_premise, label, gold_relevancy, label_confidence, label_source ✅
+  - Distribusi: neutral 1768, positive 339, negative 131 (sentiment); relevant 2065, not_relevant 173
+  - Tidak ada context_flag field (exclude_flags harmless — None not in list)
+
+- Step 2: Temukan BUG#1 — v4_all_in_one.py data_path relative
+  - Baris 787,828: `Path(cfg["data_dir"])` pakai relative path "datasets"
+  - Jika run dari /content/ (Colab default) → cari di /content/datasets/ (TIDAK ADA)
+  - FIX: tambah resolve_data_dir() helper yang resolve via __file__
+  - Tambah --data-dir CLI flag untuk override
+
+- Step 3: Temukan BUG#2 — OUT_DIR relative paths
+  - hyperparams_v4.py: OUT_DIR_RELEVANCY="./runs/relevancy_v4" (relative ke cwd)
+  - Inconsistency: `cd finetuning && python finetune_v4.py` → output ke finetuning/runs/
+                   `python finetuning/finetune_v4.py` dari root → output ke ./runs/ (root) ❌
+  - FIX: tambah resolve_out_dir() helper di finetune_v4.py + v4_all_in_one.py
+  - Resolve relative paths via _SCRIPT_DIR = Path(__file__).resolve().parent
+  - Tambah --out-dir CLI flag di v4_all_in_one.py untuk override
+
+- Step 4: Verifikasi path resolution (simulasi tanpa torch)
+  - './runs/sentiment_v4' → /home/z/my-project/finetuning/runs/sentiment_v4 ✅
+  - 'runs/sentiment_v4'  → /home/z/my-project/finetuning/runs/sentiment_v4 ✅
+  - '/tmp/custom/runs'   → /tmp/custom/runs (absolute preserved) ✅
+  - 'datasets'           → /home/z/my-project/finetuning/datasets ✅
+
+- Step 5: Buat runner script lokal (yang user minta)
+  - run_v4.sh (bash, Linux/Mac):
+    - Verifikasi Python + packages (torch, transformers, peft, sklearn, numpy)
+    - Verifikasi dataset exists
+    - Run K-fold finetune untuk sentiment + relevancy
+    - Print K-fold summary via evaluate_v4.py
+    - Show output tree
+    - CLI: --task, --kfold, --eval-only, --python
+  - run_v4.py (Python, cross-platform Windows OK):
+    - Logic sama dengan run_v4.sh tapi pakai subprocess
+    - Lebih portable, bisa dijalankan di Windows tanpa bash
+
+- Step 6: Final syntax check — SEMUA 6 file lulus:
+  - finetune_v4.py ✅
+  - evaluate_v4.py ✅
+  - v4_all_in_one.py ✅
+  - run_v4.py ✅
+  - configs/hyperparams_v4.py ✅
+  - run_v4.sh (bash --help verified) ✅
+
+Stage Summary:
+- ✅ BUG#1 fixed: dataset path sekarang absolute via __file__ + --data-dir override
+- ✅ BUG#2 fixed: output dir sekarang resolve via script location + --out-dir override
+- ✅ Runner script lokal dibuat: run_v4.sh (bash) + run_v4.py (Python cross-platform)
+- ✅ Path resolution tested: 4 skenario (./x, x, /abs, datasets) semua benar
+- ✅ Dataset verified: 2,238 rows, fields konsisten dengan TASK_CFG
+- ⚠️ Tidak bisa test runtime training (PyTorch tidak di sandbox Next.js)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+DAFTAR SCRIPT v4 SEKARANG:
+| Script | Lokasi | Fungsi |
+|--------|--------|--------|
+| finetune_v4.py | finetuning/ | Script utama modular (pakai configs/hyperparams_v4.py) |
+| evaluate_v4.py | finetuning/ | Evaluation + confidence threshold sweep |
+| v4_all_in_one.py | finetuning/ | Self-contained untuk Colab (1 file, hyperparams inline) |
+| configs/hyperparams_v4.py | finetuning/configs/ | Semua hyperparameter v4 |
+| run_v4.sh | finetuning/ | Runner bash lokal (Linux/Mac) |
+| run_v4.py | finetuning/ | Runner Python lokal (cross-platform) |
+| colab_complete_pipeline_v4.py | finetuning/ | Runner Colab (install+clone+upload HF) |
+
+OUTPUT STRUCTURE (setelah run):
+  finetuning/runs/sentiment_v4/
+    ├── kfold_results.json (aggregate mean±std)
+    ├── fold_1/{lora/, tokenizer/, metrics.json}
+    ├── ...fold_5/...
+  finetuning/runs/relevancy_v4/
+    └── (same structure)
