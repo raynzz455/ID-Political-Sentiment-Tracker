@@ -71,3 +71,34 @@ finetuning/runs/
 
 # Backup bundles
 *.bundle
+
+# Git bundle artifacts (should never be in repo)
+*.git.bundle
+v4-finetuning-bundle.git
+
+# Patch files (applied patches, not source)
+*.patch
+
+# Databases (local SQLite — binary, changes constantly)
+db/*.db
+db/*.db-journal
+db/*.sqlite
+db/*.sqlite3
+
+# Process ID files (ephemeral)
+*.pid
+
+# Upload/download scratch folders (user-generated, not source)
+/upload/
+/download/
+
+# Supabase temp (use infra/supabase/ for real config)
+/supabase/
+
+# Project scaffold planning docs (outdated, kept in docs/ instead)
+project-schafold.md
+project-scaffold.md
+
+# OS files
+Thumbs.db
+ehthumbs.db
