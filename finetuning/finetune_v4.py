@@ -122,32 +122,27 @@ def resolve_out_dir(cfg):
 
 
 # ---------------------------------------------------------------------------
-# 0.2 Adaptive GPU VRAM scaling (NEW v4.1)
+# 0.2 Adaptive GPU VRAM scaling (v4.2 — more aggressive)
 # ---------------------------------------------------------------------------
-# Heuristic auto-tuning of batch size + max_seq_length based on GPU VRAM.
-# Goal: maximize GPU utilization instead of leaving 30-50% VRAM idle.
+# Maximize GPU utilization. v4.2 improvements:
+#   - bf16 support for Ampere+ (A100, A10, RTX 30/40) — more stable than fp16
+#   - gradient_checkpointing option for tiny GPUs (trade compute for memory)
+#   - torch.compile for PyTorch 2.0+ (10-30% speedup)
+#   - dataloader_num_workers for parallel data loading
+#   - More aggressive batch sizes (T4: 16→20, V100: 24→32, A100: 32→48)
 #
-# VRAM budget per sample (seq_len=256, IndoBERT-base, fp16, with LoRA):
-#   - Forward+backward activations: ~0.8 MB / sample
-#   - + Adversarial (double forward): +0.6 MB / sample
-#   - + Mixup: +0.1 MB / sample
-#   - Base model + optimizer state: ~1.2 GB fixed
-#
-# Empirically tuned thresholds (conservative — leaves ~15% safety margin):
-#   <  8 GB (T4 free tier shared): batch 4,  seq 256, adversarial OFF
-#   8-12 GB (T4 / K80):            batch 8,  seq 256, adversarial OFF
-#   12-16 GB (T4 / V100 / P100):   batch 16, seq 256, adversarial ON
-#   16-24 GB (V100 / A10):         batch 24, seq 320, adversarial ON
-#   > 24 GB (A100 / A6000):        batch 32, seq 384, adversarial ON
+# VRAM tier presets: (vram_min_gb, batch, seq_len, adversarial, grad_accum,
+#                     grad_checkpoint, precision)
+#   precision: "fp16" (T4/V100), "bf16" (Ampere+), "fp32" (CPU)
 # ---------------------------------------------------------------------------
-
-# VRAM tier presets: (vram_min_gb, batch, seq_len, adversarial, grad_accum)
 _VRAM_TIERS = [
-    (0,   4,  256, False, 16),  # < 8 GB:  CPU fallback / tiny GPU
-    (8,   8,  256, False, 8),   # 8-12 GB: T4 free tier
-    (12, 16,  256, True,  4),   # 12-16 GB: T4 full / P100
-    (16, 24,  320, True,  4),   # 16-24 GB: V100 / A10
-    (24, 32,  384, True,  2),   # > 24 GB: A100 / A6000
+    # vram_min, batch, seq, adv, accum, grad_ckpt, precision
+    (0,   4,  256, False, 16, True,  "fp16"),  # < 8 GB:  tiny GPU / shared
+    (8,   8,  256, False, 8,  False, "fp16"),  # 8-12 GB: K80 / T4 shared
+    (12, 20,  256, True,  4,  False, "fp16"),  # 12-16 GB: T4 (Colab free) ← was 16
+    (16, 32,  320, True,  2,  False, "bf16"),  # 16-24 GB: V100 / A10     ← was 24
+    (24, 48,  384, True,  2,  False, "bf16"),  # 24-40 GB: A100 40GB      ← was 32
+    (40, 64,  512, True,  1,  False, "bf16"),  # > 40 GB: A100 80GB / A6000 (NEW)
 ]
 
 
@@ -156,53 +151,69 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
                            base_adversarial=H.ADVERSARIAL_ENABLED,
                            base_grad_accum=H.GRAD_ACCUM_STEPS,
                            verbose=True):
-    """Return (batch_size, max_seq_length, adversarial, grad_accum) tuned to GPU.
+    """Return config dict tuned to GPU VRAM.
 
-    Strategy:
-      1. If no CUDA: return base config (CPU training — no scaling)
-      2. Detect total VRAM via torch.cuda.get_device_properties
-      3. Pick the tier matching VRAM
-      4. Keep effective batch size ~= base_batch * base_grad_accum
-         (so gradient statistics stay consistent across GPU sizes)
-      5. If user already passed --batch-size, respect it (override)
+    v4.2: returns dict with keys:
+      batch, seq, adversarial, grad_accum, grad_checkpoint, precision,
+      num_workers, torch_compile
     """
     if not torch.cuda.is_available():
+        cfg = dict(batch=base_batch, seq=base_seq, adversarial=False,
+                   grad_accum=base_grad_accum, grad_checkpoint=False,
+                   precision="fp32", num_workers=0, torch_compile=False)
         if verbose:
-            logger.info("[GPU] No CUDA detected — using base config (CPU mode)")
-        return base_batch, base_seq, False, base_grad_accum
+            logger.info(f"[GPU] No CUDA — CPU mode: {cfg}")
+        return cfg
 
-    # v4.1: Respect --no-auto-scale flag (env var set by CLI)
     if os.environ.get("DISABLE_AUTO_SCALE") == "1":
+        cfg = dict(batch=base_batch, seq=base_seq, adversarial=base_adversarial,
+                   grad_accum=base_grad_accum, grad_checkpoint=False,
+                   precision="fp16", num_workers=2, torch_compile=False)
         if verbose:
-            logger.info(f"[GPU] Auto-scale DISABLED via --no-auto-scale — using base config "
-                        f"(batch={base_batch}, seq={base_seq}, accum={base_grad_accum})")
-        return base_batch, base_seq, base_adversarial, base_grad_accum
+            logger.info(f"[GPU] Auto-scale DISABLED — using base: {cfg}")
+        return cfg
 
     props = torch.cuda.get_device_properties(0)
     vram_gb = props.total_memory / (1024 ** 3)
     name = props.name
+    cc_major = getattr(props, "major", 0)  # compute capability
 
     # Find matching tier
-    batch, seq, adv, accum = base_batch, base_seq, False, base_grad_accum
-    for threshold, b, s, a, ga in _VRAM_TIERS:
+    batch, seq, adv, accum, gc, prec = 8, 256, False, 8, False, "fp16"
+    for threshold, b, s, a, ga, gck, p in _VRAM_TIERS:
         if vram_gb >= threshold:
-            batch, seq, adv, accum = b, s, a, ga
+            batch, seq, adv, accum, gc, prec = b, s, a, ga, gck, p
 
-    # Preserve effective batch size (base_batch * base_accum) when possible
+    # bf16 requires Ampere+ (compute capability 8.0+)
+    if prec == "bf16" and cc_major < 8:
+        prec = "fp16"  # fallback for older GPUs (T4 = 7.5, V100 = 7.0)
+
+    # Preserve effective batch size
     target_effective = base_batch * base_grad_accum
     new_accum = max(1, target_effective // batch)
 
-    # Adversarial: respect existing auto-disable logic (< 12 GB)
     if not base_adversarial:
         adv = False
 
+    # torch.compile only on PyTorch 2.0+ and Ampere+ (stable)
+    has_torch_compile = hasattr(torch, "compile")
+    torch_compile = has_torch_compile and cc_major >= 7 and not gc
+
+    cfg = dict(
+        batch=batch, seq=seq, adversarial=adv, grad_accum=new_accum,
+        grad_checkpoint=gc, precision=prec,
+        num_workers=2 if vram_gb >= 8 else 0,
+        torch_compile=torch_compile,
+    )
     if verbose:
+        eff = batch * new_accum
         logger.info(
-            f"[GPU] {name} ({vram_gb:.1f} GB VRAM) → "
-            f"batch={batch}, seq={seq}, accum={new_accum} "
-            f"(effective batch={batch*new_accum}), adversarial={adv}"
+            f"[GPU] {name} ({vram_gb:.1f} GB, CC {cc_major}.x) → "
+            f"batch={batch}, seq={seq}, accum={new_accum} (eff={eff}), "
+            f"adv={adv}, gc={gc}, prec={prec}, "
+            f"workers={cfg['num_workers']}, compile={torch_compile}"
         )
-    return batch, seq, adv, new_accum
+    return cfg
 
 # ---------------------------------------------------------------------------
 # 1. Dataset
@@ -686,43 +697,54 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     train_ds = PairDataset(train_rows, tok, label2id)
     val_ds = PairDataset(val_rows, tok, label2id)
 
-    # v4.1: Adaptive GPU VRAM scaling — maximize batch size for available VRAM
-    # instead of hardcoding BATCH_SIZE=8 for all GPUs. Larger batch = faster
-    # training + better gradient estimates.
-    auto_batch, auto_seq, auto_adv, auto_accum = auto_scale_gpu_config()
+    # v4.2: Adaptive GPU VRAM scaling — maximize GPU utilization
+    gpu = auto_scale_gpu_config()
+    auto_batch = gpu["batch"]
+    auto_seq = gpu["seq"]
+    auto_adv = gpu["adversarial"]
+    auto_accum = gpu["grad_accum"]
+    auto_gc = gpu["grad_checkpoint"]
+    auto_prec = gpu["precision"]
+    auto_workers = gpu["num_workers"]
+    auto_compile = gpu["torch_compile"]
 
-    # Effective batch size = batch * grad_accum (keep consistent with H.BATCH_SIZE * H.GRAD_ACCUM_STEPS)
+    # Effective batch size = batch * grad_accum
     effective_batch = auto_batch * auto_accum
     steps_per_epoch = max(1, len(train_ds) // effective_batch)
     warmup_steps = int(H.WARMUP_RATIO * steps_per_epoch * H.NUM_EPOCHS)
+
+    # v4.2: precision flags (bf16 takes priority over fp16 if supported)
+    use_fp16 = (auto_prec == "fp16") and torch.cuda.is_available()
+    use_bf16 = (auto_prec == "bf16") and torch.cuda.is_available()
 
     # Build TrainingArguments dict (compatible with transformers 4.40+)
     train_args_dict = dict(
         output_dir=str(out_dir),
         num_train_epochs=H.NUM_EPOCHS,
-        per_device_train_batch_size=auto_batch,      # v4.1: adaptive
-        per_device_eval_batch_size=auto_batch * 2,    # v4.1: eval can be 2x (no backward)
-        # v3.1: OOM prevention settings
-        dataloader_pin_memory=torch.cuda.is_available(),  # v4.1: enable on GPU
-        gradient_checkpointing=False,
-        gradient_accumulation_steps=auto_accum,       # v4.1: adaptive
+        per_device_train_batch_size=auto_batch,        # v4.2: adaptive
+        per_device_eval_batch_size=auto_batch * 2,      # v4.2: eval 2x (no backward)
+        dataloader_pin_memory=torch.cuda.is_available(),
+        dataloader_num_workers=auto_workers,            # v4.2: parallel data loading
+        gradient_checkpointing=auto_gc,                 # v4.2: enable on tiny GPUs
+        gradient_accumulation_steps=auto_accum,         # v4.2: adaptive
         learning_rate=H.LEARNING_RATE,
         weight_decay=H.WEIGHT_DECAY,
         adam_beta1=H.ADAM_BETA1, adam_beta2=H.ADAM_BETA2, adam_epsilon=H.ADAM_EPSILON,
         max_grad_norm=H.MAX_GRAD_NORM,
         warmup_steps=warmup_steps,
         lr_scheduler_type=H.SCHEDULER,
-        # v3.2: pass num_cycles for cosine_with_restarts
         lr_scheduler_kwargs={"num_cycles": H.SCHEDULER_NUM_CYCLES} if H.SCHEDULER == "cosine_with_restarts" else None,
-        fp16=H.FP16 and torch.cuda.is_available(),   # v4.1: only on CUDA
+        fp16=use_fp16,                                  # v4.2: precision auto
+        bf16=use_bf16,                                  # v4.2: bf16 for Ampere+
         save_strategy="epoch",
         save_total_limit=1,
         load_best_model_at_end=True,
-        metric_for_best_model="eval_macro_f1",  # v3.2: full key for transformers 5.x
+        metric_for_best_model="eval_macro_f1",
         greater_is_better=True,
         seed=H.SEED,
         report_to="none",
         logging_steps=max(1, steps_per_epoch // 4),
+        torch_compile=auto_compile,                     # v4.2: PyTorch 2.0+ speedup
     )
     # eval_strategy: renamed in 4.46+ (try new name, fallback to old)
     try:
@@ -790,17 +812,24 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         "temperature": T,
         "hyperparams": {k: asdict(v) if hasattr(v, '__dataclass_fields__') else v
                         for k, v in vars(H).items() if k.isupper()},
-        # v4.1: record actual runtime GPU config used (for reproducibility)
+        # v4.2: record actual runtime GPU config used (for reproducibility)
         "runtime_gpu_config": {
             "batch_size": auto_batch,
             "grad_accum_steps": auto_accum,
             "effective_batch_size": effective_batch,
             "max_seq_length": auto_seq,
             "adversarial": auto_adv,
-            "fp16": bool(H.FP16 and torch.cuda.is_available()),
+            "precision": auto_prec,
+            "fp16": use_fp16,
+            "bf16": use_bf16,
+            "gradient_checkpointing": auto_gc,
+            "dataloader_num_workers": auto_workers,
+            "torch_compile": auto_compile,
             "gpu_name": torch.cuda.get_device_properties(0).name if torch.cuda.is_available() else "CPU",
             "gpu_vram_gb": round(torch.cuda.get_device_properties(0).total_memory / (1024**3), 2)
                 if torch.cuda.is_available() else 0,
+            "compute_capability": f"{torch.cuda.get_device_properties(0).major}.{torch.cuda.get_device_properties(0).minor}"
+                if torch.cuda.is_available() else "n/a",
         },
         "train_size": len(train_rows),
         "val_size": len(val_rows),

@@ -88,15 +88,50 @@ def step_summary():
             print(f"{task}: acc={kfold.get('mean_accuracy',0):.4f} ± {kfold.get('std_accuracy',0):.4f}, "
                   f"f1={kfold.get('mean_macro_f1',0):.4f} ± {kfold.get('std_macro_f1',0):.4f}")
 
+
+def step_backup():
+    """v4.2: Auto-backup outputs to Google Drive + HuggingFace.
+
+    Prevents loss of model weights when Colab session expires.
+    Mounts Google Drive automatically, copies runs/ + configs/, and
+    optionally uploads best fold to HuggingFace if HF_TOKEN is set.
+    """
+    print("\n=== STEP 7: Auto-backup (Google Drive + HuggingFace) ===")
+    print("Colab ephemeral disk is wiped on disconnect — backing up now!")
+
+    # Mount Google Drive (Colab only)
+    try:
+        from google.colab import drive
+        drive.mount("/content/drive")
+        print("✅ Google Drive mounted")
+    except ImportError:
+        print("⚠️  Not in Colab — skipping Drive backup")
+    except Exception as e:
+        print(f"⚠️  Drive mount failed: {e}")
+
+    # Run backup script
+    hf_token = os.environ.get(HF_TOKEN_ENV)
+    backup_script = Path(REPO_DIR) / "finetuning" / "backup_to_gdrive.py"
+    if not backup_script.exists():
+        print(f"⚠️  backup_to_gdrive.py not found at {backup_script}")
+        return
+
+    cmd = f"cd {REPO_DIR}/finetuning && python backup_to_gdrive.py"
+    if hf_token:
+        cmd += f" --upload-hf --hf-token {hf_token}"
+    run(cmd, check=False)  # don't fail pipeline if backup has issues
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", default="all")
     args = ap.parse_args()
     steps = args.steps.lower().split(",")
-    if "all" in steps: steps = ["install","clone","sentiment","relevancy","evaluate","upload","summary"]
-    elif "sentiment-only" in steps: steps = ["install","clone","sentiment","evaluate","summary"]
+    if "all" in steps: steps = ["install","clone","sentiment","relevancy","evaluate","upload","summary","backup"]
+    elif "sentiment-only" in steps: steps = ["install","clone","sentiment","evaluate","summary","backup"]
     step_map = {"install":step_install,"clone":step_clone,"sentiment":step_finetune_sentiment,
-                "relevancy":step_finetune_relevancy,"evaluate":step_evaluate,"upload":step_upload,"summary":step_summary}
+                "relevancy":step_finetune_relevancy,"evaluate":step_evaluate,"upload":step_upload,
+                "summary":step_summary,"backup":step_backup}
     for s in steps:
         s = s.strip()
         if s in step_map: step_map[s]()

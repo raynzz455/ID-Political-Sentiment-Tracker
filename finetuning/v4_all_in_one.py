@@ -211,16 +211,18 @@ def resolve_out_dir(cfg):
 
 
 # ============================================================================
-# SECTION 2.5: Adaptive GPU VRAM scaling (v4.1)
+# SECTION 2.5: Adaptive GPU VRAM scaling (v4.2 — more aggressive)
 # ============================================================================
-# Maximize GPU utilization instead of leaving 30-50% VRAM idle.
-# Auto-scales batch_size + max_seq_length + grad_accum based on detected VRAM.
+# Maximize GPU utilization. v4.2: bf16, gradient checkpointing, torch.compile,
+# dataloader_num_workers, more aggressive batch sizes.
 _VRAM_TIERS = [
-    (0,   4,  256, False, 16),  # < 8 GB:  CPU fallback / tiny GPU
-    (8,   8,  256, False, 8),   # 8-12 GB: T4 free tier
-    (12, 16,  256, True,  4),   # 12-16 GB: T4 full / P100
-    (16, 24,  320, True,  4),   # 16-24 GB: V100 / A10
-    (24, 32,  384, True,  2),   # > 24 GB: A100 / A6000
+    # vram_min, batch, seq, adv, accum, grad_ckpt, precision
+    (0,   4,  256, False, 16, True,  "fp16"),  # < 8 GB
+    (8,   8,  256, False, 8,  False, "fp16"),  # 8-12 GB
+    (12, 20,  256, True,  4,  False, "fp16"),  # 12-16 GB: T4 (Colab free)
+    (16, 32,  320, True,  2,  False, "bf16"),  # 16-24 GB: V100 / A10
+    (24, 48,  384, True,  2,  False, "bf16"),  # 24-40 GB: A100 40GB
+    (40, 64,  512, True,  1,  False, "bf16"),  # > 40 GB: A100 80GB
 ]
 
 
@@ -229,45 +231,61 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
                            base_adversarial=H.ADVERSARIAL_ENABLED,
                            base_grad_accum=H.GRAD_ACCUM_STEPS,
                            verbose=True):
-    """Return (batch_size, max_seq_length, adversarial, grad_accum) tuned to GPU.
-
-    Keeps effective batch size (batch * accum) consistent with base config
-    so gradient statistics stay stable across GPU sizes.
-    """
+    """Return config dict tuned to GPU VRAM (v4.2)."""
     if not torch.cuda.is_available():
+        cfg = dict(batch=base_batch, seq=base_seq, adversarial=False,
+                   grad_accum=base_grad_accum, grad_checkpoint=False,
+                   precision="fp32", num_workers=0, torch_compile=False)
         if verbose:
-            logger.info("[GPU] No CUDA — using base config (CPU mode)")
-        return base_batch, base_seq, False, base_grad_accum
+            logger.info(f"[GPU] No CUDA — CPU mode: {cfg}")
+        return cfg
 
     if os.environ.get("DISABLE_AUTO_SCALE") == "1":
+        cfg = dict(batch=base_batch, seq=base_seq, adversarial=base_adversarial,
+                   grad_accum=base_grad_accum, grad_checkpoint=False,
+                   precision="fp16", num_workers=2, torch_compile=False)
         if verbose:
-            logger.info(f"[GPU] Auto-scale DISABLED — using base config "
-                        f"(batch={base_batch}, seq={base_seq}, accum={base_grad_accum})")
-        return base_batch, base_seq, base_adversarial, base_grad_accum
+            logger.info(f"[GPU] Auto-scale DISABLED — using base: {cfg}")
+        return cfg
 
     props = torch.cuda.get_device_properties(0)
     vram_gb = props.total_memory / (1024 ** 3)
     name = props.name
+    cc_major = getattr(props, "major", 0)
 
-    batch, seq, adv, accum = base_batch, base_seq, False, base_grad_accum
-    for threshold, b, s, a, ga in _VRAM_TIERS:
+    batch, seq, adv, accum, gc, prec = 8, 256, False, 8, False, "fp16"
+    for threshold, b, s, a, ga, gck, p in _VRAM_TIERS:
         if vram_gb >= threshold:
-            batch, seq, adv, accum = b, s, a, ga
+            batch, seq, adv, accum, gc, prec = b, s, a, ga, gck, p
 
-    # Preserve effective batch size
+    # bf16 requires Ampere+ (CC 8.0+)
+    if prec == "bf16" and cc_major < 8:
+        prec = "fp16"
+
     target_effective = base_batch * base_grad_accum
     new_accum = max(1, target_effective // batch)
 
     if not base_adversarial:
         adv = False
 
+    has_torch_compile = hasattr(torch, "compile")
+    torch_compile = has_torch_compile and cc_major >= 7 and not gc
+
+    cfg = dict(
+        batch=batch, seq=seq, adversarial=adv, grad_accum=new_accum,
+        grad_checkpoint=gc, precision=prec,
+        num_workers=2 if vram_gb >= 8 else 0,
+        torch_compile=torch_compile,
+    )
     if verbose:
+        eff = batch * new_accum
         logger.info(
-            f"[GPU] {name} ({vram_gb:.1f} GB VRAM) → "
-            f"batch={batch}, seq={seq}, accum={new_accum} "
-            f"(effective batch={batch*new_accum}), adversarial={adv}"
+            f"[GPU] {name} ({vram_gb:.1f} GB, CC {cc_major}.x) → "
+            f"batch={batch}, seq={seq}, accum={new_accum} (eff={eff}), "
+            f"adv={adv}, gc={gc}, prec={prec}, "
+            f"workers={cfg['num_workers']}, compile={torch_compile}"
         )
-    return batch, seq, adv, new_accum
+    return cfg
 
 
 # ============================================================================
@@ -735,20 +753,33 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix
     train_ds = PairDataset(train_rows, tok, label2id)
     val_ds = PairDataset(val_rows, tok, label2id)
 
-    # v4.1: Adaptive GPU VRAM scaling — maximize batch size for available VRAM
-    auto_batch, auto_seq, auto_adv, auto_accum = auto_scale_gpu_config()
+    # v4.2: Adaptive GPU VRAM scaling
+    gpu = auto_scale_gpu_config()
+    auto_batch = gpu["batch"]
+    auto_seq = gpu["seq"]
+    auto_adv = gpu["adversarial"]
+    auto_accum = gpu["grad_accum"]
+    auto_gc = gpu["grad_checkpoint"]
+    auto_prec = gpu["precision"]
+    auto_workers = gpu["num_workers"]
+    auto_compile = gpu["torch_compile"]
+
     effective_batch = auto_batch * auto_accum
     steps_per_epoch = max(1, len(train_ds) // effective_batch)
     warmup_steps = int(H.WARMUP_RATIO * steps_per_epoch * H.NUM_EPOCHS)
 
+    use_fp16 = (auto_prec == "fp16") and torch.cuda.is_available()
+    use_bf16 = (auto_prec == "bf16") and torch.cuda.is_available()
+
     train_args_dict = dict(
         output_dir=str(out_dir),
         num_train_epochs=H.NUM_EPOCHS,
-        per_device_train_batch_size=auto_batch,       # v4.1: adaptive
-        per_device_eval_batch_size=auto_batch * 2,     # v4.1: eval 2x (no backward)
+        per_device_train_batch_size=auto_batch,        # v4.2: adaptive
+        per_device_eval_batch_size=auto_batch * 2,      # v4.2: eval 2x
         dataloader_pin_memory=torch.cuda.is_available(),
-        gradient_checkpointing=False,
-        gradient_accumulation_steps=auto_accum,        # v4.1: adaptive
+        dataloader_num_workers=auto_workers,            # v4.2: parallel loading
+        gradient_checkpointing=auto_gc,                 # v4.2: tiny GPUs
+        gradient_accumulation_steps=auto_accum,         # v4.2: adaptive
         learning_rate=H.LEARNING_RATE,
         weight_decay=H.WEIGHT_DECAY,
         adam_beta1=H.ADAM_BETA1, adam_beta2=H.ADAM_BETA2, adam_epsilon=H.ADAM_EPSILON,
@@ -757,7 +788,8 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix
         lr_scheduler_type=H.SCHEDULER,
         lr_scheduler_kwargs={"num_cycles": H.SCHEDULER_NUM_CYCLES}
             if H.SCHEDULER == "cosine_with_restarts" else None,
-        fp16=H.FP16 and torch.cuda.is_available(),    # v4.1: only on CUDA
+        fp16=use_fp16,                                  # v4.2: precision auto
+        bf16=use_bf16,                                  # v4.2: bf16 for Ampere+
         save_strategy="epoch",
         save_total_limit=1,
         load_best_model_at_end=True,
@@ -766,6 +798,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix
         seed=H.SEED,
         report_to="none",
         logging_steps=max(1, steps_per_epoch // 4),
+        torch_compile=auto_compile,                     # v4.2: PyTorch 2.0+ speedup
     )
     try:
         train_args_dict["eval_strategy"] = "epoch"
