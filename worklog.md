@@ -1122,3 +1122,42 @@ OUTPUT STRUCTURE (setelah run):
     ├── ...fold_5/...
   finetuning/runs/relevancy_v4/
     └── (same structure)
+
+---
+Task ID: 53
+Agent: Z.ai Code (main)
+Task: Push update terbaru ke GitHub.
+
+Work Log:
+- Step 1: Cek git status — ternyata 2 commit sudah ada (auto-committed: 98ef16e, de17ee2)
+  - 98ef16e: finetune_v4.py (path fix), run_v4.py, run_v4.sh, v4_all_in_one.py (path fix), worklog.md
+  - de17ee2: evaluate_v4.py (rewrite with normalize_rows + base_model fix)
+- Step 2: Set upstream main → origin/main (sebelumnya tidak ada upstream)
+- Step 3: Identifikasi 28 file __pycache__/*.pyc + 6 file tool-results/ yang TER-TRACK di git
+  - Ini artifacts yang tidak seharusnya di repo
+- Step 4: Update .gitignore:
+  - Tambah __pycache__/, *.pyc, *.pyo, *.pyd, .venv/, venv/
+  - Tambah /tool-results/
+  - Tambah /finetuning/runs/ (output training — terlalu besar untuk git)
+  - Tambah *.bundle (backup bundles)
+- Step 5: git rm --cached 28 .pyc files + 6 tool-results files
+- Step 6: Commit cleanup: f928ede "chore: gitignore + untrack cached artifacts"
+- Step 7: Buat push_latest.sh — script push siap pakai dengan GH_TOKEN
+  - Set remote URL dengan token (temporary)
+  - Push
+  - Hapus token dari git config (security)
+  - Verify local == remote
+- Step 8: Attempt push — gagal karena tidak ada GH_TOKEN di sandbox
+
+Status Akhir:
+- 3 commits siap push (de17ee2, 98ef16e, f928ede)
+- 26 files changed, +1419/-769 baris
+- Files utama: finetune_v4.py, evaluate_v4.py, v4_all_in_one.py, run_v4.py, run_v4.sh, .gitignore, worklog.md
+- Files dihapus dari tracking: 28 .pyc + 6 tool-results (artifacts)
+- BUTUH: GH_TOKEN untuk push (sandbox tidak punya credentials)
+
+Stage Summary:
+- ✅ 3 commits siap push (code fixes + gitignore cleanup + script runner)
+- ✅ push_latest.sh dibuat untuk push dengan token
+- ⚠️ Push butuh GH_TOKEN — user perlu berikan token ATAU jalankan script sendiri
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
