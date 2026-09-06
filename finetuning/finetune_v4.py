@@ -244,7 +244,7 @@ class FocalLossTrainerV4(Trainer):
         self.label_smoothing = label_smoothing
         # v3.1: Auto-disable adversarial on low-memory GPUs (< 12GB) to prevent OOM
         if adversarial and torch.cuda.is_available():
-            gpu_mem_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             if gpu_mem_gb < 12:
                 logger.warning(f"GPU memory {gpu_mem_gb:.1f}GB < 12GB — disabling adversarial training (OOM prevention)")
                 adversarial = False

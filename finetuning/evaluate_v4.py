@@ -195,6 +195,22 @@ def main(task, run_dir):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", choices=["relevancy", "sentiment"], required=True)
-    ap.add_argument("--run-dir", required=True)
+    ap.add_argument("--run-dir", default=None, help="Path to single fold model dir")
+    ap.add_argument("--kfold-results", default=None, help="Path to kfold_results.json")
     a = ap.parse_args()
-    main(a.task, a.run_dir)
+
+    if a.kfold_results:
+        # K-fold evaluation mode
+        kfold = json.load(open(a.kfold_results))
+        print(f"\n{'='*60}")
+        print(f"K-FOLD RESULTS (k={kfold.get('k', '?')})")
+        print(f"{'='*60}")
+        print(f"Mean Accuracy:  {kfold['mean_accuracy']:.4f} ± {kfold['std_accuracy']:.4f}")
+        print(f"Mean Macro-F1:  {kfold['mean_macro_f1']:.4f} ± {kfold['std_macro_f1']:.4f}")
+        print(f"\nPer-fold:")
+        for r in kfold['fold_results']:
+            print(f"  Fold {r['fold']}: acc={r['accuracy']:.4f}, f1={r['macro_f1']:.4f}")
+    elif a.run_dir:
+        main(a.task, a.run_dir)
+    else:
+        ap.error("Either --run-dir or --kfold-results is required")
