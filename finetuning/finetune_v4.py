@@ -122,27 +122,36 @@ def resolve_out_dir(cfg):
 
 
 # ---------------------------------------------------------------------------
-# 0.2 Adaptive GPU VRAM scaling (v4.2 — more aggressive)
+# 0.2 Adaptive GPU VRAM scaling (v4.6 — aggressive + OOM recovery)
 # ---------------------------------------------------------------------------
-# Maximize GPU utilization. v4.2 improvements:
-#   - bf16 support for Ampere+ (A100, A10, RTX 30/40) — more stable than fp16
-#   - gradient_checkpointing option for tiny GPUs (trade compute for memory)
-#   - torch.compile for PyTorch 2.0+ (10-30% speedup)
-#   - dataloader_num_workers for parallel data loading
-#   - More aggressive batch sizes (T4: 16→20, V100: 24→32, A100: 32→48)
+# Maximize GPU utilization. v4.6 improvements:
+#   - More aggressive batch sizes (T4: 20→32, V100: 32→48, A100: 48→64)
+#   - Dynamic OOM recovery: if training crashes with OOM, auto-reduce batch
+#   - Runtime VRAM monitoring (log usage every N steps)
+#   - eval_accumulation_steps for memory-efficient evaluation
 #
-# VRAM tier presets: (vram_min_gb, batch, seq_len, adversarial, grad_accum,
-#                     grad_checkpoint, precision)
-#   precision: "fp16" (T4/V100), "bf16" (Ampere+), "fp32" (CPU)
+# VRAM budget analysis for IndoBERT-base + LoRA r=64 (fp16):
+#   - Base model (frozen): ~220MB (fp16, no gradients)
+#   - LoRA adapter: ~8MB (trainable, with gradients)
+#   - Optimizer state (Adam): ~16MB (2x LoRA params)
+#   - Activations per sample (seq=256): ~150MB (forward+backward)
+#   - + Adversarial (double forward): +150MB/sample
+#   - Total fixed: ~244MB
+#   - Available for activations: VRAM - 0.5GB (safety)
+#
+# T4 (15GB): 14.5GB / 300MB(per sample with adversarial) = ~48 max batch
+#   v4.5: batch=20 (only 6GB used, 9GB WASTED)
+#   v4.6: batch=32 (9.6GB used, 5.4GB safety) ← more aggressive but safe
 # ---------------------------------------------------------------------------
+
 _VRAM_TIERS = [
     # vram_min, batch, seq, adv, accum, grad_ckpt, precision
-    (0,   4,  256, False, 16, True,  "fp16"),  # < 8 GB:  tiny GPU / shared
-    (8,   8,  256, False, 8,  False, "fp16"),  # 8-12 GB: K80 / T4 shared
-    (12, 20,  256, True,  4,  False, "fp16"),  # 12-16 GB: T4 (Colab free) ← was 16
-    (16, 32,  320, True,  2,  False, "bf16"),  # 16-24 GB: V100 / A10     ← was 24
-    (24, 48,  384, True,  2,  False, "bf16"),  # 24-40 GB: A100 40GB      ← was 32
-    (40, 64,  512, True,  1,  False, "bf16"),  # > 40 GB: A100 80GB / A6000 (NEW)
+    (0,   8,  256, False, 8,  True,  "fp16"),  # < 8 GB:  tiny GPU (was 4)
+    (8,   16, 256, False, 4,  False, "fp16"),  # 8-12 GB: K80 / T4 shared (was 8)
+    (12, 32,  320, True,  2,  False, "fp16"),  # 12-16 GB: T4 (was 20) ← AGGRESSIVE
+    (16, 48,  384, True,  2,  False, "bf16"),  # 16-24 GB: V100 / A10 (was 32)
+    (24, 64,  512, True,  1,  False, "bf16"),  # 24-40 GB: A100 40GB (was 48)
+    (40, 96,  512, True,  1,  False, "bf16"),  # > 40 GB: A100 80GB (was 64)
 ]
 
 
@@ -231,7 +240,85 @@ def auto_scale_gpu_config(base_batch=H.BATCH_SIZE,
             f"adv={adv}, gc={gc}, prec={prec}, "
             f"workers={cfg['num_workers']}, compile={torch_compile}{ovr}"
         )
+        # OPT v4.6: Log VRAM budget breakdown
+        if torch.cuda.is_available():
+            total_vram = vram_gb
+            est_per_sample = 0.3 if adv else 0.15  # GB (with adversarial: 2x forward)
+            est_activations = batch * est_per_sample
+            est_fixed = 0.5  # model + optimizer + safety
+            est_total = est_activations + est_fixed
+            utilization = (est_total / total_vram) * 100
+            logger.info(
+                f"[GPU] VRAM budget: {est_total:.1f}/{total_vram:.1f} GB "
+                f"({utilization:.0f}% utilized) — "
+                f"activations={est_activations:.1f}GB, fixed={est_fixed:.1f}GB"
+            )
     return cfg
+
+
+def log_vram_usage(prefix: str = ""):
+    """OPT v4.6: Log current GPU memory usage for monitoring."""
+    if not torch.cuda.is_available():
+        return
+    allocated = torch.cuda.memory_allocated() / (1024**3)
+    reserved = torch.cuda.memory_reserved() / (1024**3)
+    total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    pct = (allocated / total) * 100 if total > 0 else 0
+    logger.info(
+        f"[VRAM] {prefix} alloc={allocated:.2f}GB / reserved={reserved:.2f}GB "
+        f"/ total={total:.2f}GB ({pct:.1f}% used)"
+    )
+
+
+def train_with_oom_recovery(trainer, resume_ckpt=None, max_retries=2):
+    """OPT v4.6: Train with automatic OOM recovery.
+
+    If training crashes with CUDA OOM, automatically:
+    1. Reduce batch size by half
+    2. Enable gradient checkpointing
+    3. Clear cache
+    4. Retry training
+
+    Args:
+        trainer: HuggingFace Trainer instance
+        resume_ckpt: checkpoint to resume from
+        max_retries: max OOM recovery attempts
+
+    Returns:
+        trainer.train() result
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                logger.warning(f"[OOM Recovery] Attempt {attempt + 1}/{max_retries + 1}")
+                # Reduce batch size
+                current_batch = trainer.args.per_device_train_batch_size
+                new_batch = max(2, current_batch // 2)
+                trainer.args.per_device_train_batch_size = new_batch
+                # Enable gradient checkpointing
+                trainer.args.gradient_checkpointing = True
+                logger.warning(f"[OOM Recovery] Reduced batch: {current_batch}→{new_batch}, "
+                             f"enabled gradient_checkpointing")
+                # Clear cache
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                log_vram_usage("after OOM recovery")
+
+            log_vram_usage("before training")
+            result = trainer.train(resume_from_checkpoint=resume_ckpt)
+            log_vram_usage("after training")
+            return result
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and attempt < max_retries:
+                logger.error(f"[OOM] CUDA out of memory! Attempting recovery...")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                continue
+            else:
+                raise  # re-raise if not OOM or max retries exceeded
 
 # ---------------------------------------------------------------------------
 # 1. Dataset
@@ -881,6 +968,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         report_to="none",
         logging_steps=max(1, steps_per_epoch // 4),
         torch_compile=auto_compile,                     # v4.2: PyTorch 2.0+ speedup
+        eval_accumulation_steps=2,  # OPT v4.6: prevent eval OOM (accumulate 2 batches before eval)
     )
     # eval_strategy: renamed in 4.46+ (try new name, fallback to old)
     try:
@@ -927,7 +1015,8 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
             resume_ckpt = str(latest_ckpt)
             print(f"  🔄 Resuming from checkpoint: {latest_ckpt.name}")
 
-    trainer.train(resume_from_checkpoint=resume_ckpt)
+    # OPT v4.6: Use OOM recovery wrapper — auto-reduce batch if CUDA OOM
+    train_with_oom_recovery(trainer, resume_ckpt=resume_ckpt, max_retries=2)
     # v3.1: Clear cache before eval to prevent OOM
     import gc
     gc.collect()
