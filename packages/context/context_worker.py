@@ -628,19 +628,22 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             if next_idx < len(sentences) and next_added < max_each_side:
                 next_sent = sentences[next_idx]
                 # Skip if very short or unrelated (e.g., different paragraph jump)
+                # FIX CW#6 (MEDIUM): always advance next_idx, even if sentence skipped.
+                # Before: short sentence → next_idx not incremented → loop stuck.
                 if len(next_sent["text"]) > 20:
                     context_parts.append(next_sent["text"])
                     next_added += 1
-                    next_idx += 1
                     added_this_round = True
+                next_idx += 1  # FIX: always advance regardless of append
 
             if prev_idx >= 0 and prev_added < max_each_side:
                 prev_sent = sentences[prev_idx]
                 if len(prev_sent["text"]) > 20:
                     context_parts.insert(0, prev_sent["text"])
                     prev_added += 1
-                    prev_idx -= 1
                     added_this_round = True
+                # FIX CW#6: same fix for prev_idx
+                prev_idx -= 1
 
             if not added_this_round:
                 break
@@ -665,8 +668,10 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
 
         para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
 
-        # v18: QUALITY_SCORE — sentiment predicate gets 40, attribution gets 10 (was 25)
-        attr_score = ATTR_SCORE_SENTIMENT if has_sentiment_predicate else (ATTR_SCORE_ATTRIBUTION if has_attribution else ATTR_SCORE_ATTRIBUTION)
+        # v18: QUALITY_SCORE — sentiment predicate gets 40, attribution gets 10, none gets 5
+        # FIX CW#4 (MEDIUM): dead code — both branches returned ATTR_SCORE_ATTRIBUTION.
+        # Now: no predicate → lower score (5), differentiating from attribution (10).
+        attr_score = ATTR_SCORE_SENTIMENT if has_sentiment_predicate else (ATTR_SCORE_ATTRIBUTION if has_attribution else 5)
         actor_score = ACTOR_SCORE_MAIN if is_main_actor else 10
         pos_score = POS_SCORE_LEAD if para_idx == 0 else (12 if para_idx <= 2 else 5)
         exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
@@ -750,11 +755,23 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         }
 
         # v23: Apply quality filter — remove profile & redundant sentences
-        ctx_sentences = ctx_text.split('. ')
+        # FIX CW#7 (MEDIUM): split on all sentence terminators (. ! ?), not just ". "
+        import re as _re
+        ctx_sentences = _re.split(r'(?<=[.!?])\s+', ctx_text)
+        # FIX CW#5 (HIGH): protect anchor sentence from being filtered out.
+        # Before: v23 filter could remove anchor sentence (which contains entity
+        # mention), leaving context without entity → sentiment analysis fails.
+        # After: anchor sentence is always kept, even if it matches profile/redundant.
+        anchor_lower = anchor_text_for_context.lower().strip()
         filtered_sentences = []
         for sent in ctx_sentences:
             sent = sent.strip()
             if not sent:
+                continue
+            # FIX CW#5: never filter anchor sentence (contains entity mention)
+            is_anchor = sent.lower().strip() == anchor_lower or anchor_lower in sent.lower()
+            if is_anchor:
+                filtered_sentences.append(sent)
                 continue
             # Skip profile sentences
             if is_profile_sentence_v23(sent):
@@ -815,6 +832,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
     run_id = start_run("context_worker", CONTEXT_VERSION)
     total_processed = 0
     total_success = 0
+    total_failed = 0  # FIX CW#2: track failed count for finish_run
     batch_num = 1
     logger.info(f"[CONTEXT_WORKER v18] Precision Multi | Limit: {limit}/batch | Days back: {days_back} | Threads: {MAX_NLP_WORKERS}")
     while True:
@@ -889,9 +907,14 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
             logger.warning(f"  ⚠️ {failed_ctx} articles failed — see SKIP/ERROR logs above")
         logger.info(f"{'='*60}")
         total_processed += len(articles)
-        total_success += len(context_inserts)
+        # FIX CW#1 (HIGH): total_success should count articles (succeeded_art_ids),
+        # not entity contexts (context_inserts can be > articles due to multi-entity).
+        total_success += len(succeeded_art_ids)
+        # FIX CW#2 (MEDIUM): track actual failed count, not hardcoded 0.
+        total_failed += failed_ctx
         batch_num += 1
-    finish_run(run_id, total_processed, total_success, 0)
+    # FIX CW#1/CW#2: pass correct succeeded (article-level) and failed counts.
+    finish_run(run_id, total_processed, total_success, total_failed)
     logger.info("Eksekusi Context Worker (v18 Precision Multi) Selesai.")
 
 if __name__ == "__main__":

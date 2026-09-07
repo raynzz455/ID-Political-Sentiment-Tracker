@@ -299,13 +299,15 @@ def main(limit: int = 100, max_total: int = 0):
             logger.info(f"ID: {item['id'][:8]} | Status: NORMALIZED | Clean Len: {item['metadata']['audit_stats']['clean_len']}")
             
         if updates:
-            try:
-                # Chunk size RPC dinaikkan ke 50
-                for i in range(0, len(updates), CHUNK_SIZE):
-                    chunk = updates[i:i + CHUNK_SIZE]
+            # FIX PP#2 (MEDIUM): move try/except INSIDE the chunk loop.
+            # Before: if chunk 1 fails, chunks 2,3,... skipped (all updates lost).
+            # After: each chunk retried independently, failures logged per-chunk.
+            for i in range(0, len(updates), CHUNK_SIZE):
+                chunk = updates[i:i + CHUNK_SIZE]
+                try:
                     sb.rpc("bulk_update_raw_texts", {"p_updates": chunk}).execute()
-            except Exception as e: 
-                logger.error(f"DB Bulk Update Error: {e}")
+                except Exception as e: 
+                    logger.error(f"DB Bulk Update Error (chunk {i//CHUNK_SIZE + 1}): {e}")
                 
         logger.info(f"Normalized: {stats['normalized']} | Duplicates: {stats['duplicates']}")
         
@@ -330,7 +332,11 @@ def main(limit: int = 100, max_total: int = 0):
     logger.info(f"  Waktu Eksekusi  : {elapsed:.2f}s")
     logger.info("=" * 50)
     
-    finish_run(run_id, total_processed, total_normalized, total_duplicates)
+    # FIX PP#1 (MEDIUM): finish_run semantics — pass actual failed count.
+    # Before: pass total_duplicates as failed (duplicate ≠ failed, it's skipped).
+    # After: failed = processed - normalized - duplicates (actual processing errors).
+    total_failed = max(0, total_processed - total_normalized - total_duplicates)
+    finish_run(run_id, total_processed, total_normalized, total_failed)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

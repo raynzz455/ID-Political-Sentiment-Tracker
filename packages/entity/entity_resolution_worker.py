@@ -191,20 +191,36 @@ def load_caches(sb):
 def is_false_positive(matched_text: str, canonical_name: str, full_persons: list) -> bool:
     matched_lower = matched_text.lower()
     canonical_lower = canonical_name.lower()
-    
+
     # v22: Filter common Indonesian words (not entity names)
     if matched_lower in COMMON_INDONESIAN_WORDS:
         return True
-    
+
+    # FIX EL#1 (HIGH): Two-pass check to avoid premature False return.
+    # Before: returned False/True on first person that matched, skipping others.
+    #   Bug: "Erick Smith" + "Erick Thohir" — if Smith checked first, canonical
+    #   parts ["thohir"] not in ["erick","smith"] → return True (false positive!)
+    #   "Erick Thohir" never checked.
+    # After: Pass 1 — if ANY person matches canonical → not false positive.
+    #        Pass 2 — if ANY OTHER person matches matched_text → false positive.
+    canonical_parts = [p for p in canonical_lower.split() if p != matched_lower]
+
+    # Pass 1: check if any person is the canonical name (or contains all canonical parts)
     for person in full_persons:
         person_lower = person.lower()
         person_words = person_lower.split()
         if matched_lower in person_words and len(person_lower) > len(matched_lower):
-            canonical_parts = [p for p in canonical_lower.split() if p != matched_lower]
             if any(part in person_words for part in canonical_parts):
-                return False
-            else:
-                return True
+                return False  # This person IS the canonical entity
+
+    # Pass 2: no person matched canonical — check if any other person shares matched_text
+    for person in full_persons:
+        person_lower = person.lower()
+        person_words = person_lower.split()
+        if matched_lower in person_words and len(person_lower) > len(matched_lower):
+            # This person shares matched_text but is NOT canonical → false positive
+            return True
+
     return False
 
 
@@ -369,6 +385,10 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
                     current_person = []
         if current_person:
             persons.append(" ".join(current_person))
+            # FIX EL#2 (MEDIUM): Reset current_person at end of each sentence.
+            # Before: current_person not reset → next sentence's PROPN appended
+            # to leftover (e.g. "Erick Thohir" + "Jakarta" → "Erick Thohir Jakarta")
+            current_person = []
     full_persons = persons
 
     sentences = []
@@ -608,6 +628,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
 
     total_processed = 0
     total_success = 0
+    total_failed = 0  # FIX EL#5: track failed count for finish_run
     batch_num = 1
 
     logger.info(f"[ENTITY_RESOLVER v15] Intuitive Validation | Limit: {limit}/batch | "
@@ -698,13 +719,17 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                     f"Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)}")
         total_processed += len(articles)
         total_success += success_count
+        total_failed += len(failed_ids)  # FIX EL#5: track failed count
         batch_num += 1
 
         sleep_time = random.uniform(2, 5)
         logger.info(f"Menunggu {sleep_time:.1f}s sebelum batch berikutnya...")
         time.sleep(sleep_time)
 
-    finish_run(run_id, total_processed, total_success, 0)
+    # FIX EL#5 (MEDIUM): Pass actual failed count instead of hardcoded 0.
+    # Before: finish_run(..., 0) → articles_failed always 0 in pipeline_runs.
+    # After: total_failed tracked across batches.
+    finish_run(run_id, total_processed, total_success, total_failed)
     logger.info("Eksekusi Entity Resolver (v15 Intuitive Validation) Selesai.")
 
 

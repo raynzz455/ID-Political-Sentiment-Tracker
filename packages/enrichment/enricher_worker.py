@@ -304,7 +304,11 @@ def bulk_store(sb, results: list) -> Counter:
                 logger.info(f"ID: {rt_id[:8]} | Status: ENRICHED | Method: GNews Snippet")
                 
             else:
-                full_text, validation_status = process_and_validate_text(fetch_result.html, title, orig_metadata.get("rss_text", ""))
+                # FIX EW#1 (CRITICAL): Use `text` variable (RSS full-text from tuple)
+                # instead of orig_metadata.get("rss_text", "") which is never set.
+                # Before: process_and_validate_text(None, title, "") → (None, "fetch_no_html")
+                # After: process_and_validate_text(None, title, text) → uses RSS full-text
+                full_text, validation_status = process_and_validate_text(fetch_result.html, title, text)
                 
                 if full_text:
                     current_metadata["is_snippet"] = False

@@ -1788,3 +1788,90 @@ Stage Summary:
 - ✅ Logic sekarang: (Layer1 OR Layer3) AND Layer2 — tidak redundan
 - ✅ Scoring configurable via env vars
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 63
+Agent: Z.ai Code (main)
+Task: Audit semua worker untuk cacat logika — fix 10 bug (1 CRITICAL, 3 HIGH, 6 MEDIUM).
+
+Work Log:
+- Audit 4 worker utama via sub-agent (entity_resolution, preprocessing, enricher, context)
+- Temukan 18 bug total, fix 10 yang paling critical/high/medium:
+
+  EW#1 (CRITICAL — Data Loss Massal):
+    File: enricher_worker.py:307
+    Masalah: process_and_validate_text(None, title, orig_metadata.get("rss_text",""))
+    rss_text TIDAK PERNAH diset di metadata → semua artikel RSS full-text ditolak sebagai "fetch_no_html"
+    Impact: SEMUA artikel dengan text≥500 chars (RSS full-text) HILANG dari pipeline
+    Fix: ganti orig_metadata.get("rss_text","") dengan `text` (variable dari tuple)
+
+  EL#1 (HIGH — False Positive Premature Return):
+    File: entity_resolution_worker.py:191-208
+    Masalah: is_false_positive() return True/False pada person pertama yang match
+    Bug: "Erick Smith" + "Erick Thohir" — jika Smith dicek duluan → return True (false positive!)
+    Entity Thohir tidak pernah terdeteksi → hilang dari hasil
+    Fix: Two-pass check — Pass 1 cek canonical match, Pass 2 cek other person match
+
+  CW#1 (HIGH — finish_run Wrong Count):
+    File: context_worker.py:892,901
+    Masalah: total_success += len(context_inserts) — hitung entity contexts, bukan articles
+    Impact: pipeline_runs.articles_succeeded bisa > articles_processed (mis. 1 artikel 3 entity → 3 succeeded)
+    Fix: ganti ke len(succeeded_art_ids) (article-level count)
+
+  CW#5 (HIGH — Anchor Sentence Filtered):
+    File: context_worker.py:757-775
+    Masalah: v23 filter (is_profile_sentence_v23) bisa hapus anchor sentence yang mengandung entity
+    Impact: context_text tanpa entity mention → sentiment analysis gagal
+    Fix: protect anchor sentence — always keep, even if matches profile/redundant pattern
+
+  EL#2 (MEDIUM — current_person Not Reset):
+    File: entity_resolution_worker.py:386-387
+    Masalah: current_person tidak di-reset di akhir sentence → next sentence PROPN append ke leftover
+    Bug: "Erick Thohir" (end s1) + "Jakarta" (start s2) → "Erick Thohir Jakarta" (phantom person)
+    Fix: tambah current_person = [] setelah append di akhir sentence
+
+  EL#5 (MEDIUM — finish_run Hardcoded 0):
+    File: entity_resolution_worker.py:727
+    Masalah: finish_run(..., 0) — failed count selalu 0, padahal failed_ids dihitung
+    Fix: track total_failed across batches, pass ke finish_run
+
+  CW#2 (MEDIUM — finish_run Hardcoded 0):
+    File: context_worker.py:901
+    Masalah: sama seperti EL#5 — failed_ctx dihitung tapi tidak dipass ke finish_run
+    Fix: track total_failed, pass ke finish_run
+
+  CW#4 (MEDIUM — Dead Code attr_score):
+    File: context_worker.py:669
+    Masalah: ATTR_SCORE_ATTRIBUTION if has_attribution else ATTR_SCORE_ATTRIBUTION — kedua branch sama
+    Fix: ganti inner else ke 5 (differentiate: no predicate < attribution)
+
+  CW#6 (MEDIUM — next_idx Not Incremented):
+    File: context_worker.py:633-637
+    Masalah: jika sentence pendek (≤20 chars), next_idx tidak di-increment → loop stuck
+    Impact: context berhenti ekspansi, sentence penting setelahnya tidak ikut
+    Fix: always advance next_idx/prev_idx regardless of append
+
+  CW#7 (MEDIUM — Naive Sentence Split):
+    File: context_worker.py:760
+    Masalah: ctx_text.split('. ') — hanya split pada period+space, tidak handle ? dan !
+    Impact: sentence dengan ?/! tidak di-split → filter tidak efektif
+    Fix: re.split(r'(?<=[.!?])\s+', ctx_text)
+
+  PP#1 (MEDIUM — finish_run Wrong Semantics):
+    File: preprocessing_worker.py:333
+    Masalah: pass total_duplicates sebagai failed (duplicate ≠ failed, it's skipped)
+    Fix: total_failed = max(0, total_processed - total_normalized - total_duplicates)
+
+  PP#2 (MEDIUM — try/except Outside Loop):
+    File: preprocessing_worker.py:301-310
+    Masalah: try/except di luar chunk loop — 1 chunk gagal → semua chunk di-skip
+    Fix: pindah try/except ke dalam loop, log per-chunk error
+
+Stage Summary:
+- ✅ 10 bug diperbaiki (1 CRITICAL, 3 HIGH, 6 MEDIUM)
+- ✅ EW#1 paling critical: data loss massal fixed (RSS full-text sekarang diproses)
+- ✅ EL#1: entity false positive fixed (two-pass check)
+- ✅ CW#5: anchor sentence protected dari v23 filter
+- ✅ Pattern BUG N1 (finish_run hardcoded 0) dibersihkan di 3 worker (EL#5, CW#2, PP#1)
+- ✅ Semua syntax check lulus
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
