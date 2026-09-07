@@ -1703,3 +1703,88 @@ EXPECTED IMPACT:
 - background_only: 39.9% → ~15% (KeyBERT filter)
 - context precision: 55% → ~90% (3-layer filter)
 - sentiment accuracy: ~88% → ~93% macro-F1
+
+---
+Task ID: 62
+Agent: Z.ai Code (main)
+Task: Fix 4 cacat logika di 3-layer relevancy filter (tanpa hapus layer).
+
+Work Log:
+- User request: "jangan hapus relevansi gate, tambahkan saja, tapi perbaiki cacat logikanya"
+
+- Step 1: Identifikasi 4 cacat logika:
+
+  CACAT #1 (LOGIC — AND terlalu rigid):
+    SEBELUM: is_relevant = model_relevant AND not_speaker AND (is_dominant OR has_sentiment_predicate)
+    MASALAH: Layer 1 (model) AND Layer 3 (KeyBERT) = REDUNDANT (both check topic)
+    Kalau model bilang relevant (0.82) tapi KeyBERT bilang not dominant → is_relevant=False (SALAH)
+    FIX: (Layer1 OR Layer3) AND Layer2 → topic_relevant = model_relevant OR is_dominant
+
+  CACAT #2 (MANUAL VERB LISTS — bukan library):
+    SEBELUM: SENTIMENT_PREDICATES (20 kata) + ATTRIBUTION_VERBS (10 kata) hardcoded
+    MASALAH: Tidak komprehensif, maintenance burden, user minta "jangan build manual"
+    FIX: HAPUS kedua verb lists. Ganti dengan analyze_entity_role() — pure Stanza
+    dependency parsing (find entity's grammatical role: subject/object/unknown)
+    Tidak perlu klasifikasi verb — cukup tentukan entity = doer atau target
+
+  CACAT #3 (FAIL-OPEN AMBIGUITY):
+    SEBELUM: is_target=True untuk "no_predicate_found" (ambiguous)
+    MASALAH: Tidak beda "confirmed target" vs "unknown"
+    FIX: 3-state return: "object" (confirmed target), "subject" (confirmed doer),
+    "unknown" (fail-open). is_confirmed_target hanya True untuk "object"
+
+  CACAT #4 (MAGIC NUMBERS):
+    SEBELUM: attr_score=40, actor_score=30, precision_bonus=+15/+10/-20 (arbitrary)
+    MASALAH: Tidak ada justifikasi, tidak configurable
+    FIX: Dokumentasikan justifikasi + buat configurable via env vars
+    (ATTR_SCORE_SENTIMENT, PRECISION_BONUS_TARGET, PRECISION_PENALTY_DOER, dll)
+
+- Step 2: Implementasi analyze_entity_role() — PURE LIBRARY:
+  - Stanza coref + depparse (no manual verb list)
+  - Find root verb of each sentence
+  - Check entity's dependency role: nsubj (subject/doer), obj (object/target)
+  - Special case: nsubj:pass (passive subject) → entity is PATIENT (target)
+  - Coref resolution: pronoun "dia" → entity via cluster matching
+  - Returns: (role, reason) where role in {"subject", "object", "unknown"}
+
+- Step 3: Fix integration logic:
+  SEBELUM (FLAWED):
+    is_target, reason = is_sentiment_target(entity, ctx)  # manual verb list
+    is_relevant = model_relevant AND not_speaker AND (is_dominant OR has_sentiment_predicate)
+
+  SESUDAH (FIXED):
+    entity_role, role_reason = analyze_entity_role(entity, ctx)  # pure Stanza
+    is_target = entity_role != "subject"  # True for object/unknown
+    is_confirmed_target = entity_role == "object"  # only confirmed
+    topic_relevant = model_relevant or is_dominant  # FIX: OR not AND
+    attribution_ok = is_target  # False only for confirmed subject (doer)
+    is_relevant = topic_relevant and attribution_ok
+
+- Step 4: Test logic (8 cases, semua passed):
+  ✅ Case 1: all agree, entity=target → True
+  ✅ Case 2: model=T, KeyBERT=F, target → True (OLD=False, WRONG)
+  ✅ Case 3: model=F, KeyBERT=T, target → True (OLD=False, WRONG)
+  ✅ Case 4: topic relevant but entity=doer → False (correct)
+  ✅ Case 5: not topic relevant → False (correct)
+  ✅ Case 6: model=T, role unknown → True (fail-open, correct)
+  ✅ Case 7: nothing confirms topic → False (correct)
+  ✅ Case 8: KeyBERT=T but entity=doer → False (correct)
+
+- Step 5: Cleanup — hapus 30+ baris manual verb lists (SENTIMENT_PREDICATES,
+  ATTRIBUTION_VERBS) yang saya tambahkan di v4.3. Ganti dengan 1 function
+  analyze_entity_role() yang pure library-based.
+
+- Step 6: Metadata baru di entity_contexts untuk debugging:
+  - entity_role: "subject" | "object" | "unknown"
+  - role_reason: "subject(kritik)" | "object(dikritik)" | "no_role_found"
+  - is_confirmed_target: True only for "object" (high confidence)
+  - layer1_model_relevant, layer2_attribution_ok, layer3_topic_dominant
+
+Stage Summary:
+- ✅ 4 cacat logika diperbaiki (AND→OR, manual→library, ambiguous→3-state, magic→documented)
+- ✅ Manual verb lists dihapus (30+ baris) → ganti pure Stanza dependency parsing
+- ✅ 8/8 test cases passed
+- ✅ Relevancy gate DIPERTAHANKAN (Layer 1), coref + KeyBERT DIPERTAHANKAN
+- ✅ Logic sekarang: (Layer1 OR Layer3) AND Layer2 — tidak redundan
+- ✅ Scoring configurable via env vars
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku

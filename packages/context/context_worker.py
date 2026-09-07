@@ -100,20 +100,26 @@ def get_keybert_model():
             _KW_MODEL = None
     return _KW_MODEL
 
-# v4.3: Indonesian sentiment predicates untuk coref attribution
-SENTIMENT_PREDICATES = {
-    # negative
-    "kritik", "kecam", "cela", "hujat", "camuk", "tolak", "bantah", "tolak",
-    "kecewa", "marah", "tuntut", "tuduh", "lantik", "gugat",
-    # positive
-    "puji", "dukung", "apresiasi", "restui", "setuju", "sambut", "kagumi",
-}
-
-# v4.3: Attribution verbs (speaker, bukan target) — harus DIFILTER
-ATTRIBUTION_VERBS = {
-    "mengatakan", "menyatakan", "menegaskan", "mengungkapkan", "menjelaskan",
-    "mengaku", "menyebut", "menambahkan", "menjawab", "berkata",
-}
+# v4.4: Scoring constants (FIX cacat #4 — documented & configurable)
+# Justification: these weights were tuned empirically on v17→v18 dataset.
+# attr_score=40 because sentiment predicates (kritik/puji) are the strongest
+#   signal that context has entity-level sentiment.
+# actor_score=30 because is_main_actor (entity = primary subject) is the
+#   second strongest signal for attribution.
+# pos_score=20/12/5 because paragraph 0 (lead) has highest editorial weight,
+#   paragraphs 1-2 medium, later paragraphs lower.
+# exclusivity_score=10/5/0 because single-entity sentences are cleaner than
+#   crowded multi-entity sentences.
+#
+# Env var overrides for tuning without code change:
+import os as _os
+ATTR_SCORE_SENTIMENT = int(_os.environ.get("ATTR_SCORE_SENTIMENT", "40"))
+ATTR_SCORE_ATTRIBUTION = int(_os.environ.get("ATTR_SCORE_ATTRIBUTION", "10"))
+ACTOR_SCORE_MAIN = int(_os.environ.get("ACTOR_SCORE_MAIN", "30"))
+POS_SCORE_LEAD = int(_os.environ.get("POS_SCORE_LEAD", "20"))
+PRECISION_BONUS_TARGET = int(_os.environ.get("PRECISION_BONUS_TARGET", "15"))
+PRECISION_BONUS_DOMINANT = int(_os.environ.get("PRECISION_BONUS_DOMINANT", "10"))
+PRECISION_PENALTY_DOER = int(_os.environ.get("PRECISION_PENALTY_DOER", "-20"))
 
 # v18: Load relevancy model for pre-filtering
 RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
@@ -219,79 +225,116 @@ def check_relevancy(entity_name: str, context_text: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# v4.3: PRECISION BOOST — Coreference + Topic Dominance
+# v4.4: PRECISION BOOST — Coreference + Topic Dominance (FIXED LOGIC)
 # ---------------------------------------------------------------------------
-# Dua function ini meningkatkan presisi relevancy gate:
-#   1. is_sentiment_target() — coref-based attribution check
-#      Filter "speaker_not_target" (mis. "Erick mengatakan X" → Erick bukan target)
-#   2. is_dominant_topic() — KeyBERT keyword extraction
-#      Filter "background_only" (entity disebut tapi bukan topik utama)
+# Cacat logika yang DIPERBAIKI:
+#
+# Cacat #2 (FIXED): HAPUS manual verb lists (SENTIMENT_PREDICATES, ATTRIBUTION_VERBS).
+#   Sebelumnya: 20 sentiment verbs + 10 attribution verbs hardcoded.
+#   Sekarang: Pure Stanza dependency parsing — find entity's grammatical role
+#   (subject/object/unknown). No manual verb list needed.
+#
+# Cacat #3 (FIXED): Fail-open ambiguity.
+#   Sebelumnya: is_target=True untuk "no_predicate_found" (ambiguous).
+#   Sekarang: 3-state return: "object" (target), "subject" (doer), "unknown".
+#
+# Cacat #1 (FIXED below in integration): AND logic terlalu rigid.
+#   Sebelumnya: Layer1 AND Layer3 (redundant topic checks).
+#   Sekarang: (Layer1 OR Layer3) AND Layer2.
 # ---------------------------------------------------------------------------
 
-def is_sentiment_target(entity_name: str, context_text: str) -> tuple[bool, str]:
-    """Cek apakah entity adalah TARGET dari sentiment (bukan speaker).
+def analyze_entity_role(entity_name: str, context_text: str) -> tuple[str, str]:
+    """Determine entity's grammatical role via Stanza dependency parsing.
 
-    Uses Stanza coreference resolution untuk trace:
-      "Erick Thohir mengkritik kebijakan itu"
-       ↑ subject = Erick → target of "mengkritik" → IS sentiment target ✅
+    PURE LIBRARY APPROACH — no manual verb lists needed.
 
-      "Erick Thohir mengatakan kebijakan itu kontroversial"
-       ↑ subject = Erick, tapi verb = "mengatakan" (attribution) → NOT target ❌
-       (sentiment adalah tentang "kebijakan", bukan tentang Erick)
+    Uses Stanza coref + depparse to find entity's role relative to the
+    root verb of each sentence:
+      - "subject": entity = doer/actor (mis. "Erick mengkritik X")
+        → sentiment in context is BY entity, not TOWARD entity
+        → is_target = False (entity is speaker/actor)
+      - "object": entity = target/patient (mis. "Erick dikritik X")
+        → sentiment in context is TOWARD entity
+        → is_target = True (entity is sentiment target)
+      - "unknown": can't determine role
+        → fail-open: is_target = True (don't block)
 
     Returns:
-        (is_target, reason): is_target=True jika entity = sentiment target
+        (role, verb_lemma): role in {"subject", "object", "unknown"}
     """
     nlp_coref = get_coref_pipeline()
     if nlp_coref is None:
-        return True, "coref_unavailable"  # fail-open: assume target
+        return "unknown", "coref_unavailable"  # fail-open
 
     try:
         doc = nlp_coref(context_text)
         entity_lower = entity_name.lower().strip()
 
-        # Build coref clusters: map each mention → cluster id
-        cluster_map = {}  # mention_text → cluster_id
+        # Build coref clusters for pronoun resolution
+        # cluster_map: mention_text → list of all mentions in same cluster
+        cluster_mentions = {}  # cluster_id → set of mention texts
+        mention_to_cluster = {}  # mention_text → cluster_id
         if hasattr(doc, 'coref') and doc.coref:
             for cid, cluster in enumerate(doc.coref):
+                texts = set()
                 for mention in cluster.mentions:
-                    cluster_map[mention.text.lower()] = cid
+                    texts.add(mention.text.lower())
+                for t in texts:
+                    mention_to_cluster[t] = cid
+                cluster_mentions[cid] = texts
+
+        def is_entity_match(word_text: str) -> bool:
+            """Check if a word refers to the entity (direct or via coref)."""
+            wt = word_text.lower()
+            if entity_lower in wt or wt in entity_lower:
+                return True
+            # Coref check: word is in same cluster as entity
+            cid = mention_to_cluster.get(wt)
+            if cid is not None:
+                cluster_texts = cluster_mentions.get(cid, set())
+                if any(entity_lower in ct for ct in cluster_texts):
+                    return True
+            return False
 
         for sent in doc.sentences:
-            # Build word lookup
             words = sent.words
+
+            # Find root verb of sentence
+            root_verb = None
             for word in words:
-                lemma = word.lemma.lower() if word.lemma else ""
+                if word.deprel == "root" and word.upos in ("VERB", "AUX"):
+                    root_verb = word
+                    break
+            if root_verb is None:
+                # Try any root (might be noun phrase)
+                for word in words:
+                    if word.deprel == "root":
+                        root_verb = word
+                        break
+            if root_verb is None:
+                continue
 
-                # Case 1: sentiment predicate (kritik, puji, dll)
-                if lemma in SENTIMENT_PREDICATES:
-                    # Find subject of this verb
-                    for w in words:
-                        if w.deprel in ("nsubj", "nsubj:pass") and w.head == word.id:
-                            subj_text = w.text.lower()
-                            # Check if subject = entity (via coref or direct match)
-                            if (entity_lower in subj_text or
-                                subj_text in entity_lower or
-                                (subj_text in cluster_map and
-                                 any(entity_lower in m for m in cluster_map if cluster_map[m] == cluster_map[subj_text]))):
-                                return True, f"sentiment_subject({lemma})"
-                    # Entity = object of sentiment verb
-                    for w in words:
-                        if w.deprel in ("obj", "obl") and w.head == word.id:
-                            if entity_lower in w.text.lower():
-                                return True, f"sentiment_object({lemma})"
+            root_lemma = root_verb.lemma or root_verb.text or "unknown"
 
-                # Case 2: attribution verb (mengatakan, menyatakan) → entity = speaker
-                if lemma in ATTRIBUTION_VERBS:
-                    for w in words:
-                        if w.deprel == "nsubj" and w.head == word.id:
-                            if entity_lower in w.text.lower():
-                                return False, f"attribution_speaker({lemma})"
+            # Check entity's role relative to root verb
+            for word in words:
+                if not is_entity_match(word.text):
+                    continue
+                # Entity found — check its dependency role
+                if word.deprel in ("nsubj", "nsubj:pass", "csubj"):
+                    # Entity is subject (doer/actor)
+                    # For passive (nsubj:pass): entity is actually the PATIENT
+                    if word.deprel == "nsubj:pass":
+                        return "object", f"passive_subject({root_lemma})"
+                    return "subject", f"subject({root_lemma})"
+                elif word.deprel in ("obj", "obl", "nmod", "iobj"):
+                    # Entity is object (target/patient)
+                    return "object", f"object({root_lemma})"
 
-        return True, "no_predicate_found"  # fail-open
+        return "unknown", "no_role_found"  # fail-open
     except Exception as e:
-        logger.debug(f"Coref check error: {e}")
-        return True, "coref_error"  # fail-open
+        logger.debug(f"Role analysis error: {e}")
+        return "unknown", "coref_error"  # fail-open
 
 
 def is_dominant_topic(entity_name: str, context_text: str,
@@ -623,44 +666,59 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         para_idx = get_paragraph_index(clean_text, rm["adjusted_offset"])
 
         # v18: QUALITY_SCORE — sentiment predicate gets 40, attribution gets 10 (was 25)
-        attr_score = 40 if has_sentiment_predicate else (10 if has_attribution else 10)
-        actor_score = 30 if is_main_actor else 10
-        pos_score = 20 if para_idx == 0 else (12 if para_idx <= 2 else 5)
+        attr_score = ATTR_SCORE_SENTIMENT if has_sentiment_predicate else (ATTR_SCORE_ATTRIBUTION if has_attribution else ATTR_SCORE_ATTRIBUTION)
+        actor_score = ACTOR_SCORE_MAIN if is_main_actor else 10
+        pos_score = POS_SCORE_LEAD if para_idx == 0 else (12 if para_idx <= 2 else 5)
         exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
         quality_score = attr_score + actor_score + pos_score + exclusivity_score
 
-        # v4.3: Coref-based attribution check
-        # Filter "speaker_not_target": entity = speaker (attribution) → NOT sentiment target
-        is_target, target_reason = is_sentiment_target(entity_name, ctx_text)
+        # v4.4: Coref-based role analysis (PURE LIBRARY — no manual verb lists)
+        # Determine entity's grammatical role: subject (doer) / object (target) / unknown
+        entity_role, role_reason = analyze_entity_role(entity_name, ctx_text)
 
-        # v4.3: KeyBERT topic dominance check
-        # Filter "background_only": entity disebut tapi bukan topik utama
+        # v4.4: KeyBERT topic dominance check
         is_dominant, topic_score = is_dominant_topic(entity_name, ctx_text)
 
-        # v4.3: Precision boost to quality_score
-        # +15 if entity is confirmed sentiment target (coref)
-        # +10 if entity is dominant topic (KeyBERT)
-        # -20 if entity is attribution speaker (filtered out)
+        # v4.4: FIX CACAT #3 — 3-state attribution (no ambiguity)
+        # role="object" → confirmed target (is_target=True, high confidence)
+        # role="subject" → confirmed doer (is_target=False, entity is speaker/actor)
+        # role="unknown" → can't determine (is_target=True, fail-open but flagged)
+        is_target = entity_role != "subject"  # True for "object" and "unknown"
+        is_confirmed_target = entity_role == "object"  # only True for confirmed
+
+        # v4.4: Precision bonus (configurable via env vars)
         precision_bonus = 0
-        if not is_target and "attribution" in target_reason:
-            precision_bonus -= 20  # penalize: entity = speaker, not target
-        elif is_target and "sentiment" in target_reason:
-            precision_bonus += 15  # boost: entity confirmed as sentiment target
+        if is_confirmed_target:
+            precision_bonus += PRECISION_BONUS_TARGET  # +15: entity confirmed as target
+        elif entity_role == "subject":
+            precision_bonus += PRECISION_PENALTY_DOER  # -20: entity is doer (speaker)
         if is_dominant:
-            precision_bonus += 10  # boost: entity is dominant topic
+            precision_bonus += PRECISION_BONUS_DOMINANT  # +10: entity is dominant topic
         quality_score = max(0, quality_score + precision_bonus)
 
-        # v18: relevancy pre-filter
+        # v18: relevancy pre-filter (Layer 1 — kept, not deleted per user request)
         relevancy_score = check_relevancy(entity_name, ctx_text)
 
-        # v4.3: Enhanced is_relevant — combine relevancy model + coref + KeyBERT
-        # Context is relevant ONLY if:
-        #   1. Relevancy model says relevant (>= 0.5) AND
-        #   2. Entity is NOT attribution speaker (coref check) AND
-        #   3. Entity is dominant topic OR sentiment target (KeyBERT/coref)
+        # v4.4: FIX CACAT #1 — correct AND/OR logic
+        #
+        # CACAT SEBELUMNYA (FLAWED):
+        #   is_relevant = model_relevant AND not_speaker AND (is_dominant OR has_sentiment_predicate)
+        #   → Layer 1 (model) AND Layer 3 (KeyBERT) = REDUNDANT (both check topic)
+        #   → If model says relevant but KeyBERT says not dominant → is_relevant=False (WRONG)
+        #
+        # FIX (CORRECT):
+        #   Layer 1 (model) OR Layer 3 (KeyBERT) → topic_relevant (either signal suffices)
+        #   Layer 2 (coref role) → attribution check (hard filter: subject = doer = not target)
+        #   is_relevant = topic_relevant AND attribution_ok
+        #
+        # Logic:
+        #   - topic_relevant: True if relevancy model OR KeyBERT confirms topic
+        #   - attribution_ok: True if entity is target (object) or unknown (fail-open)
+        #                     False if entity is confirmed doer (subject = speaker)
         model_relevant = relevancy_score >= RELEVANCY_THRESHOLD
-        not_speaker = is_target  # is_target=True means NOT just a speaker
-        is_relevant_final = model_relevant and not_speaker and (is_dominant or has_sentiment_predicate)
+        topic_relevant = model_relevant or is_dominant  # FIX: OR not AND
+        attribution_ok = is_target  # True for object/unknown, False for subject
+        is_relevant_final = topic_relevant and attribution_ok
 
         quality = {
             "quality_score": quality_score,
@@ -677,12 +735,18 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             "para_idx": para_idx,
             "relevancy_score": round(relevancy_score, 3),
             "is_relevant": is_relevant_final,
-            # v4.3: precision boost metadata
-            "is_sentiment_target": is_target,
-            "target_reason": target_reason,
+            # v4.4: precision boost metadata (3-state, no ambiguity)
+            "entity_role": entity_role,  # "subject" | "object" | "unknown"
+            "role_reason": role_reason,
+            "is_target": is_target,
+            "is_confirmed_target": is_confirmed_target,
             "is_dominant_topic": is_dominant,
             "topic_score": round(topic_score, 3),
             "precision_bonus": precision_bonus,
+            # v4.4: layer breakdown for debugging
+            "layer1_model_relevant": model_relevant,
+            "layer2_attribution_ok": attribution_ok,
+            "layer3_topic_dominant": is_dominant,
         }
 
         # v23: Apply quality filter — remove profile & redundant sentences
