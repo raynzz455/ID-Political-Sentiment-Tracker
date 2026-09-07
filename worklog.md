@@ -2137,3 +2137,71 @@ FINETUNING READINESS: ✅ READY
 - FT#4/FT#5/FT#6: edge cases guarded
 - RC#3: production OOM prevention (tidak block finetuning di Colab)
 - SF#8: adversarial training errors sekarang visible
+
+---
+Task ID: 68
+Agent: Z.ai Code (main)
+Task: Optimize finetuning script untuk Colab — resume, skip folds, keep-alive, progress tracking.
+
+Work Log:
+- Audit optimisasi untuk Colab, temukan 6 opportunity:
+  1. TIDAK ADA resume from checkpoint (CRITICAL — Colab disconnect recovery)
+  2. TIDAK ADA skip completed folds (CRITICAL — re-run efficiency)
+  3. TIDAK ADA progress tracking ke Drive (monitoring saat tab ditutup)
+  4. Model load 5x per fold (bisa di-cache, tapi complex — defer)
+  5. TIDAK ADA keep-alive anti-disconnect
+  6. save_total_limit=1 (tidak ada safety checkpoint)
+
+- Implementasi 5 optimisasi:
+
+  OPT#1: Resume from checkpoint
+    File: finetune_v4.py:920-930
+    Fitur: trainer.train(resume_from_checkpoint=latest_ckpt)
+    Cari checkpoint-* di output_dir, resume dari yang terbaru
+    Impact: Kalau Colab disconnect di epoch 10/18, run lagi → lanjut dari epoch 10
+
+  OPT#2: Skip completed folds
+    File: finetune_v4.py:680-704
+    Fitur: Check if fold_N/metrics.json exists AND fold in existing kfold_results.json
+    Load existing metrics, skip training
+    Impact: Kalau fold 1-3 sudah selesai, run lagi → skip ke fold 4
+
+  OPT#3: Intermediate results save + Drive copy
+    File: finetune_v4.py:726-752
+    Fitur: Save kfold_results.json setelah setiap fold selesai
+    Copy ke /content/drive/MyDrive/finetuning_progress/ kalau Drive mounted
+    Impact: Progress tersimpan permanent di Drive, bisa monitor dari device lain
+
+  OPT#4: Colab keep-alive anti-disconnect
+    File: finetuning/colab_keepalive.py (NEW)
+    Fitur: Heartbeat setiap 60s + click simulation (anti-idle)
+    Background thread, tidak block main training
+    Impact: Mencegah Colab disconnect setelah 90 menit idle
+
+  OPT#5: Pipeline auto-mount Drive + start keepalive
+    File: colab_complete_pipeline_v4.py:36-70
+    Fitur: step_clone() sekarang mount Drive + start keepalive di background
+    Progress dir: /content/drive/MyDrive/finetuning_progress/
+    Impact: User tidak perlu manual mount, anti-disconnect auto-start
+
+  OPT#6: save_total_limit=2 (dari 1)
+    File: finetune_v4.py:876
+    Fitur: Keep 2 checkpoints instead of 1
+    Impact: Safety margin — kalau checkpoint terbaru corrupt, masih ada 1 sebelumnya
+
+Stage Summary:
+- ✅ 5 optimisasi Colab diimplementasi
+- ✅ Resume from checkpoint: kalau disconnect, lanjut dari epoch terakhir
+- ✅ Skip completed folds: kalau re-run, skip fold yang sudah done
+- ✅ Progress tracking ke Drive: monitor dari device lain
+- ✅ Keep-alive anti-disconnect: mencegah idle timeout
+- ✅ Auto-mount Drive + start keepalive di pipeline
+- ✅ Semua syntax check lulus
+- Catatan: Model cache antar fold di-defer (complex, ROI rendah)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+EXPECTED IMPACT:
+- Colab disconnect recovery: dari "ulang dari awal" → "lanjut dari checkpoint"
+- Re-run efficiency: dari "5 fold ulang" → "skip completed, only run missing"
+- Monitoring: dari "tidak tahu progress" → "cek Drive untuk status"
+- Anti-disconnect: dari "90 menit timeout" → "keep-alive + click simulation"

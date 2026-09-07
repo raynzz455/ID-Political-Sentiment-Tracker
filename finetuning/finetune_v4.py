@@ -663,8 +663,46 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
     cfg = TASK_CFG[task]
     fold_results = []
     import gc
+    out_dir = resolve_out_dir(cfg)
+    # OPT v4.5: Load existing kfold_results.json if present (resume support).
+    # If Colab disconnects mid-K-fold, re-running will skip completed folds.
+    kfold_results_path = out_dir / "kfold_results.json"
+    if kfold_results_path.exists():
+        try:
+            existing = json.load(open(kfold_results_path))
+            existing_folds = existing.get("fold_results", [])
+            if existing_folds:
+                print(f"  📂 Found existing kfold_results.json with {len(existing_folds)} completed folds")
+                fold_results = existing_folds
+        except Exception as e:
+            logger.warning(f"Could not load existing kfold_results.json: {e}")
+
     for fold, (train_idx, val_idx) in enumerate(splits):
         print(f"\n--- Fold {fold+1}/{k} ---")
+
+        # OPT v4.5: Skip if fold already completed (resume support for Colab).
+        # Checks if fold_N/metrics.json exists AND fold number already in results.
+        fold_num = fold + 1
+        fold_dir = out_dir / f"fold_{fold_num}"
+        already_done = any(r.get("fold") == fold_num for r in fold_results)
+        if already_done and fold_dir.exists() and (fold_dir / "metrics.json").exists():
+            print(f"  ✅ Fold {fold_num} already completed — skipping (resume)")
+            # Load existing metrics
+            try:
+                existing_metrics = json.load(open(fold_dir / "metrics.json"))
+                fold_results = [r for r in fold_results if r.get("fold") != fold_num]
+                fold_results.append({
+                    "fold": fold_num,
+                    "accuracy": float(existing_metrics.get("val_metrics", {}).get("val_accuracy", 0)),
+                    "macro_f1": float(existing_metrics.get("val_metrics", {}).get("val_macro_f1", 0)),
+                    "weighted_f1": float(existing_metrics.get("val_metrics", {}).get("val_weighted_f1", 0)),
+                    "temperature": existing_metrics.get("temperature", 1.0),
+                    "saved_to": str(fold_dir),
+                })
+            except Exception as e:
+                logger.warning(f"Could not load existing fold_{fold_num} metrics: {e}")
+            continue
+
         train_rows = [all_rows[i] for i in train_idx]
         val_rows = [all_rows[i] for i in val_idx]
 
@@ -684,6 +722,34 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
         metrics["fold"] = fold + 1
         fold_results.append(metrics)
         print(f"  metrics: {metrics}")
+
+        # OPT v4.5: Save intermediate kfold_results.json after each fold.
+        # If Colab disconnects, completed folds are preserved on disk.
+        try:
+            # Remove old entry for this fold (if resuming)
+            fold_results_clean = [r for r in fold_results if r.get("fold") != fold + 1]
+            fold_results_clean.append(metrics)
+            fold_results = fold_results_clean
+            intermediate = {
+                "k": k, "task": task, "fold_results": fold_results,
+                "folds": fold_results,
+                "completed_folds": len(fold_results),
+                "total_folds": k,
+                "status": "in_progress" if len(fold_results) < k else "complete",
+            }
+            with open(out_dir / "kfold_results.json", "w") as f:
+                json.dump(intermediate, f, indent=2)
+            print(f"  💾 Saved intermediate results ({len(fold_results)}/{k} folds)")
+
+            # OPT v4.5: Copy to Google Drive if mounted (Colab persistence)
+            drive_backup = Path("/content/drive/MyDrive/finetuning_progress")
+            if drive_backup.exists():
+                import shutil
+                task_drive_dir = drive_backup / cfg["out_dir"].split("/")[-1]
+                task_drive_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(out_dir / "kfold_results.json", task_drive_dir / "kfold_results.json")
+        except Exception as e:
+            logger.warning(f"Could not save intermediate results: {e}")
 
         # FIX H2: Clear GPU memory AFTER EACH fold (was outside the loop before)
         gc.collect()
@@ -807,7 +873,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
         fp16=use_fp16,                                  # v4.2: precision auto
         bf16=use_bf16,                                  # v4.2: bf16 for Ampere+
         save_strategy="epoch",
-        save_total_limit=1,
+        save_total_limit=2,  # OPT v4.5: keep 2 checkpoints for resume safety
         load_best_model_at_end=True,
         metric_for_best_model="eval_macro_f1",
         greater_is_better=True,
@@ -851,7 +917,17 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
              if H.SWA_ENABLED else []),
     )
 
-    trainer.train()
+    # OPT v4.5: Resume from checkpoint if available (Colab disconnect recovery).
+    # Look for latest checkpoint in output_dir and resume from there.
+    resume_ckpt = None
+    if out_suffix:  # only for K-fold mode (fold_N dirs)
+        checkpoint_pattern = list(out_dir.glob("checkpoint-*"))
+        if checkpoint_pattern:
+            latest_ckpt = max(checkpoint_pattern, key=lambda p: int(p.name.split("-")[1]))
+            resume_ckpt = str(latest_ckpt)
+            print(f"  🔄 Resuming from checkpoint: {latest_ckpt.name}")
+
+    trainer.train(resume_from_checkpoint=resume_ckpt)
     # v3.1: Clear cache before eval to prevent OOM
     import gc
     gc.collect()

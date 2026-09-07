@@ -30,11 +30,36 @@ def run(cmd, cwd=None, check=True):
 
 def step_install():
     print("\n=== STEP 1: Install ===")
-    run("pip install -q transformers peft scikit-learn accelerate sentencepiece")
+    run("pip install -q transformers peft scikit-learn accelerate sentencepiece keybert huggingface_hub")
     run('python -c "import torch; print(f\'CUDA: {torch.cuda.is_available()}\')"')
 
 def step_clone():
-    print("\n=== STEP 2: Clone ===")
+    print("\n=== STEP 2: Clone + Mount Drive ===")
+    # OPT v4.5: Mount Google Drive early for progress tracking + resume support
+    try:
+        from google.colab import drive
+        drive.mount("/content/drive")
+        # Create progress dir for keepalive + intermediate results
+        progress_dir = Path("/content/drive/MyDrive/finetuning_progress")
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        print("✅ Google Drive mounted — progress will be saved to Drive")
+    except ImportError:
+        print("⚠️  Not in Colab — Drive mount skipped")
+    except Exception as e:
+        print(f"⚠️  Drive mount failed: {e}")
+
+    # OPT v4.5: Start keep-alive anti-disconnect
+    try:
+        keepalive_script = Path(REPO_DIR) / "finetuning" / "colab_keepalive.py"
+        if keepalive_script.exists():
+            # Start keepalive in background
+            import subprocess
+            subprocess.Popen(["python", str(keepalive_script)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("✅ Keep-alive started (anti-disconnect)")
+    except Exception:
+        pass
+
     if not Path(REPO_DIR).exists():
         run(f"git clone {REPO_URL} {REPO_DIR}")
     else:
