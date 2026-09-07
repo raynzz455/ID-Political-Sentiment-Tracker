@@ -106,19 +106,59 @@ def step_upload():
     token = os.environ.get(HF_TOKEN_ENV)
     if not token:
         print(f"{HF_TOKEN_ENV} not set. Skipping upload."); return
-    run(f"huggingface-cli login --token {token}")
+
+    # FIX v4.6: Use Python API instead of deprecated huggingface-cli
+    # huggingface-cli is deprecated in huggingface_hub >= 1.28.0
+    # Python API (HfApi) is stable and version-independent
+    try:
+        from huggingface_hub import HfApi, login
+        api = HfApi(token=token)
+        whoami = api.whoami()
+        print(f"✅ Logged in as: {whoami.get('name', 'unknown')}")
+    except Exception as e:
+        print(f"❌ HF login failed: {e}")
+        return
+
     for task, hf_model, dir_name in [
         ("sentiment", HF_MODEL_SENTIMENT, "sentiment_v4"),
         ("relevancy", HF_MODEL_RELEVANCY, "relevancy_v4"),
     ]:
         kf = Path(REPO_DIR)/"finetuning"/"runs"/dir_name/"kfold_results.json"
-        if kf.exists():
-            kfold = json.load(open(kf))
-            best = max(kfold.get("fold_results",[]), key=lambda x: x.get("macro_f1",0))
-            fold_dir = Path(REPO_DIR)/"finetuning"/"runs"/dir_name/f"fold_{best.get('fold',1)}"
-            if fold_dir.exists():
-                print(f"Uploading {task} (fold {best.get('fold')}, f1={best.get('macro_f1',0):.4f})")
-                run(f"huggingface-cli upload {hf_model} {fold_dir} --token {token}")
+        if not kf.exists():
+            print(f"⚠️  No kfold_results.json for {task}")
+            continue
+
+        kfold = json.load(open(kf))
+        fold_results = kfold.get("fold_results", kfold.get("folds", []))
+        if not fold_results:
+            print(f"⚠️  No fold results for {task}")
+            continue
+
+        best = max(fold_results, key=lambda x: x.get("macro_f1", 0))
+        best_fold = best.get("fold", 1)
+        fold_dir = Path(REPO_DIR)/"finetuning"/"runs"/dir_name/f"fold_{best_fold}"
+
+        if not fold_dir.exists():
+            print(f"⚠️  Fold dir not found: {fold_dir}")
+            continue
+
+        print(f"\nUploading {task} (fold {best_fold}, f1={best.get('macro_f1',0):.4f})...")
+        print(f"  Source: {fold_dir}")
+        print(f"  Target: huggingface.co/{hf_model}")
+
+        try:
+            # FIX v4.6: Use HfApi.upload_folder (stable Python API)
+            api.upload_folder(
+                folder_path=str(fold_dir),
+                repo_id=hf_model,
+                repo_type="model",
+                token=token,
+            )
+            print(f"  ✅ Uploaded successfully!")
+            print(f"     View at: https://huggingface.co/{hf_model}")
+        except Exception as e:
+            print(f"  ❌ Upload failed: {e}")
+            print(f"     Manual: python backup_to_gdrive.py --upload-hf --hf-token {token}")
 
 def step_summary():
     print("\n=== COMPLETE ===")

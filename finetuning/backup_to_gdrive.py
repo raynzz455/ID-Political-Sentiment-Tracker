@@ -172,7 +172,11 @@ def find_best_folds() -> dict:
 
 
 def upload_to_huggingface(hf_token: str, best_folds: dict):
-    """Upload best fold for each task to HuggingFace Hub."""
+    """Upload best fold for each task to HuggingFace Hub.
+
+    FIX v4.6: Use Python API (HfApi) instead of deprecated huggingface-cli.
+    huggingface-cli is deprecated in huggingface_hub >= 1.28.0.
+    """
     print_banner("UPLOAD TO HUGGINGFACE HUB")
 
     if not hf_token:
@@ -180,16 +184,18 @@ def upload_to_huggingface(hf_token: str, best_folds: dict):
         print("   Get token at: https://huggingface.co/settings/tokens")
         return
 
-    # Login
-    print("Logging in to HuggingFace...")
-    r = subprocess.run(
-        ["huggingface-cli", "login", "--token", hf_token],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0:
-        print(f"❌ Login failed: {r.stderr}")
+    # Use Python API (stable, version-independent)
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=hf_token)
+        whoami = api.whoami()
+        print(f"✅ Logged in as: {whoami.get('name', 'unknown')}")
+    except ImportError:
+        print("❌ huggingface_hub not installed. Run: pip install huggingface_hub")
         return
-    print("✅ Logged in")
+    except Exception as e:
+        print(f"❌ Login failed: {e}")
+        return
 
     for task, info in best_folds.items():
         fold_dir = info["fold_dir"]
@@ -202,15 +208,21 @@ def upload_to_huggingface(hf_token: str, best_folds: dict):
         print(f"  Source: {fold_dir}")
         print(f"  Target: huggingface.co/{hf_model}")
 
-        cmd = ["huggingface-cli", "upload", hf_model, str(fold_dir),
-               "--token", hf_token]
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        if r.returncode == 0:
-            print(f"  ✅ Uploaded successfully")
+        try:
+            api.upload_folder(
+                folder_path=str(fold_dir),
+                repo_id=hf_model,
+                repo_type="model",
+                token=hf_token,
+            )
+            print(f"  ✅ Uploaded successfully!")
             print(f"     View at: https://huggingface.co/{hf_model}")
-        else:
-            print(f"  ❌ Upload failed: {r.stderr}")
-            print(f"     Try manual: huggingface-cli upload {hf_model} {fold_dir} --token YOUR_TOKEN")
+        except Exception as e:
+            print(f"  ❌ Upload failed: {e}")
+            print(f"     Manual Python:")
+            print(f"       from huggingface_hub import HfApi")
+            print(f"       api = HfApi(token='{hf_token[:10]}...')")
+            print(f"       api.upload_folder(folder_path='{fold_dir}', repo_id='{hf_model}', repo_type='model')")
 
 
 def create_zip_download():
