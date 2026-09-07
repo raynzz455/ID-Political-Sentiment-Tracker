@@ -135,13 +135,25 @@ def get_relevancy_pipeline():
 
 @torch.no_grad()
 def check_relevancy(entity_name: str, context_text: str) -> float:
-    """Run relevancy model on (entity, context) pair. Returns prob[relevant]."""
+    """Run relevancy model on (entity, context) pair. Returns prob[relevant].
+
+    BUG N6 FIX: normalize entity_name ke format "Tentang {entity}" untuk
+    match dengan training v4. Sebelumnya kirim entity_name langsung.
+    """
     pipe = get_relevancy_pipeline()
     if pipe is None:
         return 1.0  # if model unavailable, don't filter (fail-open)
     tok, model = pipe
     device = next(model.parameters()).device
-    enc = tok(entity_name, context_text, truncation=True, max_length=256, return_tensors="pt").to(device)
+    # BUG N6 FIX: normalize premise ke format training v4
+    # Training: premise = "Tentang Erick Thohir"
+    # Production: entity_name = "Erick Thohir" → normalize → "Tentang Erick Thohir"
+    import os as _os
+    prefix = _os.environ.get("NLP_PREMISE_PREFIX", "Tentang ")
+    premise = entity_name
+    if prefix and not entity_name.strip().lower().startswith(prefix.strip().lower()):
+        premise = f"{prefix}{entity_name.strip()}"
+    enc = tok(premise, context_text, truncation=True, max_length=256, return_tensors="pt").to(device)
     logits = model(**enc).logits
     probs = torch.softmax(logits, dim=-1)[0]
     # find "relevant" label index

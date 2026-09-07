@@ -81,6 +81,41 @@ def normalize_label(raw_label: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# PREMISE FORMAT NORMALIZATION (BUG N6 FIX — CRITICAL)
+# ─────────────────────────────────────────────────────────────
+# Training v4 pakai premise = "Tentang {entity}" (dari dataset.entity_premise).
+# Production sebelumnya kirim entity_name langsung = "{entity}" (TANPA prefix).
+# Mismatch ini menurunkan akurasi v4 models di production karena model dilatih
+# dengan format "Tentang Erick Thohir" tapi menerima "Erick Thohir" saja.
+#
+# Fix: normalize context ke format "Tentang {entity}" sebelum kirim ke model.
+# Env var NLP_PREMISE_PREFIX controls:
+#   - "Tentang " (default) → match v4 training format
+#   - "" (empty)           → raw entity_name (untuk base model apriandito)
+PREMISE_PREFIX = _os.environ.get("NLP_PREMISE_PREFIX", "Tentang ")
+
+
+def normalize_premise(context: Optional[str]) -> Optional[str]:
+    """Normalize context ke format yang sama dengan training v4.
+
+    Training v4: premise = "Tentang Erick Thohir"
+    Production harus match: context → "Tentang Erick Thohir"
+
+    Jika context sudah punya prefix "Tentang ", tidak di-double.
+    Jika context kosong/None, return apa adanya.
+    """
+    if not context or not context.strip():
+        return context
+    # Jika sudah ada prefix "Tentang " (atau prefix lain), jangan double
+    if PREMISE_PREFIX and context.strip().lower().startswith(PREMISE_PREFIX.strip().lower()):
+        return context
+    # Tambahkan prefix
+    if PREMISE_PREFIX:
+        return f"{PREMISE_PREFIX}{context.strip()}"
+    return context
+
+
+# ─────────────────────────────────────────────────────────────
 # CONTINUOUS METRICS CALCULATION
 # ─────────────────────────────────────────────────────────────
 
@@ -232,15 +267,25 @@ class SentimentPipeline:
         call when the caller has ALREADY confirmed relevancy (e.g.,
         context_worker pre-filtered via is_relevant=True in metadata).
         This saves ~0.5s per span (avoids running the same model twice).
+
+        BUG N6 FIX (CRITICAL): context dinormalize ke format "Tentang {entity}"
+        untuk match dengan training v4. Sebelumnya production kirim entity_name
+        langsung (mis. "Erick Thohir") padahal training pakai "Tentang Erick Thohir".
         """
         if not text or not text.strip():
             return GatedResult(False, 0.0, None, None, None)
 
-        # FALLBACK PATH (Document-level)
+        # FALLBACK PATH (Document-level) — no context, no normalization needed
         if context is None:
             label, conf, scores = self.fallback.predict(text)
             polarity, entropy = calculate_continuous_metrics(scores)
             return GatedResult(True, 1.0, label, conf, scores, polarity, entropy)
+
+        # BUG N6 FIX: normalize context ke format training v4
+        # Training: premise = "Tentang Erick Thohir"
+        # Production sebelumnya: context = "Erick Thohir" (MISMATCH!)
+        # Sekarang: context = normalize_premise("Erick Thohir") = "Tentang Erick Thohir"
+        context = normalize_premise(context)
 
         # GATED PATH (Entity-level)
         # BUG N3 FIX: skip relevancy check if caller already confirmed it

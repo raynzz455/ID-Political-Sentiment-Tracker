@@ -1538,3 +1538,83 @@ Stage Summary:
 - ✅ BUG N3: relevancy model tidak lagi dijalankan 2x (hemat ~0.5s/span)
 - ✅ Workflow end-to-end connected, field names konsisten antar worker
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 60
+Agent: Z.ai Code (main)
+Task: Audit relevancy gate di nlp_worker — cek format input dari context ke model.
+
+Work Log:
+- User concern: "output dari layer sebelumnya adalah entity_mention dan context,
+  bukan entity_mention dan full_text" — apakah relevancy gate benar?
+
+- Step 1: Trace data flow training vs production:
+  TRAINING v4 (finetune_v4.py):
+    Dataset fields:
+      entity_name  = "Erick Thohir"
+      entity_premise = "Tentang Erick Thohir"   ← PAKAI prefix "Tentang "
+    Training pair:
+      premise    = entity_premise = "Tentang Erick Thohir"
+      hypothesis = text (context_text)
+    → Model dilatih dengan format ("Tentang Erick Thohir", context_text)
+
+  PRODUCTION (nlp_worker → sentiment_model.py):
+    nlp_worker.py line 135:
+      context = entity_name = "Erick Thohir"    ← TANPA prefix!
+      predict_gated(text=span_text, context=entity_name)
+    → predict_gated calls relevancy.check("Erick Thohir", context_text)
+    → MISMATCH dengan training format!
+
+- Step 2: Identifikasi BUG N6 (CRITICAL — Training-Production Format Mismatch):
+  - Training v4: premise = "Tentang {entity}"
+  - Production: context = "{entity}" (tanpa prefix)
+  - Impact: v4 models akan underperform di production karena format mismatch
+  - Model dilatih dengan format "Tentang Erick Thohir" tapi menerima "Erick Thohir"
+
+- Step 3: Git state issue — local repo ter-rollback ke commit lama (ced8917)
+  - Remote origin/main masih punya semua fix (17de9ca)
+  - FIX: git stash → git fetch → git reset --hard origin/main
+  - Semua fix v4.1, v4.2, bug fixes restored ✅
+
+- Step 4: Implementasi fix BUG N6:
+  a. Tambah normalize_premise() function di sentiment_model.py
+     - Normalize context ke format "Tentang {entity}" (match training v4)
+     - Jika context sudah punya prefix, tidak di-double
+     - Env var NLP_PREMISE_PREFIX controls (default "Tentang ", empty = raw)
+  b. Apply normalize_premise() di predict_gated() sebelum kirim ke relevancy/sentiment
+  c. Fix context_worker.py check_relevancy() juga pakai format yang sama
+
+- Step 5: Test normalize_premise logic (6 test cases):
+  ✅ "Erick Thohir" → "Tentang Erick Thohir"
+  ✅ "Tentang Erick Thohir" → "Tentang Erick Thohir" (no double prefix)
+  ✅ "Joko Widodo" → "Tentang Joko Widodo"
+  ✅ "" → "" (empty preserved)
+  ✅ None → None
+  ✅ "Prabowo Subianto" → "Tentang Prabowo Subianto"
+  ✅ NLP_PREMISE_PREFIX="" → "Erick Thohir" (raw, untuk base model)
+
+- Step 6: Syntax check — kedua file lulus ✅
+
+Stage Summary:
+- ✅ BUG N6 CRITICAL ditemukan dan diperbaiki
+- ✅ Training-production format mismatch resolved
+- ✅ normalize_premise() applied di sentiment_model.py + context_worker.py
+- ✅ Env var NLP_PREMISE_PREFIX untuk backward compat dengan base model
+- ✅ Git state restored (local was rolled back, fixed via reset to origin/main)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+WORKFLOW RELEVANCY GATE (SETELAH FIX):
+  context_worker:
+    entity_name = "Erick Thohir"
+    → normalize_premise("Erick Thohir") = "Tentang Erick Thohir"
+    → relevancy.check("Tentang Erick Thohir", context_text) ✅ MATCH training
+    → store is_relevant in metadata
+
+  nlp_worker:
+    entity_name = "Erick Thohir"
+    → predict_gated(text=span_text, context=entity_name)
+    → predict_gated normalizes: context = "Tentang Erick Thohir"
+    → relevancy.check("Tentang Erick Thohir", span_text) ✅ MATCH training
+    → sentiment.predict("Tentang Erick Thohir", span_text) ✅ MATCH training
+
+Sekarang production format SAMA PERSIS dengan training v4 format.
