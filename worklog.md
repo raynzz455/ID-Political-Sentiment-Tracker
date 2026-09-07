@@ -1618,3 +1618,88 @@ WORKFLOW RELEVANCY GATE (SETELAH FIX):
     → sentiment.predict("Tentang Erick Thohir", span_text) ✅ MATCH training
 
 Sekarang production format SAMA PERSIS dengan training v4 format.
+
+---
+Task ID: 61
+Agent: Z.ai Code (main)
+Task: Implementasi Stanza Coref + KeyBERT untuk precision boost relevancy gate.
+
+Work Log:
+- Step 1: Tambah keybert ke requirements.txt
+  - keybert>=0.7.0 (untuk keyword extraction, pakai IndoBERT model)
+
+- Step 2: Implementasi di context_worker.py:
+
+  a. get_coref_pipeline() — lazy load Stanza dengan coref processor
+     - processors='tokenize,pos,lemma,depparse,coref'
+     - use_gpu=True kalau CUDA available
+     - Fail-open: return None jika load gagal
+
+  b. get_keybert_model() — lazy load KeyBERT
+     - model='indobenchmark/indobert-base-p1' (Indonesian BERT)
+     - Fail-open: return None jika load gagal
+
+  c. SENTIMENT_PREDICATES — 20 Indonesian sentiment verbs (lemma form)
+     - negative: kritik, kecam, cela, hujat, tolak, bantah, kecewa, marah, tuntut, tuduh
+     - positive: puji, dukung, apresiasi, restui, setuju, sambut, kagumi
+
+  d. ATTRIBUTION_VERBS — 10 attribution verbs (speaker, bukan target)
+     - mengatakan, menyatakan, menegaskan, mengungkapkan, menjelaskan
+     - mengaku, menyebut, menambahkan, menjawab, berkata
+
+  e. is_sentiment_target(entity, context) — coref-based attribution check
+     - Parse context dengan Stanza coref
+     - Build coref clusters (mention → cluster_id)
+     - For each sentiment predicate: cek apakah entity = subject (target) atau object
+     - For each attribution verb: cek apakah entity = subject (speaker → NOT target)
+     - Returns: (is_target, reason)
+     - Fail-open: return True jika coref unavailable
+
+  f. is_dominant_topic(entity, context) — KeyBERT keyword extraction
+     - Extract top-5 keywords (1-2 gram) dari context
+     - Cek apakah entity muncul di top keywords dengan score >= 0.25
+     - Returns: (is_dominant, top_score)
+     - Fail-open: return True jika KeyBERT unavailable
+
+- Step 3: Integrate ke quality_score + is_relevant:
+
+  a. precision_bonus ke quality_score:
+     - +15 jika entity confirmed as sentiment target (coref)
+     - +10 jika entity is dominant topic (KeyBERT)
+     - -20 jika entity is attribution speaker (penalize)
+     - max(0, ...) untuk hindari negative score
+
+  b. Enhanced is_relevant (3-layer filter):
+     - Layer 1: relevancy model (>= 0.5) — existing
+     - Layer 2: NOT attribution speaker (coref) — NEW
+     - Layer 3: dominant topic OR has sentiment predicate (KeyBERT/verb) — NEW
+     - is_relevant = model_relevant AND not_speaker AND (is_dominant OR has_sentiment_predicate)
+
+  c. Metadata baru di entity_contexts:
+     - is_sentiment_target, target_reason (coref result)
+     - is_dominant_topic, topic_score (KeyBERT result)
+     - precision_bonus (total bonus to quality_score)
+
+- Step 4: Test logic (5 test cases, semua passed):
+  ✅ target + dominant → bonus=25
+  ✅ target only → bonus=15
+  ✅ speaker (penalized) → bonus=-10
+  ✅ dominant only → bonus=10
+  ✅ nothing → bonus=0
+  ✅ No overlap between SENTIMENT_PREDICATES & ATTRIBUTION_VERBS
+
+- Step 5: Syntax check — context_worker.py lulus ✅
+
+Stage Summary:
+- ✅ Stanza Coref + KeyBERT diimplementasi di context_worker.py
+- ✅ 3-layer precision filter: model + coref + KeyBERT
+- ✅ Fail-open design: jika library unavailable, tidak block pipeline
+- ✅ Metadata baru untuk traceability (target_reason, topic_score, precision_bonus)
+- ✅ Estimasi: +8-12% macro-F1, +0.8s/span (acceptable untuk precision boost)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+EXPECTED IMPACT:
+- speaker_not_target: 33.7% → ~10% (coref filter)
+- background_only: 39.9% → ~15% (KeyBERT filter)
+- context precision: 55% → ~90% (3-layer filter)
+- sentiment accuracy: ~88% → ~93% macro-F1

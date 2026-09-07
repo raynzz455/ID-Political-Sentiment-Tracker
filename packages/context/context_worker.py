@@ -65,6 +65,56 @@ except Exception as e:
     logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
     NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False, batch_size=32)
 
+# v4.3: Stanza Coref Pipeline untuk attribution check
+# Coref resolver — untuk filter "speaker_not_target" cases
+# (mis. "Erick mengatakan X" → Erick = speaker, bukan target sentiment)
+NLP_COREF = None
+def get_coref_pipeline():
+    global NLP_COREF
+    if NLP_COREF is None:
+        try:
+            logger.info("Memuat Stanza Coref Pipeline (tokenize,pos,lemma,depparse,coref)...")
+            use_gpu = torch.cuda.is_available()
+            NLP_COREF = stanza.Pipeline(
+                'id',
+                processors='tokenize,pos,lemma,depparse,coref',
+                verbose=False, use_gpu=use_gpu, batch_size=16
+            )
+        except Exception as e:
+            logger.warning(f"Coref pipeline load failed (attribution check disabled): {e}")
+            NLP_COREF = None
+    return NLP_COREF
+
+# v4.3: KeyBERT untuk topic dominance check
+# Cek apakah entity adalah topik utama context (bukan cuma disebut)
+_KW_MODEL = None
+def get_keybert_model():
+    global _KW_MODEL
+    if _KW_MODEL is None:
+        try:
+            from keybert import KeyBERT
+            logger.info("Memuat KeyBERT model (indobenchmark/indobert-base-p1)...")
+            _KW_MODEL = KeyBERT(model="indobenchmark/indobert-base-p1")
+        except Exception as e:
+            logger.warning(f"KeyBERT load failed (topic check disabled): {e}")
+            _KW_MODEL = None
+    return _KW_MODEL
+
+# v4.3: Indonesian sentiment predicates untuk coref attribution
+SENTIMENT_PREDICATES = {
+    # negative
+    "kritik", "kecam", "cela", "hujat", "camuk", "tolak", "bantah", "tolak",
+    "kecewa", "marah", "tuntut", "tuduh", "lantik", "gugat",
+    # positive
+    "puji", "dukung", "apresiasi", "restui", "setuju", "sambut", "kagumi",
+}
+
+# v4.3: Attribution verbs (speaker, bukan target) — harus DIFILTER
+ATTRIBUTION_VERBS = {
+    "mengatakan", "menyatakan", "menegaskan", "mengungkapkan", "menjelaskan",
+    "mengaku", "menyebut", "menambahkan", "menjawab", "berkata",
+}
+
 # v18: Load relevancy model for pre-filtering
 RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
 RELEVANCY_THRESHOLD = 0.5
@@ -166,6 +216,121 @@ def check_relevancy(entity_name: str, context_text: str) -> float:
     if rel_idx is None:
         rel_idx = 1
     return float(probs[rel_idx])
+
+
+# ---------------------------------------------------------------------------
+# v4.3: PRECISION BOOST — Coreference + Topic Dominance
+# ---------------------------------------------------------------------------
+# Dua function ini meningkatkan presisi relevancy gate:
+#   1. is_sentiment_target() — coref-based attribution check
+#      Filter "speaker_not_target" (mis. "Erick mengatakan X" → Erick bukan target)
+#   2. is_dominant_topic() — KeyBERT keyword extraction
+#      Filter "background_only" (entity disebut tapi bukan topik utama)
+# ---------------------------------------------------------------------------
+
+def is_sentiment_target(entity_name: str, context_text: str) -> tuple[bool, str]:
+    """Cek apakah entity adalah TARGET dari sentiment (bukan speaker).
+
+    Uses Stanza coreference resolution untuk trace:
+      "Erick Thohir mengkritik kebijakan itu"
+       ↑ subject = Erick → target of "mengkritik" → IS sentiment target ✅
+
+      "Erick Thohir mengatakan kebijakan itu kontroversial"
+       ↑ subject = Erick, tapi verb = "mengatakan" (attribution) → NOT target ❌
+       (sentiment adalah tentang "kebijakan", bukan tentang Erick)
+
+    Returns:
+        (is_target, reason): is_target=True jika entity = sentiment target
+    """
+    nlp_coref = get_coref_pipeline()
+    if nlp_coref is None:
+        return True, "coref_unavailable"  # fail-open: assume target
+
+    try:
+        doc = nlp_coref(context_text)
+        entity_lower = entity_name.lower().strip()
+
+        # Build coref clusters: map each mention → cluster id
+        cluster_map = {}  # mention_text → cluster_id
+        if hasattr(doc, 'coref') and doc.coref:
+            for cid, cluster in enumerate(doc.coref):
+                for mention in cluster.mentions:
+                    cluster_map[mention.text.lower()] = cid
+
+        for sent in doc.sentences:
+            # Build word lookup
+            words = sent.words
+            for word in words:
+                lemma = word.lemma.lower() if word.lemma else ""
+
+                # Case 1: sentiment predicate (kritik, puji, dll)
+                if lemma in SENTIMENT_PREDICATES:
+                    # Find subject of this verb
+                    for w in words:
+                        if w.deprel in ("nsubj", "nsubj:pass") and w.head == word.id:
+                            subj_text = w.text.lower()
+                            # Check if subject = entity (via coref or direct match)
+                            if (entity_lower in subj_text or
+                                subj_text in entity_lower or
+                                (subj_text in cluster_map and
+                                 any(entity_lower in m for m in cluster_map if cluster_map[m] == cluster_map[subj_text]))):
+                                return True, f"sentiment_subject({lemma})"
+                    # Entity = object of sentiment verb
+                    for w in words:
+                        if w.deprel in ("obj", "obl") and w.head == word.id:
+                            if entity_lower in w.text.lower():
+                                return True, f"sentiment_object({lemma})"
+
+                # Case 2: attribution verb (mengatakan, menyatakan) → entity = speaker
+                if lemma in ATTRIBUTION_VERBS:
+                    for w in words:
+                        if w.deprel == "nsubj" and w.head == word.id:
+                            if entity_lower in w.text.lower():
+                                return False, f"attribution_speaker({lemma})"
+
+        return True, "no_predicate_found"  # fail-open
+    except Exception as e:
+        logger.debug(f"Coref check error: {e}")
+        return True, "coref_error"  # fail-open
+
+
+def is_dominant_topic(entity_name: str, context_text: str,
+                      top_n: int = 5, threshold: float = 0.25) -> tuple[bool, float]:
+    """Cek apakah entity adalah topik utama context (bukan cuma disebut).
+
+    Uses KeyBERT untuk extract keywords, lalu cek apakah entity muncul
+    di top-N keywords dengan score >= threshold.
+
+    Returns:
+        (is_dominant, top_score): is_dominant=True jika entity topik utama
+    """
+    kw_model = get_keybert_model()
+    if kw_model is None:
+        return True, 1.0  # fail-open: assume dominant
+
+    try:
+        entity_lower = entity_name.lower().strip()
+        # Extract keywords (1-2 gram untuk capture "Erick Thohir")
+        keywords = kw_model.extract_keywords(
+            context_text,
+            keyphrase_ngram_range=(1, 2),
+            top_n=top_n,
+            stop_words=None  # Indonesian not in default stop words
+        )
+
+        if not keywords:
+            return True, 0.5  # fail-open
+
+        # Cek apakah entity muncul di top keywords
+        for kw_text, kw_score in keywords:
+            if entity_lower in kw_text.lower() or kw_text.lower() in entity_lower:
+                return kw_score >= threshold, kw_score
+
+        # Entity tidak ada di top-N keywords → not dominant
+        return False, 0.0
+    except Exception as e:
+        logger.debug(f"KeyBERT check error: {e}")
+        return True, 0.5  # fail-open
 
 # v18.1: EXPANDED verb sets (v14.2 lemma forms, 70.7% coverage).
 # IMPORTANT: Stanza returns ROOT lemmas (dikritik→kritik, mengecam→kecam, memuji→puji).
@@ -464,8 +629,38 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         exclusivity_score = 10 if not is_crowded else (5 if used_local_clause else 0)
         quality_score = attr_score + actor_score + pos_score + exclusivity_score
 
+        # v4.3: Coref-based attribution check
+        # Filter "speaker_not_target": entity = speaker (attribution) → NOT sentiment target
+        is_target, target_reason = is_sentiment_target(entity_name, ctx_text)
+
+        # v4.3: KeyBERT topic dominance check
+        # Filter "background_only": entity disebut tapi bukan topik utama
+        is_dominant, topic_score = is_dominant_topic(entity_name, ctx_text)
+
+        # v4.3: Precision boost to quality_score
+        # +15 if entity is confirmed sentiment target (coref)
+        # +10 if entity is dominant topic (KeyBERT)
+        # -20 if entity is attribution speaker (filtered out)
+        precision_bonus = 0
+        if not is_target and "attribution" in target_reason:
+            precision_bonus -= 20  # penalize: entity = speaker, not target
+        elif is_target and "sentiment" in target_reason:
+            precision_bonus += 15  # boost: entity confirmed as sentiment target
+        if is_dominant:
+            precision_bonus += 10  # boost: entity is dominant topic
+        quality_score = max(0, quality_score + precision_bonus)
+
         # v18: relevancy pre-filter
         relevancy_score = check_relevancy(entity_name, ctx_text)
+
+        # v4.3: Enhanced is_relevant — combine relevancy model + coref + KeyBERT
+        # Context is relevant ONLY if:
+        #   1. Relevancy model says relevant (>= 0.5) AND
+        #   2. Entity is NOT attribution speaker (coref check) AND
+        #   3. Entity is dominant topic OR sentiment target (KeyBERT/coref)
+        model_relevant = relevancy_score >= RELEVANCY_THRESHOLD
+        not_speaker = is_target  # is_target=True means NOT just a speaker
+        is_relevant_final = model_relevant and not_speaker and (is_dominant or has_sentiment_predicate)
 
         quality = {
             "quality_score": quality_score,
@@ -481,7 +676,13 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
             "used_local_clause": used_local_clause,
             "para_idx": para_idx,
             "relevancy_score": round(relevancy_score, 3),
-            "is_relevant": relevancy_score >= RELEVANCY_THRESHOLD,
+            "is_relevant": is_relevant_final,
+            # v4.3: precision boost metadata
+            "is_sentiment_target": is_target,
+            "target_reason": target_reason,
+            "is_dominant_topic": is_dominant,
+            "topic_score": round(topic_score, 3),
+            "precision_bonus": precision_bonus,
         }
 
         # v23: Apply quality filter — remove profile & redundant sentences
