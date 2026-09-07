@@ -233,7 +233,7 @@ def create_zip_download():
         files.download(str(zip_path))
         print("✅ Download started — check your browser downloads")
     except ImportError:
-        print("⚠️  Not in Colab — zip saved at {zip_path}, download manually")
+        print(f"⚠️  Not in Colab — zip saved at {zip_path}, download manually")  # FIX FT#7: add f-string
     except Exception as e:
         print(f"⚠️  Download trigger failed: {e}")
         print(f"   Zip is at: {zip_path}")

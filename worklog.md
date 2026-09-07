@@ -2058,3 +2058,82 @@ Stage Summary:
 - ✅ shared/db_client: 1 new helper (SF#5) — bulk_update_with_retry()
 - ✅ Semua syntax check lulus
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 66
+Agent: Z.ai Code (main)
+Task: Audit cacat logika final — fix 10 bug (2 CRITICAL, 4 HIGH, 3 MEDIUM, 1 LOW).
+
+Work Log:
+- Audit menyeluruh codebase via sub-agent (finetuning + workers + shared)
+- Temukan 19 bug baru, fix 10 yang critical/high/medium:
+
+  FT#1 (CRITICAL — NameError Crash):
+    File: finetune_v4.py:949
+    Masalah: BUG#25 rename `test_rows` → `_test_rows`, tapi lines 955,958 masih reference `test_rows`
+    Impact: `python finetune_v4.py --task sentiment` (tanpa --kfold) → NameError CRASH
+    Fix: revert `_test_rows` → `test_rows` (lines below need it for logging)
+
+  RC#3 (CRITICAL — Missing Lock):
+    File: context_worker.py:192-208
+    Masalah: get_relevancy_pipeline() tidak punya threading.Lock (missed di RC#1 fix)
+    4 threads bisa simultan load 4x relevancy model (~1.6GB) → OOM crash
+    Fix: tambah _MODEL_LOCK + double-checked locking (sama seperti coref/keybert)
+
+  SF#8 (HIGH — Silent Adversarial Failure):
+    File: finetune_v4.py:500-501
+    Masalah: `except Exception as e: return 0.0` — error captured tapi tidak di-log
+    Adversarial training silently disabled, user thinks it's active
+    Fix: log warning on first failure, track count
+
+  SF#9 (HIGH — Fallback No Error Handling):
+    File: sentiment_model.py:284-287
+    Masalah: fallback.predict() no try/except → exception propagates → infinite retry loop
+    Fix: wrap in try/except, return GatedResult(is_error=True)
+
+  FT#3 (HIGH — Colab Evaluate No-Op):
+    File: colab_complete_pipeline_v4.py:55-61
+    Masalah: evaluate step hanya summarize K-fold JSON, tidak run actual test-set evaluation
+    User tidak lihat confusion matrix, confidence threshold sweep
+    Fix: find best fold, run evaluate_v4.py --run-dir untuk generate evaluation.json
+
+  FT#4 (MEDIUM — Empty Val DS Crash):
+    File: finetune_v4.py:590, v4_all_in_one.py:669
+    Masalah: torch.stack([]) → RuntimeError jika val_ds empty
+    Fix: `if not logits_all: return 1.0` (default temperature)
+
+  FT#5 (MEDIUM — Empty Pool Crash):
+    File: finetune_v4.py:282, v4_all_in_one.py:406
+    Masalah: rng.choice([]) → IndexError jika label has 0 samples
+    Fix: `if not pool: continue` sebelum oversampling loop
+
+  FT#6 (MEDIUM — Insufficient Samples Crash):
+    File: finetune_v4.py:620, v4_all_in_one.py:694
+    Masalah: StratifiedKFold(n_splits=k) requires n >= k → ValueError
+    Fix: check n_rows < k, reduce k or abort with error dict
+
+  FT#7 (LOW — Missing F-String):
+    File: backup_to_gdrive.py:236
+    Masalah: `print("... {zip_path}")` — missing f prefix, prints literal {zip_path}
+    Fix: add f prefix
+
+  EC#11 (LOW — NaN Crash):
+    File: sentiment_model.py:218,232
+    Masalah: probs.index(max(probs)) — if NaN, list.index(nan) raises ValueError
+    Fix: max(range(len(probs)), key=lambda i: probs[i]) — NaN-safe
+
+Stage Summary:
+- ✅ 10 bug diperbaiki (2 CRITICAL, 4 HIGH, 3 MEDIUM, 1 LOW)
+- ✅ FT#1 paling critical: single-fold mode CRASH — FIXED (finetuning siap run)
+- ✅ RC#3: missing lock untuk relevancy model — FIXED (OOM prevention)
+- ✅ SF#8/SF#9: silent failures di adversarial + fallback — FIXED (proper logging)
+- ✅ FT#3: colab evaluate sekarang generate evaluation.json dengan confusion matrix
+- ✅ FT#4/FT#5/FT#6: edge case guards untuk empty/insufficient data
+- ✅ EC#11: NaN-safe prediction logic
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+FINETUNING READINESS: ✅ READY
+- FT#1 fixed: single-fold mode tidak crash lagi
+- FT#4/FT#5/FT#6: edge cases guarded
+- RC#3: production OOM prevention (tidak block finetuning di Colab)
+- SF#8: adversarial training errors sekarang visible

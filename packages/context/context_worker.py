@@ -191,18 +191,20 @@ def is_redundant_v23(sentence, previous_sentences, threshold=0.5):
 
 def get_relevancy_pipeline():
     global _relevancy_pipeline
-    if _relevancy_pipeline is None:
-        try:
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
-            logger.info(f"Loading relevancy model: {RELEVANCY_MODEL_ID}")
-            tok = AutoTokenizer.from_pretrained(RELEVANCY_MODEL_ID)
-            model = AutoModelForSequenceClassification.from_pretrained(RELEVANCY_MODEL_ID)
-            model.to("cuda" if torch.cuda.is_available() else "cpu")
-            model.eval()
-            _relevancy_pipeline = (tok, model)
-        except Exception as e:
-            logger.warning(f"Relevancy model load failed (pre-filter disabled): {e}")
-            _relevancy_pipeline = None
+    if _relevancy_pipeline is None:  # fast path
+        with _MODEL_LOCK:  # FIX RC#3 (CRITICAL): same lock as coref/keybert
+            if _relevancy_pipeline is None:  # double-check
+                try:
+                    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+                    logger.info(f"Loading relevancy model: {RELEVANCY_MODEL_ID}")
+                    tok = AutoTokenizer.from_pretrained(RELEVANCY_MODEL_ID)
+                    model = AutoModelForSequenceClassification.from_pretrained(RELEVANCY_MODEL_ID)
+                    model.to("cuda" if torch.cuda.is_available() else "cpu")
+                    model.eval()
+                    _relevancy_pipeline = (tok, model)
+                except Exception as e:
+                    logger.warning(f"Relevancy model load failed (pre-filter disabled): {e}")
+                    _relevancy_pipeline = None
     return _relevancy_pipeline
 
 @torch.no_grad()

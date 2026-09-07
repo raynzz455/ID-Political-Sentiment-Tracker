@@ -57,8 +57,24 @@ def step_evaluate():
     for task, dir_name in [("sentiment","sentiment_v4"), ("relevancy","relevancy_v4")]:
         kf = Path(REPO_DIR)/"finetuning"/"runs"/dir_name/"kfold_results.json"
         if kf.exists():
-            print(f"\n--- {task} K-fold ---")
+            print(f"\n--- {task} K-fold Summary ---")
             run(f'cd {REPO_DIR}/finetuning && python evaluate_v4.py --task {task} --kfold-results {kf}')
+            # FIX FT#3 (HIGH): Also run single-fold evaluation for best fold.
+            # Before: only summarize K-fold JSON (no actual test-set evaluation).
+            # After: find best fold, run evaluate_v4.py --run-dir to generate
+            # evaluation.json with confusion matrix + confidence threshold sweep.
+            try:
+                kfold = json.load(open(kf))
+                fold_results = kfold.get("fold_results", kfold.get("folds", []))
+                if fold_results:
+                    best = max(fold_results, key=lambda x: x.get("macro_f1", 0))
+                    best_fold = best.get("fold", 1)
+                    best_dir = Path(REPO_DIR)/"finetuning"/"runs"/dir_name/f"fold_{best_fold}"
+                    if best_dir.exists():
+                        print(f"\n--- {task} Best Fold {best_fold} Evaluation ---")
+                        run(f'cd {REPO_DIR}/finetuning && python evaluate_v4.py --task {task} --run-dir {best_dir}', check=False)
+            except Exception as e:
+                print(f"⚠️  Single-fold evaluation skipped: {e}")
 
 def step_upload():
     print("\n=== STEP 6: Upload ===")

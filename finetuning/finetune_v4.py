@@ -278,6 +278,12 @@ def oversample_minority(rows, targets, seed=H.SEED):
         pool = list(items); rng.shuffle(pool)
         result.extend(pool)
         needed = target - len(pool)
+        # FIX FT#5 (MEDIUM): Guard against empty pool.
+        # Before: rng.choice([]) → IndexError if label has 0 samples but exists in targets.
+        # After: skip oversampling if pool is empty.
+        if not pool:
+            logger.warning(f"oversample_minority: label '{label}' has 0 samples, skipping")
+            continue
         for _ in range(max(0, needed)):
             result.append(rng.choice(pool))
     rng.shuffle(result)
@@ -498,6 +504,14 @@ class FocalLossTrainerV4(Trainer):
                 per_sample_pert = per_sample_pert * sample_weights.to(logits_pert.device)
             return per_sample_pert.mean()
         except Exception as e:
+            # FIX SF#8 (HIGH): Log error instead of silent swallow.
+            # Before: `except Exception as e: return 0.0` — error captured but not logged.
+            # If adversarial fails every batch, user thinks it's active but loss=0.
+            # After: log warning on first failure, track count.
+            if not getattr(self, '_adv_error_logged', False):
+                logger.warning(f"Adversarial training error (will not log again): {e}")
+                self._adv_error_logged = True
+            self._adv_error_count = getattr(self, '_adv_error_count', 0) + 1
             return torch.tensor(0.0, device=labels.device)
 
 # ---------------------------------------------------------------------------
@@ -579,6 +593,12 @@ def calibrate_temperature(model, val_ds, tokenizer, device=None):
             labels_all.append(int(item.pop("labels").item()))
             out = model(**item)
             logits_all.append(out.logits.squeeze(0).cpu())
+    # FIX FT#4 (MEDIUM): Guard against empty val_ds.
+    # Before: torch.stack([]) → RuntimeError: stack expects non-empty Tensor list.
+    # After: return default temperature 1.0 if no validation samples.
+    if not logits_all:
+        logger.warning("calibrate_temperature: empty val_ds, returning T=1.0")
+        return 1.0
     logits = torch.stack(logits_all)
     labels = torch.tensor(labels_all)
 
@@ -603,6 +623,22 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
     print(f"K-FOLD CV (entity-aware, k={k})")
     print(f"{'='*70}")
 
+    # FIX FT#6 (MEDIUM): Guard against insufficient samples.
+    # Before: StratifiedKFold(n_splits=k) requires n >= k → ValueError.
+    # GroupKFold requires n_entities >= k → ValueError.
+    # After: fallback to smaller k or single-fold if too few samples.
+    n_rows = len(all_rows)
+    if n_rows < k:
+        print(f"  Warning: only {n_rows} rows < k={k}. Reducing k to {n_rows}.")
+        k = max(2, n_rows)  # at least 2-fold
+    if n_rows < 2:
+        print(f"  ERROR: only {n_rows} rows — cannot do K-fold. Aborting.")
+        return {"k": 0, "task": task, "fold_results": [], "folds": [],
+                "mean_accuracy": 0, "std_accuracy": 0,
+                "mean_macro_f1": 0, "std_macro_f1": 0,
+                "mean_weighted_f1": 0, "std_weighted_f1": 0,
+                "aggregate": {}, "error": "insufficient_samples"}
+
     labels_array = np.array([label2id[r["label"]] for r in all_rows])
     groups = [r.get("entity", r.get("entity_name", "unknown")) for r in all_rows]
     n_entities = len(set(groups))
@@ -614,6 +650,13 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
         splits = gkf.split(np.zeros(len(all_rows)), labels_array, groups)
     else:
         print(f"  Warning: too few entities for GroupKFold, using StratifiedKFold")
+        # FIX FT#6: also check if we have enough samples per class for StratifiedKFold
+        from collections import Counter as _C
+        label_counts = _C(labels_array.tolist())
+        min_class_count = min(label_counts.values()) if label_counts else 0
+        if min_class_count < k:
+            print(f"  Warning: min class count {min_class_count} < k={k}. Reducing k to {min_class_count}.")
+            k = max(2, min_class_count)
         skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=H.SEED)
         splits = skf.split(np.zeros(len(all_rows)), labels_array)
 
@@ -944,9 +987,9 @@ def main(task: str, kfold: int = 0, dataset: str = None):
         print(f"\nK-fold results saved -> {out_dir / 'kfold_results.json'}")
     else:
         # Single train/val/test split
-        # FIX BUG#25: test_rows not used in single-fold mode (train_single_fold
-        # only takes train+val). Use _ to mark intentionally unused.
-        train_rows, val_rows, _test_rows = stratified_split(rows, "label")
+        # FIX FT#1 (CRITICAL): Revert BUG#25 rename — lines below reference test_rows
+        # for logging. Use test_rows (not _test_rows) so NameError doesn't crash.
+        train_rows, val_rows, test_rows = stratified_split(rows, "label")
         # v4: Oversample training set
         if H.OVERSAMPLING_ENABLED and cfg.get("oversample"):
             print(f"Oversampling train: {len(train_rows)} -> ", end="")

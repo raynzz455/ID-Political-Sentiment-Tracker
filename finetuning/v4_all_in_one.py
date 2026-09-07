@@ -403,6 +403,9 @@ def oversample_minority(rows, targets, seed=H.SEED):
         rng.shuffle(pool)
         result.extend(pool)
         needed = target - len(pool)
+        # FIX FT#5: Guard against empty pool
+        if not pool:
+            continue
         for _ in range(max(0, needed)):
             result.append(rng.choice(pool))
     rng.shuffle(result)
@@ -666,6 +669,9 @@ def calibrate_temperature(model, val_ds, tokenizer, device=None):
             labels_all.append(int(item.pop("labels").item()))
             out = model(**item)
             logits_all.append(out.logits.squeeze(0).cpu())
+    # FIX FT#4: Guard against empty val_ds
+    if not logits_all:
+        return 1.0
     logits = torch.stack(logits_all)
     labels = torch.tensor(labels_all)
 
@@ -688,6 +694,19 @@ def calibrate_temperature(model, val_ds, tokenizer, device=None):
 def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
     """Run entity-aware K-fold CV."""
     print(f"\n{'=' * 70}\nK-FOLD CV (entity-aware, k={k})\n{'=' * 70}")
+    # FIX FT#6: Guard against insufficient samples
+    n_rows = len(all_rows)
+    if n_rows < k:
+        print(f"  Warning: only {n_rows} rows < k={k}. Reducing k to {n_rows}.")
+        k = max(2, n_rows)
+    if n_rows < 2:
+        print(f"  ERROR: only {n_rows} rows — cannot do K-fold. Aborting.")
+        return {"k": 0, "task": task, "fold_results": [], "folds": [],
+                "mean_accuracy": 0, "std_accuracy": 0,
+                "mean_macro_f1": 0, "std_macro_f1": 0,
+                "mean_weighted_f1": 0, "std_weighted_f1": 0,
+                "aggregate": {}, "error": "insufficient_samples"}
+
     labels_array = np.array([label2id[r["label"]] for r in all_rows])
     groups = [r.get("entity", r.get("entity_name", "unknown")) for r in all_rows]
     n_entities = len(set(groups))
@@ -698,6 +717,13 @@ def run_kfold(task, all_rows, label2id, id2label, k=H.K_FOLD_N):
         splits = gkf.split(np.zeros(len(all_rows)), labels_array, groups)
     else:
         print("  Warning: too few entities for GroupKFold, using StratifiedKFold")
+        # FIX FT#6: check min class count
+        from collections import Counter as _C
+        label_counts = _C(labels_array.tolist())
+        min_class_count = min(label_counts.values()) if label_counts else 0
+        if min_class_count < k:
+            print(f"  Warning: min class count {min_class_count} < k={k}. Reducing k to {min_class_count}.")
+            k = max(2, min_class_count)
         skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=H.SEED)
         splits = skf.split(np.zeros(len(all_rows)), labels_array)
 

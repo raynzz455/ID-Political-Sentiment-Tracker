@@ -214,8 +214,11 @@ class SentimentModel(_LoadedModel):
 
     def predict(self, context: str, text: str) -> tuple[str, float, tuple]:
         probs = self._forward_pair(context, text)
+        # FIX EC#11 (LOW): Use max(range) instead of probs.index(max(probs)).
+        # Before: if probs contains NaN, max() returns NaN, list.index(nan) raises ValueError.
+        # After: max(range) handles NaN gracefully (returns first max index).
+        pred_idx = max(range(len(probs)), key=lambda i: probs[i])
         scores = {normalize_label(self.id2label[i]): probs[i] for i in range(len(probs))}
-        pred_idx = probs.index(max(probs))
         label = normalize_label(self.id2label[pred_idx])
         conf = probs[pred_idx]
         score_tuple = (scores.get("negative", 0.0), scores.get("neutral", 0.0), scores.get("positive", 0.0))
@@ -228,8 +231,9 @@ class FallbackModel(_LoadedModel):
 
     def predict(self, text: str) -> tuple[str, float, tuple]:
         probs = self._forward_single(text)
+        # FIX EC#11 (LOW): same NaN-safe max logic
+        pred_idx = max(range(len(probs)), key=lambda i: probs[i])
         scores = {normalize_label(self.id2label[i]): probs[i] for i in range(len(probs))}
-        pred_idx = probs.index(max(probs))
         label = normalize_label(self.id2label[pred_idx])
         conf = probs[pred_idx]
         score_tuple = (scores.get("negative", 0.0), scores.get("neutral", 0.0), scores.get("positive", 0.0))
@@ -282,9 +286,19 @@ class SentimentPipeline:
 
         # FALLBACK PATH (Document-level) — no context, no normalization needed
         if context is None:
-            label, conf, scores = self.fallback.predict(text)
-            polarity, entropy = calculate_continuous_metrics(scores)
-            return GatedResult(True, 1.0, label, conf, scores, polarity, entropy)
+            # FIX SF#9 (HIGH): Add error handling to prevent infinite retry loop.
+            # Before: no try/except → exception propagates to nlp_worker →
+            # inference_error → item NOT acked → requeued → fail again → infinite loop.
+            # After: return GatedResult(is_error=True) → nlp_worker skips gracefully.
+            try:
+                label, conf, scores = self.fallback.predict(text)
+                polarity, entropy = calculate_continuous_metrics(scores)
+                return GatedResult(True, 1.0, label, conf, scores, polarity, entropy)
+            except Exception as e:
+                logger.error(f"Fallback predict gagal: {e}")
+                scores = (0.33, 0.34, 0.33)
+                polarity, entropy = calculate_continuous_metrics(scores)
+                return GatedResult(True, 1.0, "neutral", 0.34, scores, polarity, entropy, is_error=True)
 
         # BUG N6 FIX: normalize context ke format training v4
         # Training: premise = "Tentang Erick Thohir"
