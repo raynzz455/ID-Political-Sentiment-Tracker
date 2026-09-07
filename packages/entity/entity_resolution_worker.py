@@ -177,6 +177,21 @@ def load_caches(sb):
             if len(alias) < 2:
                 continue
             alias_lower = alias.lower()
+            # FIX EC#1 (HIGH): Detect alias collision (same alias for different entities).
+            # Before: alias_map[alias_lower] = canonical → last entity wins silently.
+            #   Bug: "Joko" shared by Joko Widodo & Joko Susilo → only last stored.
+            # After: skip ambiguous aliases (don't map to any entity).
+            if alias_lower in alias_map and alias_map[alias_lower] != r["canonical_name"]:
+                logger.warning(
+                    f"Alias collision: '{alias}' shared by '{alias_map[alias_lower]}' "
+                    f"and '{r['canonical_name']}' — marking ambiguous (skipped)"
+                )
+                # Mark as ambiguous by setting to None — downstream should skip
+                alias_map[alias_lower] = None
+                continue  # don't add regex pattern for ambiguous alias
+            if alias_map.get(alias_lower) is None:
+                # Already marked ambiguous, skip
+                continue
             alias_map[alias_lower] = r["canonical_name"]
             try:
                 regex_patterns.append((re.compile(r'\b' + re.escape(alias) + r'\b', re.IGNORECASE), alias_lower))
@@ -524,7 +539,14 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
         if body_entities:
             valid_entities = [body_entities[0]]
         elif ranked:
-            valid_entities = [ranked[0]]
+            # FIX EC#2 (HIGH): Don't pick configured_entity stub with count=0 as fallback.
+            # Before: `valid_entities = [ranked[0]]` could pick configured_entity stub
+            # (count=0, in_body=False) → article_entity_map row for entity never mentioned.
+            # After: only pick fallback if it has count > 0 (actually mentioned in body).
+            fallback_candidates = [r for r in ranked if r[1]["count"] > 0]
+            if fallback_candidates:
+                valid_entities = [fallback_candidates[0]]
+            # If NO entity has count > 0, leave valid_entities empty (no mapping)
 
     mappings = []
     mentions = []

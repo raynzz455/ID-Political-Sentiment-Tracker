@@ -36,6 +36,7 @@ import logging
 import torch
 import argparse
 import json
+import threading  # FIX RC#1: for lazy-loading lock
 import stanza
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -68,21 +69,28 @@ except Exception as e:
 # v4.3: Stanza Coref Pipeline untuk attribution check
 # Coref resolver — untuk filter "speaker_not_target" cases
 # (mis. "Erick mengatakan X" → Erick = speaker, bukan target sentiment)
+# FIX RC#1 (CRITICAL): Add threading.Lock to prevent concurrent model loading.
+# Before: 4 threads could simultanously pass `if NLP_COREF is None` check →
+# load 4x Stanza Coref (~1GB each) = ~4GB OOM crash.
+# After: Double-checked locking with threading.Lock ensures single load.
+_MODEL_LOCK = threading.Lock()
 NLP_COREF = None
 def get_coref_pipeline():
     global NLP_COREF
-    if NLP_COREF is None:
-        try:
-            logger.info("Memuat Stanza Coref Pipeline (tokenize,pos,lemma,depparse,coref)...")
-            use_gpu = torch.cuda.is_available()
-            NLP_COREF = stanza.Pipeline(
-                'id',
-                processors='tokenize,pos,lemma,depparse,coref',
-                verbose=False, use_gpu=use_gpu, batch_size=16
-            )
-        except Exception as e:
-            logger.warning(f"Coref pipeline load failed (attribution check disabled): {e}")
-            NLP_COREF = None
+    if NLP_COREF is None:  # fast path (no lock) — already loaded
+        with _MODEL_LOCK:  # slow path — acquire lock
+            if NLP_COREF is None:  # double-check inside lock
+                try:
+                    logger.info("Memuat Stanza Coref Pipeline (tokenize,pos,lemma,depparse,coref)...")
+                    use_gpu = torch.cuda.is_available()
+                    NLP_COREF = stanza.Pipeline(
+                        'id',
+                        processors='tokenize,pos,lemma,depparse,coref',
+                        verbose=False, use_gpu=use_gpu, batch_size=16
+                    )
+                except Exception as e:
+                    logger.warning(f"Coref pipeline load failed (attribution check disabled): {e}")
+                    NLP_COREF = None
     return NLP_COREF
 
 # v4.3: KeyBERT untuk topic dominance check
@@ -90,14 +98,16 @@ def get_coref_pipeline():
 _KW_MODEL = None
 def get_keybert_model():
     global _KW_MODEL
-    if _KW_MODEL is None:
-        try:
-            from keybert import KeyBERT
-            logger.info("Memuat KeyBERT model (indobenchmark/indobert-base-p1)...")
-            _KW_MODEL = KeyBERT(model="indobenchmark/indobert-base-p1")
-        except Exception as e:
-            logger.warning(f"KeyBERT load failed (topic check disabled): {e}")
-            _KW_MODEL = None
+    if _KW_MODEL is None:  # fast path
+        with _MODEL_LOCK:  # slow path
+            if _KW_MODEL is None:  # double-check
+                try:
+                    from keybert import KeyBERT
+                    logger.info("Memuat KeyBERT model (indobenchmark/indobert-base-p1)...")
+                    _KW_MODEL = KeyBERT(model="indobenchmark/indobert-base-p1")
+                except Exception as e:
+                    logger.warning(f"KeyBERT load failed (topic check disabled): {e}")
+                    _KW_MODEL = None
     return _KW_MODEL
 
 # v4.4: Scoring constants (FIX cacat #4 — documented & configurable)
@@ -333,7 +343,10 @@ def analyze_entity_role(entity_name: str, context_text: str) -> tuple[str, str]:
 
         return "unknown", "no_role_found"  # fail-open
     except Exception as e:
-        logger.debug(f"Role analysis error: {e}")
+        # FIX SF#4 (MEDIUM): upgrade debug→warning so errors are visible.
+        # Before: logger.debug() → invisible at default INFO level.
+        # After: logger.warning() → user sees when coref layer is disabled.
+        logger.warning(f"Coref role analysis error for entity '{entity_name}': {e}")
         return "unknown", "coref_error"  # fail-open
 
 
@@ -372,7 +385,8 @@ def is_dominant_topic(entity_name: str, context_text: str,
         # Entity tidak ada di top-N keywords → not dominant
         return False, 0.0
     except Exception as e:
-        logger.debug(f"KeyBERT check error: {e}")
+        # FIX SF#4 (MEDIUM): upgrade debug→warning so errors are visible.
+        logger.warning(f"KeyBERT topic analysis error for entity '{entity_name}': {e}")
         return True, 0.5  # fail-open
 
 # v18.1: EXPANDED verb sets (v14.2 lemma forms, 70.7% coverage).

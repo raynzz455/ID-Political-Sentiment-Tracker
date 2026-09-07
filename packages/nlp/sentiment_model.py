@@ -150,6 +150,11 @@ class GatedResult:
     scores: Optional[tuple]            # (neg, neu, pos)
     polarity_score: Optional[float] = None
     entropy: Optional[float] = None
+    # FIX SF#3 (HIGH): Flag untuk distinguish real predictions from error fallbacks.
+    # Before: except block returned GatedResult(True, rel_conf, "neutral", 0.34, ...)
+    # → looked like legit prediction → nlp_worker inserted it as real sentiment.
+    # After: is_error=True → nlp_worker can skip/error-handle these.
+    is_error: bool = False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -308,10 +313,11 @@ class SentimentPipeline:
             polarity, entropy = calculate_continuous_metrics(scores)
             return GatedResult(True, rel_conf, label, conf, scores, polarity, entropy)
         except Exception as e:
+            # FIX SF#3 (HIGH): Flag as error so nlp_worker can skip, not insert fake neutral.
             logger.error(f"Sentiment predict gagal: {e}")
             scores = (0.33, 0.34, 0.33)
             polarity, entropy = calculate_continuous_metrics(scores)
-            return GatedResult(True, rel_conf, "neutral", 0.34, scores, polarity, entropy)
+            return GatedResult(True, rel_conf, "neutral", 0.34, scores, polarity, entropy, is_error=True)
 
 
 @lru_cache(maxsize=1)

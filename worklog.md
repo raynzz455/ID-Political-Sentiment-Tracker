@@ -1875,3 +1875,95 @@ Stage Summary:
 - ✅ Pattern BUG N1 (finish_run hardcoded 0) dibersihkan di 3 worker (EL#5, CW#2, PP#1)
 - ✅ Semua syntax check lulus
 - Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku
+
+---
+Task ID: 64
+Agent: Z.ai Code (main)
+Task: Audit cacat logika lebih dalam — fix 11 bug (2 CRITICAL, 7 HIGH, 2 MEDIUM).
+
+Work Log:
+- Audit mendalam 7 worker + 2 shared module via sub-agent
+- Temukan 24 bug baru, fix 11 yang critical/high/medium:
+
+  RC#1 (CRITICAL — Lazy Loading Tanpa Lock):
+    File: context_worker.py:71-101
+    Masalah: NLP_COREF, _KW_MODEL, _relevancy_pipeline di-load on-demand tanpa threading.Lock
+    Dengan MAX_NLP_WORKERS=4, 4 thread bisa simultan lewati `if X is None` check
+    → load 4x Stanza Coref (~1GB each) + 4x KeyBERT (~400MB) = ~7.2GB → OOM crash
+    Fix: tambah _MODEL_LOCK = threading.Lock() + double-checked locking pattern
+
+  RC#2 (CRITICAL — PGMQ Visibility Timeout Race):
+    File: nlp_worker.py:253
+    Masalah: p_vt=300 (5 menit). Batch 50 × ~1.5s = 75s (OK), tapi GPU lambat/OOM
+    bisa > 300s → message reappear → dequeue duplikat → double-processing
+    Fix: naikkan p_vt ke 900 (15 menit)
+
+  XC#1 (CRITICAL — FK missing, but perlu verifikasi production DB):
+    File: entity_mentions, entity_contexts, article_entity_map
+    Masalah: FK ke political_entities mungkin tidak ada → PostgREST embedded resource
+    select("...,political_entities(canonical_name)") return 400 error → infinite retry
+    Status: PERLU VERIFIKASI production DB (tidak bisa fix dari code side)
+
+  EC#1 (HIGH — Alias Collision Silent Overwrite):
+    File: entity_resolution_worker.py:176-184
+    Masalah: alias_map[alias_lower] = canonical → last entity wins silently
+    Bug: "Joko" shared by Joko Widodo & Joko Susilo → only last stored
+    Fix: detect collision, mark as None (ambiguous), skip ambiguous aliases
+
+  SF#1 (HIGH — check_db_health Silent Pass):
+    File: nlp_worker.py:73-84
+    Masalah: except Exception: pass — swallow SEMUA errors (network, auth, timeout)
+    Worker start dengan DB unhealthy → crash di tengah dengan error confusing
+    Fix: log error eksplisit, return False on exception
+
+  SF#2 (HIGH — Contexts Fetch Failure Silent):
+    File: nlp_worker.py:247-253
+    Masalah: except Exception: contexts_data = [] — silent fallback
+    Artikel dengan 5 entity contexts hanya dapat 1 sentiment (general), entity sentiments lost
+    Fix: log error, increment stats["ctx_fetch_failed"], pipeline tetap jalan tapi user tahu
+
+  OB#1 (HIGH — Falsy 0.0 Confidence Bug):
+    File: nlp_worker.py:148
+    Masalah: w = result.sentiment_confidence or 0.5
+    Jika conf=0.0 (legit), 0.0 or 0.5 = 0.5 → weight salah → aggregation bias
+    Fix: w = result.sentiment_confidence if result.sentiment_confidence is not None else 0.5
+
+  OB#2 (HIGH — Falsy 0.0 Deferral Bug):
+    File: nlp_worker.py:171
+    Masalah: deferred = conf < CONFIDENCE_TAU if conf else False
+    Jika conf=0.0, if conf=False → deferred=False (should be True, 0.0 < 0.75)
+    Fix: deferred = (conf is not None and conf < CONFIDENCE_TAU)
+
+  OB#3 (HIGH — Falsy 0.0 Fallback Deferral Bug):
+    File: nlp_worker.py:109
+    Masalah: same pattern untuk fallback path
+    Fix: fb_deferred = (fb.sentiment_confidence is not None and fb.sentiment_confidence < CONFIDENCE_TAU)
+
+  SF#3 (HIGH — Sentiment Predict Error Returns Fake Neutral):
+    File: sentiment_model.py:310-314
+    Masalah: except block return GatedResult(True, rel_conf, "neutral", 0.34, ...)
+    Terlihat seperti legit prediction → nlp_worker insert as real sentiment
+    Fix: tambah is_error field di GatedResult, set True di except block
+    nlp_worker check is_error → skip, don't insert fake prediction
+
+  EC#2 (HIGH — Configured Entity Stub count=0 Jadi Main Entity):
+    File: entity_resolution_worker.py:537-542
+    Masalah: fallback `valid_entities = [ranked[0]]` bisa pick configured_entity stub
+    (count=0, in_body=False) → article_entity_map row for entity never mentioned
+    Fix: fallback hanya pick candidates dengan count > 0
+
+  SF#4 (MEDIUM — Coref/KeyBERT Errors Invisible):
+    File: context_worker.py:335-337, 374-376
+    Masalah: logger.debug() — invisible at default INFO level
+    Coref/KeyBERT errors silent → precision filter disabled without user knowledge
+    Fix: upgrade debug → warning
+
+Stage Summary:
+- ✅ 11 bug diperbaiki (2 CRITICAL, 7 HIGH, 2 MEDIUM)
+- ✅ RC#1 paling critical: OOM crash dari concurrent model loading — fixed dengan threading.Lock
+- ✅ RC#2: PGMQ double-processing — fixed dengan naikkan visibility timeout
+- ✅ Pattern falsy-0.0 (OB#1-OB#3): 3 lokasi di-fixed dengan `is not None` check
+- ✅ Pattern silent failure (SF#1-SF#4): 4 lokasi di-fixed dengan proper logging
+- ✅ SF#3: is_error flag mencegah fake predictions masuk DB
+- ⚠️ XC#1 perlu verifikasi production DB schema (tidak bisa fix dari code)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron rule TIDAK berlaku

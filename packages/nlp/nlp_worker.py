@@ -78,8 +78,11 @@ def check_db_health(sb) -> bool:
             if not res.data:
                 logger.error(f"Health Check GAGAL: RPC '{rpc}' tidak ditemukan di database!")
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            # FIX SF#1 (HIGH): Don't silently swallow errors. Network timeouts,
+            # connection drops, auth failures all silently passed before.
+            logger.error(f"Health Check ERROR untuk RPC '{rpc}': {e}")
+            return False
     logger.info("Health Check RPC: OK")
     return True
 
@@ -106,7 +109,10 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
         "p_aspect": "general", "p_model_version": MODEL_VERSION_FALLBACK,
     }
     # v15: flag deferred if low confidence
-    fb_deferred = fb.sentiment_confidence < CONFIDENCE_TAU if fb.sentiment_confidence else False
+    # FIX OB#3 (HIGH): Falsy 0.0 bug — `if fb.sentiment_confidence` is False when conf=0.0.
+    # Before: conf=0.0 → deferred=False (should be True, 0.0 < 0.75).
+    # After: explicit None check.
+    fb_deferred = (fb.sentiment_confidence is not None and fb.sentiment_confidence < CONFIDENCE_TAU)
 
     targeted_payloads = []
     for ctx in contexts:
@@ -139,10 +145,17 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
                 if len(span_text.strip()) < 10: continue
                 result = pipeline.predict_gated(text=span_text, context=entity_name,
                                                  skip_relevancy=skip_rel)
+                # FIX SF#3 (HIGH): Skip error fallbacks — don't insert fake predictions.
+                if getattr(result, 'is_error', False):
+                    stats["predict_error"] += 1
+                    continue
                 if not result.is_relevant:
                     stats["gate_rejected"] += 1
                     continue
-                w = result.sentiment_confidence or 0.5
+                # FIX OB#1 (HIGH): Falsy 0.0 bug — `or 0.5` returns 0.5 when conf=0.0.
+                # Before: w = result.sentiment_confidence or 0.5 → 0.0 or 0.5 = 0.5 (wrong).
+                # After: explicit None check.
+                w = result.sentiment_confidence if result.sentiment_confidence is not None else 0.5
                 agg_scores += w * torch.tensor(result.scores)
                 total_w += w
                 stats["spans_processed"] += 1
@@ -157,6 +170,10 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
             # single span (backward compat with v17 contexts)
             result = pipeline.predict_gated(text=context_text, context=entity_name,
                                              skip_relevancy=skip_rel)
+            # FIX SF#3 (HIGH): Skip error fallbacks — don't insert fake predictions.
+            if getattr(result, 'is_error', False):
+                stats["predict_error"] += 1
+                continue
             if not result.is_relevant:
                 stats["gate_rejected"] += 1
                 continue
@@ -165,7 +182,10 @@ def run_inference_only(pipeline, item: dict, contexts: list, stats: Counter) -> 
             scores = result.scores
 
         # v15: confidence deferral flag
-        deferred = conf < CONFIDENCE_TAU if conf else False
+        # FIX OB#2 (HIGH): Falsy 0.0 bug — `if conf` is False when conf=0.0.
+        # Before: conf=0.0 → deferred=False (should be True, 0.0 < 0.75).
+        # After: explicit None check.
+        deferred = (conf is not None and conf < CONFIDENCE_TAU)
 
         targeted_payloads.append({
             "p_raw_text_id": raw_id, "p_entity_id": entity_id,
@@ -238,7 +258,11 @@ def main(target: int = 500, batch_size: int = 50, run_all: bool = False):
         remaining = (target - processed) if not run_all else batch_size
         qty = min(batch_size, remaining) if not run_all else batch_size
         qty = max(qty, 1)
-        res = sb.rpc("dequeue_nlp_batch", {"p_vt": 300, "p_qty": qty}).execute()
+        # FIX RC#2 (CRITICAL): Naikkan visibility timeout dari 300s → 900s (15 menit).
+        # Before: p_vt=300 (5 menit). Batch 50 × ~1.5s = 75s (OK), tapi GPU lambat/
+        # OOM stutter bisa > 300s → message reappear → double-processing.
+        # After: p_vt=900 (15 menit) — aman untuk batch besar + GPU lambat.
+        res = sb.rpc("dequeue_nlp_batch", {"p_vt": 900, "p_qty": qty}).execute()
         items = res.data or []
         if not items:
             print("\nQueue kosong. Drain selesai.")
@@ -249,7 +273,13 @@ def main(target: int = 500, batch_size: int = 50, run_all: bool = False):
                         .select("raw_text_id, entity_id, political_entities(canonical_name), context_text, metadata") \
                         .in_("raw_text_id", batch_ids).execute()
             contexts_data = ctx_res.data or []
-        except Exception:
+        except Exception as e:
+            # FIX SF#2 (HIGH): Log error eksplisit + track counter.
+            # Before: silent `contexts_data = []` → artikel hanya dapat fallback sentiment,
+            # entity sentiments lost, tidak ada tanda failure.
+            # After: log error, increment counter, pipeline tetap jalan tapi user tahu.
+            logger.error(f"Contexts fetch failed for batch {len(batch_ids)} items: {e}")
+            stats["ctx_fetch_failed"] += len(batch_ids)
             contexts_data = []
         contexts_map = {}
         for ctx in contexts_data:
