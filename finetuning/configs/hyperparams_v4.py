@@ -89,7 +89,7 @@ CONFIDENCE_TAU = 0.70
 OUT_DIR_RELEVANCY = "./runs/relevancy_v4"
 OUT_DIR_SENTIMENT = "./runs/sentiment_v4"
 
-HF_ORG          = "raynzz455"
+HF_ORG          = "Raynzz455"  # case-sensitive for HF username
 HF_MODEL_PREFIX = "id-political-sentiment"
 HF_SENTIMENT_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-sentiment"
 HF_RELEVANCY_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-relevancy"

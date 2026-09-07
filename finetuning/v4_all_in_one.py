@@ -130,10 +130,10 @@ H = SimpleNamespace(
     CONFIDENCE_TAU=0.70,
     OUT_DIR_RELEVANCY="./runs/relevancy_v4",
     OUT_DIR_SENTIMENT="./runs/sentiment_v4",
-    HF_ORG="raynzz455",
+    HF_ORG="Raynzz455",  # case-sensitive for HF username
     HF_MODEL_PREFIX="id-political-sentiment",
-    HF_SENTIMENT_MODEL="raynzz455/id-political-sentiment-sentiment",
-    HF_RELEVANCY_MODEL="raynzz455/id-political-sentiment-relevancy",
+    HF_SENTIMENT_MODEL="Raynzz455/id-political-sentiment-sentiment",
+    HF_RELEVANCY_MODEL="Raynzz455/id-political-sentiment-relevancy",
     DETERMINISTIC=True,
     FP16=True,
 )

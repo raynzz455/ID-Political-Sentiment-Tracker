@@ -29,8 +29,8 @@ from pathlib import Path
 
 # Model repos (TANPA -v4, sesuai dengan yang user buat di HF)
 HF_MODELS = {
-    "sentiment": "raynzz455/id-political-sentiment-sentiment",
-    "relevancy": "raynzz455/id-political-sentiment-relevancy",
+    "sentiment": "Raynzz455/id-political-sentiment-sentiment",
+    "relevancy": "Raynzz455/id-political-sentiment-relevancy",
 }
 
 # Output dirs

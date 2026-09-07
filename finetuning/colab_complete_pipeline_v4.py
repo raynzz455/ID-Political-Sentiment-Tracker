@@ -16,8 +16,8 @@ from pathlib import Path
 REPO_URL = "https://github.com/raynzz455/ID-Political-Sentiment-Tracker.git"
 REPO_DIR = "/content/ID-Political-Sentiment-Tracker"
 HF_TOKEN_ENV = "HF_TOKEN"
-HF_MODEL_SENTIMENT = "raynzz455/id-political-sentiment-sentiment"
-HF_MODEL_RELEVANCY = "raynzz455/id-political-sentiment-relevancy"
+HF_MODEL_SENTIMENT = "Raynzz455/id-political-sentiment-sentiment"
+HF_MODEL_RELEVANCY = "Raynzz455/id-political-sentiment-relevancy"
 DATASET = "dataset_gold_standard_final.jsonl"
 K_FOLD = 5
 

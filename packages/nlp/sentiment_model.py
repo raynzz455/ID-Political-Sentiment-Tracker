@@ -39,8 +39,8 @@ except ImportError:
 # BUG N2 FIX: Support fine-tuned v4 models via env var override.
 # After uploading v4 models to HuggingFace, set these env vars to switch
 # production from base models to fine-tuned v4:
-#   export NLP_RELEVANCY_MODEL=raynzz455/id-political-sentiment-relevancy
-#   export NLP_SENTIMENT_MODEL=raynzz455/id-political-sentiment-sentiment
+#   export NLP_RELEVANCY_MODEL=Raynzz455/id-political-sentiment-relevancy
+#   export NLP_SENTIMENT_MODEL=Raynzz455/id-political-sentiment-sentiment
 #   export NLP_FALLBACK_MODEL=taufiqdp/indonesian-sentiment  (no v4 fallback yet)
 # If env vars not set, falls back to original base models (safe default).
 import os as _os

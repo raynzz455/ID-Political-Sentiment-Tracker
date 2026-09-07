@@ -13,7 +13,7 @@ WHAT IT BACKS UP:
 
 DESTINATIONS (pick one or both):
   1. Google Drive  → /content/drive/MyDrive/finetuning_runs_v4_YYYYMMDD_HHMMSS/
-  2. HuggingFace   → raynzz455/id-political-sentiment-{sentiment,relevancy}-v4
+  2. HuggingFace   → Raynzz455/id-political-sentiment-{sentiment,relevancy}
 
 USAGE in Colab:
   # After training finishes:
@@ -39,8 +39,8 @@ RUNS_DIR = SCRIPT_DIR / "runs"
 CONFIGS_DIR = SCRIPT_DIR / "configs"
 DRIVE_BASE = Path("/content/drive/MyDrive")
 
-HF_SENTIMENT_MODEL = "raynzz455/id-political-sentiment-sentiment"
-HF_RELEVANCY_MODEL = "raynzz455/id-political-sentiment-relevancy"
+HF_SENTIMENT_MODEL = "Raynzz455/id-political-sentiment-sentiment"
+HF_RELEVANCY_MODEL = "Raynzz455/id-political-sentiment-relevancy"
 
 
 def print_banner(msg):

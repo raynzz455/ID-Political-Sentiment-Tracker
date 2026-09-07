@@ -23,8 +23,8 @@ def verify_token(token: str) -> bool:
         username = user_info.get("name", "")
         print(f"  ✅ Token valid")
         print(f"  ✅ Authenticated as: {username}")
-        if username != "raynzz455":
-            print(f"  ⚠️  WARNING: Username is '{username}', but code expects 'raynzz455'")
+        if username != "Raynzz455":
+            print(f"  ⚠️  WARNING: Username is '{username}', but code expects 'Raynzz455'")
             print(f"     You'll need to update HF_ORG in:")
             print(f"     - finetuning/configs/hyperparams_v4.py")
             print(f"     - finetuning/v4_all_in_one.py")
@@ -56,7 +56,7 @@ def verify_repo(token: str, repo_id: str) -> bool:
         if "404" in error_str or "not found" in error_str:
             print(f"  ❌ Repo NOT FOUND: {repo_id}")
             print(f"     Create at: https://huggingface.co/new")
-            print(f"     Owner: raynzz455")
+            print(f"     Owner: Raynzz455")
             print(f"     Name: {repo_id.split('/')[-1]}")
         elif "401" in error_str or "403" in error_str:
             print(f"  ❌ No write access to: {repo_id}")
@@ -94,7 +94,7 @@ def verify_write_permission(token: str, repo_id: str) -> bool:
         return True
     except Exception as e:
         print(f"  ❌ Write test failed for {repo_id}: {e}")
-        print(f"     Check: token has 'Write' scope, repo owned by 'raynzz455'")
+        print(f"     Check: token has 'Write' scope, repo owned by 'Raynzz455'")
         return False
 
 
@@ -122,8 +122,8 @@ def main():
     # Step 2: Verify repos exist
     print("\n=== Step 2: Verify Model Repos ===")
     repos = [
-        "raynzz455/id-political-sentiment-sentiment",
-        "raynzz455/id-political-sentiment-relevancy",
+        "Raynzz455/id-political-sentiment-sentiment",
+        "Raynzz455/id-political-sentiment-relevancy",
     ]
     repos_ok = True
     for repo_id in repos:
@@ -158,8 +158,8 @@ def main():
         print(f"     https://huggingface.co/{r}")
     print()
     print("  4. After upload, switch production to v4 models:")
-    print("     export NLP_RELEVANCY_MODEL=raynzz455/id-political-sentiment-relevancy")
-    print("     export NLP_SENTIMENT_MODEL=raynzz455/id-political-sentiment-sentiment")
+    print("     export NLP_RELEVANCY_MODEL=Raynzz455/id-political-sentiment-relevancy")
+    print("     export NLP_SENTIMENT_MODEL=Raynzz455/id-political-sentiment-sentiment")
 
 
 if __name__ == "__main__":
