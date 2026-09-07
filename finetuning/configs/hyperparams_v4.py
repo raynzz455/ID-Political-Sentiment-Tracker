@@ -91,8 +91,8 @@ OUT_DIR_SENTIMENT = "./runs/sentiment_v4"
 
 HF_ORG          = "raynzz455"
 HF_MODEL_PREFIX = "id-political-sentiment"
-HF_SENTIMENT_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-sentiment-v4"
-HF_RELEVANCY_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-relevancy-v4"
+HF_SENTIMENT_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-sentiment"
+HF_RELEVANCY_MODEL = f"{HF_ORG}/{HF_MODEL_PREFIX}-relevancy"
 
 DETERMINISTIC = True
 FP16          = True

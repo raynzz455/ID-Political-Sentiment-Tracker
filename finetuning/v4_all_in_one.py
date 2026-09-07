@@ -132,8 +132,8 @@ H = SimpleNamespace(
     OUT_DIR_SENTIMENT="./runs/sentiment_v4",
     HF_ORG="raynzz455",
     HF_MODEL_PREFIX="id-political-sentiment",
-    HF_SENTIMENT_MODEL="raynzz455/id-political-sentiment-sentiment-v4",
-    HF_RELEVANCY_MODEL="raynzz455/id-political-sentiment-relevancy-v4",
+    HF_SENTIMENT_MODEL="raynzz455/id-political-sentiment-sentiment",
+    HF_RELEVANCY_MODEL="raynzz455/id-political-sentiment-relevancy",
     DETERMINISTIC=True,
     FP16=True,
 )

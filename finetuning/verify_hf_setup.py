@@ -122,8 +122,8 @@ def main():
     # Step 2: Verify repos exist
     print("\n=== Step 2: Verify Model Repos ===")
     repos = [
-        "raynzz455/id-political-sentiment-sentiment-v4",
-        "raynzz455/id-political-sentiment-relevancy-v4",
+        "raynzz455/id-political-sentiment-sentiment",
+        "raynzz455/id-political-sentiment-relevancy",
     ]
     repos_ok = True
     for repo_id in repos:
@@ -158,8 +158,8 @@ def main():
         print(f"     https://huggingface.co/{r}")
     print()
     print("  4. After upload, switch production to v4 models:")
-    print("     export NLP_RELEVANCY_MODEL=raynzz455/id-political-sentiment-relevancy-v4")
-    print("     export NLP_SENTIMENT_MODEL=raynzz455/id-political-sentiment-sentiment-v4")
+    print("     export NLP_RELEVANCY_MODEL=raynzz455/id-political-sentiment-relevancy")
+    print("     export NLP_SENTIMENT_MODEL=raynzz455/id-political-sentiment-sentiment")
 
 
 if __name__ == "__main__":

@@ -39,8 +39,8 @@ RUNS_DIR = SCRIPT_DIR / "runs"
 CONFIGS_DIR = SCRIPT_DIR / "configs"
 DRIVE_BASE = Path("/content/drive/MyDrive")
 
-HF_SENTIMENT_MODEL = "raynzz455/id-political-sentiment-sentiment-v4"
-HF_RELEVANCY_MODEL = "raynzz455/id-political-sentiment-relevancy-v4"
+HF_SENTIMENT_MODEL = "raynzz455/id-political-sentiment-sentiment"
+HF_RELEVANCY_MODEL = "raynzz455/id-political-sentiment-relevancy"
 
 
 def print_banner(msg):
