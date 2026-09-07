@@ -784,6 +784,15 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix
     cfg = TASK_CFG[task]
     out_dir = resolve_out_dir(cfg)  # FIX BUG#2: absolute path via script dir
 
+    # FIX FT#10 (CRITICAL): Use fold-specific output_dir for checkpoints.
+    if out_suffix:
+        fold_num = out_suffix.replace("_fold", "")
+        fold_dir = out_dir / f"fold_{fold_num}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = fold_dir
+    else:
+        ckpt_dir = out_dir
+
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg["base_model"], num_labels=len(cfg["labels"]),
@@ -824,7 +833,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label, out_suffix
     use_bf16 = (auto_prec == "bf16") and torch.cuda.is_available()
 
     train_args_dict = dict(
-        output_dir=str(out_dir),
+        output_dir=str(ckpt_dir),  # FIX FT#10: fold-specific checkpoint dir
         num_train_epochs=H.NUM_EPOCHS,
         per_device_train_batch_size=auto_batch,        # v4.2: adaptive
         per_device_eval_batch_size=auto_batch * 2,      # v4.2: eval 2x

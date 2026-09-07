@@ -896,6 +896,18 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     cfg = TASK_CFG[task]
     out_dir = resolve_out_dir(cfg)  # FIX BUG#2: absolute via script dir
 
+    # FIX FT#10 (CRITICAL): Use fold-specific output_dir for checkpoints.
+    # Before: output_dir=out_dir (shared across all folds) → fold 2 finds
+    # fold 1's checkpoint → resumes → skips training entirely!
+    # After: output_dir=fold_dir (per-fold) → each fold has own checkpoints.
+    if out_suffix:
+        fold_num = out_suffix.replace("_fold", "")
+        fold_dir = out_dir / f"fold_{fold_num}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_dir = fold_dir  # checkpoints go in fold-specific dir
+    else:
+        ckpt_dir = out_dir
+
     tok = AutoTokenizer.from_pretrained(cfg["base_model"])
     model = AutoModelForSequenceClassification.from_pretrained(
         cfg["base_model"], num_labels=len(cfg["labels"]),
@@ -942,7 +954,7 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
 
     # Build TrainingArguments dict (compatible with transformers 4.40+)
     train_args_dict = dict(
-        output_dir=str(out_dir),
+        output_dir=str(ckpt_dir),  # FIX FT#10: fold-specific checkpoint dir
         num_train_epochs=H.NUM_EPOCHS,
         per_device_train_batch_size=auto_batch,        # v4.2: adaptive
         per_device_eval_batch_size=auto_batch * 2,      # v4.2: eval 2x (no backward)
@@ -1006,14 +1018,23 @@ def train_single_fold(task, train_rows, val_rows, label2id, id2label,
     )
 
     # OPT v4.5: Resume from checkpoint if available (Colab disconnect recovery).
-    # Look for latest checkpoint in output_dir and resume from there.
+    # FIX FT#10 (CRITICAL): Search in ckpt_dir (fold-specific), NOT out_dir (shared).
+    # Before: searched out_dir → fold 2 found fold 1's checkpoint → skipped training!
+    # After: search ckpt_dir → only finds THIS fold's checkpoint.
     resume_ckpt = None
     if out_suffix:  # only for K-fold mode (fold_N dirs)
-        checkpoint_pattern = list(out_dir.glob("checkpoint-*"))
+        checkpoint_pattern = list(ckpt_dir.glob("checkpoint-*"))
         if checkpoint_pattern:
             latest_ckpt = max(checkpoint_pattern, key=lambda p: int(p.name.split("-")[1]))
             resume_ckpt = str(latest_ckpt)
             print(f"  🔄 Resuming from checkpoint: {latest_ckpt.name}")
+        # FIX FT#10: Clean up old checkpoints from shared out_dir (from previous runs)
+        old_ckpts = list(out_dir.glob("checkpoint-*"))
+        if old_ckpts:
+            import shutil
+            for oc in old_ckpts:
+                shutil.rmtree(oc, ignore_errors=True)
+            print(f"  🧹 Cleaned {len(old_ckpts)} old checkpoint(s) from shared out_dir")
 
     # OPT v4.6: Use OOM recovery wrapper — auto-reduce batch if CUDA OOM
     train_with_oom_recovery(trainer, resume_ckpt=resume_ckpt, max_retries=2)
