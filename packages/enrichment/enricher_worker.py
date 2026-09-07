@@ -185,7 +185,14 @@ def clean_boilerplate(text: str, title: str = "") -> str:
         clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
         if text[:60].lower().startswith(clean_title[:30]):
             text = text[len(clean_title):].strip()
-            text = re.sub(r'^[\s\-:|]+[a-zA-Z\s,\d]{0,20}', '', text).strip()
+            # FIX EC#4 (MEDIUM): Restrict regex to source attribution patterns only.
+            # Before: `r'^[\s\-:|]+[a-zA-Z\s,\d]{0,20}'` stripped up to 20 arbitrary
+            # alphanumeric chars → could remove real content (e.g., " - Hari ini...").
+            # After: Only strip known source attribution prefixes (news outlet names).
+            text = re.sub(
+                r'^[\s\-:|]+(?:KOMPAS|CNN|TEMPO|TRIBUN|ANTARA|detik|Suara|Republika|JAKARTA|Jurnal)[\.\-\u2013\u2014]?\s*',
+                '', text, flags=re.IGNORECASE
+            ).strip()
 
     # v21: Deduplicate sentences (core content based)
     sentences = re.split(r'(?<=[.!?])\s+', text)

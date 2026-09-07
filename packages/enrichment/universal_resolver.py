@@ -47,6 +47,7 @@ BLOCKED_HTML_PATTERNS = [
 _thread_local = threading.local()
 _domain_semaphores: dict[str, threading.Semaphore] = {}
 _domain_semaphore_lock = threading.Lock()
+_DOMAIN_SEMAPHORE_MAX_SIZE = 500  # FIX ML#1: cap dict size to prevent unbounded growth
 
 
 @dataclass
@@ -76,6 +77,16 @@ def _get_domain_semaphore(url: str) -> threading.Semaphore:
     sem = _domain_semaphores.get(domain)
     if sem is None:
         with _domain_semaphore_lock:
+            # FIX ML#1 (MEDIUM): Periodic cleanup of idle semaphores to prevent
+            # unbounded dict growth in long-running pipelines.
+            if len(_domain_semaphores) > _DOMAIN_SEMAPHORE_MAX_SIZE:
+                # Remove entries where semaphore is fully available (idle)
+                idle = [d for d, s in _domain_semaphores.items()
+                        if s._value == MAX_CONCURRENT_PER_DOMAIN]
+                for d in idle[:100]:  # remove up to 100 idle entries
+                    del _domain_semaphores[d]
+                logger.debug(f"Cleaned up {len(idle[:100])} idle domain semaphores "
+                             f"({len(_domain_semaphores)} remaining)")
             sem = _domain_semaphores.setdefault(domain, threading.Semaphore(MAX_CONCURRENT_PER_DOMAIN))
     return sem
 

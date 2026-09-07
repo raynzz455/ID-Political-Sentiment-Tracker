@@ -320,6 +320,10 @@ def main(target: int = 500, batch_size: int = 50, run_all: bool = False):
                       f"Deferred={stats['deferred']} | Spans={stats['spans_processed']} | "
                       f"RelFiltered={stats['relevancy_filtered']}", flush=True)
         gc.collect()
+        # FIX ML#2 (LOW): Clear GPU cache periodically to prevent memory fragmentation.
+        # After 100+ inference calls, GPU memory can fragment → OOM for large batches.
+        if torch.cuda.is_available() and processed % 50 == 0:
+            torch.cuda.empty_cache()
         time.sleep(0.5)
     elapsed = time.time() - start
     print(f"\n{'='*70}\nRINGKASAN DRAIN (v15)")

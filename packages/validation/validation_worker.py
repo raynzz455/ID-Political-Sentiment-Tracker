@@ -76,7 +76,13 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
     text_len = len(text)
     words = text.split()
     word_count = len(words)
-    has_id_stopword = any(w in ID_STOPWORDS for w in words)
+    # FIX EC#5 (MEDIUM): Strip punctuation before stopword check.
+    # Before: "yang," (with comma) didn't match "yang" in ID_STOPWORDS.
+    # After: Strip punctuation so "yang," → "yang" → matches.
+    import re as _re
+    words_clean = [_re.sub(r'[^\w]', '', w).lower() for w in words]
+    words_clean = [w for w in words_clean if w]  # remove empty after strip
+    has_id_stopword = any(w in ID_STOPWORDS for w in words_clean)
 
     max_possible += 25
     if text_len >= 1000: earned += 25
@@ -92,7 +98,12 @@ def calculate_quality_score(text: str, title: str) -> QualityResult:
         max_possible += 25
         if has_id_stopword: earned += 15
         try:
-            if detect(text[:500]) == "id": earned += 10
+            # FIX EC#6 (MEDIUM): Detect language on MIDDLE sample, not first 500 chars.
+            # Before: detect(text[:500]) — biased by English dateline/quote at start.
+            # After: detect middle 500 chars (more representative of article body).
+            mid = len(text) // 2
+            sample = text[max(0, mid - 250):mid + 250]
+            if detect(sample) == "id": earned += 10
         except LangDetectException:
             pass
 

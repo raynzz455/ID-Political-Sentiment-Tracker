@@ -116,7 +116,8 @@ def main(limit: int = 100, max_total: int = 0):
         existing_titles = set()
         titles_to_check = [a.get("title") or "" for a in articles if a.get("title")]
         chunk_size = 100
-        
+        dup_check_failed = False  # FIX SF#7: track if duplicate check failed
+
         for i in range(0, len(titles_to_check), chunk_size):
             chunk = titles_to_check[i:i + chunk_size]
             try:
@@ -129,7 +130,13 @@ def main(limit: int = 100, max_total: int = 0):
                 for row in (dup_res.data or []):
                     existing_titles.add(normalize_title(row.get("title") or ""))
             except Exception as e:
-                logger.warning(f"Gagal cek duplikat judul: {e}")
+                # FIX SF#7 (MEDIUM): Fail-CLOSED instead of fail-open.
+                # Before: existing_titles stays empty → duplicate check GATE 1 skipped
+                # → duplicates pass through to NLP queue.
+                # After: mark dup_check_failed=True, downstream will reject articles
+                # with fail_reason="duplicate_check_unavailable" (safer than allowing).
+                logger.error(f"Gagal cek duplikat judul (chunk {i//chunk_size + 1}): {e}")
+                dup_check_failed = True
 
         # 2. BATCH QUERY: Ambil semua contexts
         try:
@@ -172,6 +179,14 @@ def main(limit: int = 100, max_total: int = 0):
             full_text = art.get("text") or ""
             
             # GATE 1: Cek Duplikat Judul
+            # FIX SF#7: If duplicate check failed, fail-CLOSED (reject) instead of fail-open.
+            if dup_check_failed:
+                rejected_updates.append({
+                    "id": art_id, "status": pc.STATUS_FAILED,
+                    "metadata": {**metadata, "fail_reason": "duplicate_check_unavailable"}
+                })
+                stats["rejected"] += 1
+                continue
             if norm_title and norm_title in existing_titles:
                 rejected_updates.append({
                     "id": art_id, "status": pc.STATUS_SKIPPED, 

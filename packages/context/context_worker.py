@@ -139,7 +139,7 @@ _relevancy_pipeline = None
 # v23: Quality filter constants
 PROFILE_PATTERNS_V23 = [
     r'(?i)merupakan\s+(seorang\s+)?(tokoh|ulama|politisi|ekonom|pengusaha|aktivis|jurnalis|akademisi)',
-    r'(?i)lahir\s+(pada|di)\s+\d',
+    r'(?i)lahir\s+(pada|di)\s+[\w\d]',  # FIX EC#8: match word OR digit (was \d only)
     r'(?i)putra\s+(dari|ke-)',
     r'(?i)menjabat\s+sebagai\s+(Menteri|Gubernur|Walikota|Bupati|Ketua|Direktur)\s+(pada|di|tahun)\s+\d',
     r'(?i)perjalanan\s+(karier|politik)',
@@ -170,6 +170,10 @@ def is_redundant_v23(sentence, previous_sentences, threshold=0.5):
     sent_words = get_words(sentence)
     if not sent_words:
         return False
+    # FIX OB#8 (LOW): Only apply overlap check for sentences > 5 words.
+    # Before: short sentences (3-4 words) could false-match on 2 shared words.
+    # After: skip overlap check for short sentences (use Jaccard only).
+    sent_is_short = len(sent_words) <= 5
     for prev in previous_sentences:
         prev_words = get_words(prev)
         if not prev_words:
@@ -178,9 +182,11 @@ def is_redundant_v23(sentence, previous_sentences, threshold=0.5):
         union = len(sent_words | prev_words)
         if union > 0 and intersection / union >= threshold:
             return True
-        overlap = intersection / min(len(sent_words), len(prev_words))
-        if overlap >= 0.6:
-            return True
+        # Only apply overlap check if both sentences are long enough
+        if not sent_is_short and len(prev_words) > 5:
+            overlap = intersection / min(len(sent_words), len(prev_words))
+            if overlap >= 0.6:
+                return True
     return False
 
 def get_relevancy_pipeline():
@@ -280,31 +286,55 @@ def analyze_entity_role(entity_name: str, context_text: str) -> tuple[str, str]:
         doc = nlp_coref(context_text)
         entity_lower = entity_name.lower().strip()
 
-        # Build coref clusters for pronoun resolution
-        # cluster_map: mention_text → list of all mentions in same cluster
-        cluster_mentions = {}  # cluster_id → set of mention texts
-        mention_to_cluster = {}  # mention_text → cluster_id
+        # FIX OB#7: Coref cluster tracking moved below (replaced old single-cluster map).
+
+        def is_entity_match(word_text: str) -> bool:
+            """Check if a word refers to the entity (direct or via coref).
+
+            FIX OB#6 (MEDIUM): Tighter matching to prevent false positives.
+            Before: `entity_lower in wt or wt in entity_lower` — substring check.
+              Bug: "Anies" matched "anieskan" (false positive).
+                   "Joko Widodo" matched "joko" (different person).
+            After: Word-level token overlap for multi-word entities.
+            """
+            wt = word_text.lower().strip()
+            if not wt:
+                return False
+            # For single-word entities, require exact word match (not substring)
+            entity_words = entity_lower.split()
+            wt_words = wt.split()
+            # Exact match (fast path)
+            if entity_lower == wt:
+                return True
+            # Multi-word entity: all entity words must be in word_text's tokens
+            if len(entity_words) > 1:
+                return all(ew in wt_words for ew in entity_words)
+            # Single-word entity: exact match only (no substring)
+            return entity_words[0] == wt
+
+        # FIX OB#7 (MEDIUM): Handle coref cluster collision for common pronouns.
+        # Before: mention_to_cluster[t] = cid → last cluster wins for "dia"/"ia".
+        # After: Track all clusters per mention; if ambiguous, return "unknown".
+        cluster_to_mentions = {}  # cluster_id → set of mention texts
+        mention_to_clusters = {}  # mention_text → set of cluster_ids
         if hasattr(doc, 'coref') and doc.coref:
             for cid, cluster in enumerate(doc.coref):
                 texts = set()
                 for mention in cluster.mentions:
                     texts.add(mention.text.lower())
+                cluster_to_mentions[cid] = texts
                 for t in texts:
-                    mention_to_cluster[t] = cid
-                cluster_mentions[cid] = texts
+                    mention_to_clusters.setdefault(t, set()).add(cid)
 
-        def is_entity_match(word_text: str) -> bool:
-            """Check if a word refers to the entity (direct or via coref)."""
-            wt = word_text.lower()
-            if entity_lower in wt or wt in entity_lower:
-                return True
-            # Coref check: word is in same cluster as entity
-            cid = mention_to_cluster.get(wt)
-            if cid is not None:
-                cluster_texts = cluster_mentions.get(cid, set())
-                if any(entity_lower in ct for ct in cluster_texts):
-                    return True
-            return False
+        def resolve_coref_cluster(word_text: str):
+            """Return cluster_id if unambiguous, None if ambiguous or not in any cluster."""
+            wt = word_text.lower().strip()
+            clusters = mention_to_clusters.get(wt, set())
+            if len(clusters) == 0:
+                return None
+            if len(clusters) > 1:
+                return None  # ambiguous — multiple clusters claim this pronoun
+            return next(iter(clusters))  # exactly one cluster
 
         for sent in doc.sentences:
             words = sent.words
@@ -328,7 +358,17 @@ def analyze_entity_role(entity_name: str, context_text: str) -> tuple[str, str]:
 
             # Check entity's role relative to root verb
             for word in words:
-                if not is_entity_match(word.text):
+                # FIX OB#6/OB#7: Check direct match OR coref resolution
+                matched = is_entity_match(word.text)
+                if not matched:
+                    # Try coref: is this word a pronoun that refers to entity?
+                    cid = resolve_coref_cluster(word.text)
+                    if cid is not None:
+                        # Check if entity name is in this cluster's mentions
+                        cluster_texts = cluster_to_mentions.get(cid, set())
+                        if any(is_entity_match(ct) for ct in cluster_texts):
+                            matched = True
+                if not matched:
                     continue
                 # Entity found — check its dependency role
                 if word.deprel in ("nsubj", "nsubj:pass", "csubj"):
@@ -473,7 +513,21 @@ CONTEXT_WINDOW_SENTENCES = 3  # anchor ± 1-2 surrounding sentences
 DEFAULT_DAYS_BACK = 30
 
 def get_paragraph_index(text: str, offset: int) -> int:
-    return text[:offset].count('\n\n')
+    """Return paragraph index for the given character offset.
+
+    FIX EC#7 (MEDIUM): Fallback for single-paragraph articles (no \\n\\n).
+    Before: `text[:offset].count('\\n\\n')` → always 0 for enriched articles
+    (enricher_worker joins sentences with spaces, not \\n\\n).
+    After: Estimate paragraph from sentence boundaries if no \\n\\n found.
+    """
+    para_count = text[:offset].count('\n\n')
+    if para_count > 0:
+        return para_count
+    # FIX EC#7: Estimate paragraph index from sentence count.
+    # Assume ~5 sentences per paragraph as fallback.
+    text_up_to = text[:offset]
+    sentence_count = text_up_to.count('. ') + text_up_to.count('! ') + text_up_to.count('? ')
+    return sentence_count // 5
 
 def is_core_argument(sent, start_offset: int, end_offset: int) -> bool:
     for word in sent.words:
@@ -659,8 +713,13 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
                 # FIX CW#6: same fix for prev_idx
                 prev_idx -= 1
 
-            if not added_this_round:
+            # FIX OB#5 (MEDIUM): Don't break prematurely when both sentences are short.
+            # Before: `if not added_this_round: break` stops loop even if longer
+            # sentences exist further away. Now only break if we've exhausted
+            # both sides (prev_idx < 0 AND next_idx >= len(sentences)).
+            if next_idx >= len(sentences) and prev_idx < 0:
                 break
+            # Also break if max capacity reached (handled by current_chars check above)
 
         ctx_text = " ".join(context_parts)
         # v19: truncate by CHARS (not words) for precise token control
@@ -876,9 +935,20 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                              .select("raw_text_id, entity_id, start_offset, end_offset, political_entities(canonical_name)") \
                              .in_("raw_text_id", art_ids) \
                              .execute()
-        except Exception:
+        except Exception as e:
+            # FIX SF#6 (MEDIUM): Log error + max retries to prevent infinite loop.
+            # Before: silent `time.sleep(5); continue` → infinite loop if query persistently fails.
+            # After: log error, increment retry counter, break after 3 consecutive failures.
+            logger.error(f"Mentions fetch failed for batch {len(art_ids)} articles: {e}")
+            _mentions_fetch_failures = getattr(main, '_mentions_fetch_failures', 0) + 1
+            setattr(main, '_mentions_fetch_failures', _mentions_fetch_failures)
+            if _mentions_fetch_failures >= 3:
+                logger.error(f"Mentions fetch failed {_mentions_fetch_failures} consecutive times — breaking to prevent infinite loop")
+                break
             time.sleep(5)
             continue
+        # Reset failure counter on success
+        setattr(main, '_mentions_fetch_failures', 0)
         mentions_by_art = {}
         for m in (mentions_res.data or []):
             mentions_by_art.setdefault(m["raw_text_id"], []).append(m)
