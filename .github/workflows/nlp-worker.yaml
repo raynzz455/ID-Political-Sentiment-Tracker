@@ -34,3 +34,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}  # FIX: prevent rate-limited HF downloads
+          NLP_SENTIMENT_MODEL: ${{ vars.NLP_SENTIMENT_MODEL }}  # optional: fine-tuned v4
+          NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}  # optional: fine-tuned v4

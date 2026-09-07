@@ -70,9 +70,12 @@ except Exception as e:
 # Coref resolver — untuk filter "speaker_not_target" cases
 # (mis. "Erick mengatakan X" → Erick = speaker, bukan target sentiment)
 # FIX RC#1 (CRITICAL): Add threading.Lock to prevent concurrent model loading.
-# Before: 4 threads could simultanously pass `if NLP_COREF is None` check →
-# load 4x Stanza Coref (~1GB each) = ~4GB OOM crash.
-# After: Double-checked locking with threading.Lock ensures single load.
+# FIX FT#11 (CRITICAL): Stanza coref NOT available for Indonesian language!
+#   "Processor coref is not known for language id"
+#   Solution: Use depparse only (no coref). Coref resolution for pronouns
+#   is skipped — we rely on direct entity name matching only.
+#   Impact: Pronoun "dia" won't be resolved to entity, but direct mentions
+#   (nsubj/obj) still work for attribution check.
 _MODEL_LOCK = threading.Lock()
 NLP_COREF = None
 def get_coref_pipeline():
@@ -81,15 +84,19 @@ def get_coref_pipeline():
         with _MODEL_LOCK:  # slow path — acquire lock
             if NLP_COREF is None:  # double-check inside lock
                 try:
-                    logger.info("Memuat Stanza Coref Pipeline (tokenize,pos,lemma,depparse,coref)...")
+                    logger.info("Memuat Stanza Pipeline untuk role analysis (tokenize,pos,lemma,depparse)...")
                     use_gpu = torch.cuda.is_available()
+                    # FIX FT#11: Removed 'coref' processor — not available for Indonesian.
+                    # Reuse existing NLP pipeline (tokenize,pos,lemma,depparse) instead.
+                    # analyze_entity_role() uses dependency parsing (nsubj/obj) which
+                    # works WITHOUT coref resolution.
                     NLP_COREF = stanza.Pipeline(
                         'id',
-                        processors='tokenize,pos,lemma,depparse,coref',
+                        processors='tokenize,pos,lemma,depparse',
                         verbose=False, use_gpu=use_gpu, batch_size=16
                     )
                 except Exception as e:
-                    logger.warning(f"Coref pipeline load failed (attribution check disabled): {e}")
+                    logger.warning(f"Stanza pipeline load failed (attribution check disabled): {e}")
                     NLP_COREF = None
     return NLP_COREF
 
