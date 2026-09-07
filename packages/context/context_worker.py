@@ -66,42 +66,57 @@ except Exception as e:
     logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
     NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False, batch_size=32)
 
-# v4.3: Stanza Coref Pipeline untuk attribution check
-# Coref resolver — untuk filter "speaker_not_target" cases
-# (mis. "Erick mengatakan X" → Erick = speaker, bukan target sentiment)
-# FIX RC#1 (CRITICAL): Add threading.Lock to prevent concurrent model loading.
-# FIX FT#11 (CRITICAL): Stanza coref NOT available for Indonesian language!
-#   "Processor coref is not known for language id"
-#   Solution: Use depparse only (no coref). Coref resolution for pronouns
-#   is skipped — we rely on direct entity name matching only.
-#   Impact: Pronoun "dia" won't be resolved to entity, but direct mentions
-#   (nsubj/obj) still work for attribution check.
+# v4.7: Crosslingual Coreference Resolution (XLM-R based, supports Indonesian)
+# FIX FT#11: Stanza coref not available for Indonesian.
+# Solution: Use crosslingual-coref library (XLM-R neural model, 100+ languages).
+# This is a LIBRARY, not manual build — tested on multilingual corpora.
+#
+# Models:
+#   - "info_xlm" (best multilingual accuracy, ~500MB)
+#   - "minilm" (faster, ~100MB, slightly lower accuracy)
+#
+# Fallback: If crosslingual-coref fails, use Stanza depparse only (no coref).
 _MODEL_LOCK = threading.Lock()
 NLP_COREF = None
 def get_coref_pipeline():
+    """Get coreference resolution pipeline.
+
+    v4.7: Uses crosslingual-coref (XLM-R based) instead of Stanza coref.
+    Falls back to Stanza depparse only if crosslingual-coref unavailable.
+    """
     global NLP_COREF
-    if NLP_COREF is None:  # fast path (no lock) — already loaded
-        with _MODEL_LOCK:  # slow path — acquire lock
-            if NLP_COREF is None:  # double-check inside lock
+    if NLP_COREF is None:  # fast path
+        with _MODEL_LOCK:  # slow path
+            if NLP_COREF is None:  # double-check
+                # Try crosslingual-coref first (XLM-R, supports Indonesian)
                 try:
-                    logger.info("Memuat Stanza Pipeline untuk role analysis (tokenize,pos,lemma,depparse)...")
-                    use_gpu = torch.cuda.is_available()
-                    # FIX FT#11: Removed 'coref' processor — not available for Indonesian.
-                    # Reuse existing NLP pipeline (tokenize,pos,lemma,depparse) instead.
-                    # analyze_entity_role() uses dependency parsing (nsubj/obj) which
-                    # works WITHOUT coref resolution.
-                    NLP_COREF = stanza.Pipeline(
-                        'id',
-                        processors='tokenize,pos,lemma,depparse',
-                        verbose=False, use_gpu=use_gpu, batch_size=16
+                    from crosslingual_coreference import Predictor
+                    model = os.environ.get("COREF_MODEL", "minilm")  # minilm=fast, info_xlm=accurate
+                    logger.info(f"Memuat crosslingual-coref (model={model})...")
+                    device = 0 if torch.cuda.is_available() else -1
+                    NLP_COREF = Predictor(
+                        language="en_core_web_sm",  # base spaCy model (coref is cross-lingual)
+                        device=device,
+                        model_name=model
                     )
+                    logger.info(f"✅ crosslingual-coref loaded (Indonesian supported)")
                 except Exception as e:
-                    logger.warning(f"Stanza pipeline load failed (attribution check disabled): {e}")
-                    NLP_COREF = None
+                    logger.warning(f"crosslingual-coref load failed: {e}")
+                    logger.warning("Falling back to Stanza depparse only (no pronoun resolution)")
+                    try:
+                        NLP_COREF = stanza.Pipeline(
+                            'id',
+                            processors='tokenize,pos,lemma,depparse',
+                            verbose=False, use_gpu=torch.cuda.is_available(), batch_size=16
+                        )
+                    except Exception as e2:
+                        logger.warning(f"Stanza fallback also failed: {e2}")
+                        NLP_COREF = None
     return NLP_COREF
 
-# v4.3: KeyBERT untuk topic dominance check
-# Cek apakah entity adalah topik utama context (bukan cuma disebut)
+# v4.7: KeyBERT with multilingual embeddings (Indonesian-optimized)
+# FIX: KeyBERT default model is English-centric.
+# Solution: Use paraphrase-multilingual-MiniLM-L12-v2 (50+ languages incl. Indonesian).
 _KW_MODEL = None
 def get_keybert_model():
     global _KW_MODEL
@@ -110,8 +125,14 @@ def get_keybert_model():
             if _KW_MODEL is None:  # double-check
                 try:
                     from keybert import KeyBERT
-                    logger.info("Memuat KeyBERT model (indobenchmark/indobert-base-p1)...")
-                    _KW_MODEL = KeyBERT(model="indobenchmark/indobert-base-p1")
+                    # v4.7: Use multilingual model (supports Indonesian)
+                    model_name = os.environ.get(
+                        "KEYBERT_MODEL",
+                        "paraphrase-multilingual-MiniLM-L12-v2"  # 50+ languages
+                    )
+                    logger.info(f"Memuat KeyBERT model ({model_name})...")
+                    _KW_MODEL = KeyBERT(model=model_name)
+                    logger.info(f"✅ KeyBERT loaded (multilingual, Indonesian supported)")
                 except Exception as e:
                     logger.warning(f"KeyBERT load failed (topic check disabled): {e}")
                     _KW_MODEL = None
