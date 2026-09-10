@@ -10,6 +10,7 @@ torch>=2.0.0
 transformers>=4.35.0
 stanza
 lxml
+wikipedia>=1.4.0  # v4.8: entity enrichment (auto-fetch bio + image)
 # NOTE: keybert, sentence-transformers, Sastrawi are OPTIONAL.
 # context_worker gracefully skips them if not installed (try/except).
 # For finetuning (Colab), install: pip install -r finetuning/requirements_finetune.txt
