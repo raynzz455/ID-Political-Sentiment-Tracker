@@ -13,5 +13,4 @@ lxml
 # v4.7: Library-based Indonesian NLP (no manual build)
 keybert>=0.7.0
 sentence-transformers>=2.2.0  # multilingual embeddings for KeyBERT
-crosslingual-coreference>=0.1.0  # XLM-R based coref (supports Indonesian)
 Sastrawi>=1.0.1  # Indonesian stemmer + stopwords
