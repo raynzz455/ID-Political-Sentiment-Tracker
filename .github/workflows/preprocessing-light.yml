@@ -1,0 +1,48 @@
+name: 2a. Enricher + Validation + Preprocessing
+
+on:
+  schedule:
+    # Setelah Ingestion: 00:45, 05:55, 10:55, 16:15 UTC
+    - cron: '45 0 * * *'
+    - cron: '55 5 * * *'
+    - cron: '55 10 * * *'
+    - cron: '15 16 * * *'
+
+  workflow_dispatch:
+
+jobs:
+  run-light-prep:
+    name: Run Enricher -> Validation -> Preprocessing
+    runs-on: ubuntu-latest
+    timeout-minutes: 15  # Ringan, tidak butuh Stanza/torch
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies (lightweight)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Enricher Worker
+        run: python main.py run-worker enricher --limit 200
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Run Validation Worker
+        run: python main.py run-worker validation --limit 200
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Run Preprocessing Worker
+        run: python main.py run-worker preprocessing --limit 200
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
