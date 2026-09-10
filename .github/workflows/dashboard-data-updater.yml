@@ -1,0 +1,38 @@
+name: 5. Dashboard Data Updater
+
+on:
+  schedule:
+    # Setiap 2 jam: 00:30, 02:30, 04:30, ..., 22:30 UTC
+    - cron: '30 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-dashboard-data:
+    name: Update Entity Stats + Highlights
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies (lightweight)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Update Entity Stats (mention_count_7d/30d + last_mentioned_at)
+        run: python -m packages.entity.stats_updater
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      - name: Curate Highlights (entity_highlights)
+        run: python -m packages.nlp.highlight_curator
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
