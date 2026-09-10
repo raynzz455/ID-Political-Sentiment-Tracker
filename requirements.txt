@@ -10,7 +10,6 @@ torch>=2.0.0
 transformers>=4.35.0
 stanza
 lxml
-# v4.7: Library-based Indonesian NLP (no manual build)
-keybert>=0.7.0
-sentence-transformers>=2.2.0  # multilingual embeddings for KeyBERT
-Sastrawi>=1.0.1  # Indonesian stemmer + stopwords
+# NOTE: keybert, sentence-transformers, Sastrawi are OPTIONAL.
+# context_worker gracefully skips them if not installed (try/except).
+# For finetuning (Colab), install: pip install -r finetuning/requirements_finetune.txt

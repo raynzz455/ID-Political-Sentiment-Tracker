@@ -13,3 +13,8 @@ scikit-learn>=1.4.0
 numpy>=1.26.0
 sentencepiece>=0.2.0
 protobuf>=4.25.0
+# v4.7: Indonesian NLP libraries (for context_worker + KeyBERT)
+keybert>=0.7.0
+sentence-transformers>=2.2.0
+Sastrawi>=1.0.1
+huggingface_hub>=1.0.0
