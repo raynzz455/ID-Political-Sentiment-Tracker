@@ -53,18 +53,29 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-RESOLVER_VERSION = "v15.1_expanded_verbs"
+RESOLVER_VERSION = "v16_lightweight"
 DEFAULT_DAYS_BACK = 30
 MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
-logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
-try:
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
-                          verbose=False, use_gpu=True, batch_size=32)
-except Exception as e:
-    logger.warning(f"GPU Stanza gagal, fallback CPU: {e}")
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
-                          verbose=False, use_gpu=False, batch_size=32)
+# v20: LIGHTWEIGHT MODE — skip Stanza on CPU/restricted environments
+LIGHTWEIGHT_MODE = os.environ.get("LIGHTWEIGHT_MODE", "0") == "1"
+
+NLP = None
+if not LIGHTWEIGHT_MODE:
+    logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
+    try:
+        NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
+                              verbose=False, use_gpu=True, batch_size=32)
+    except Exception as e:
+        logger.warning(f"GPU Stanza gagal, fallback CPU: {e}")
+        try:
+            NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse',
+                                  verbose=False, use_gpu=False, batch_size=32)
+        except Exception as e2:
+            logger.warning(f"Stanza load failed: {e2} — using lightweight mode")
+            LIGHTWEIGHT_MODE = True
+else:
+    logger.info("⚡ LIGHTWEIGHT MODE — skipping Stanza (regex-based entity resolution)")
 
 # v14.2/v15: EXPANDED verb sets (lemma forms, 70.7% coverage).
 # Stanza returns ROOT lemmas (dikritik→kritik, mengecam→kecam). Passive via deprel=nsubj:pass.
@@ -378,28 +389,44 @@ def process_single_article_entity(art: dict, alias_map: dict, entity_db_map: dic
         logger.warning(f"ID: {art['id'][:8]} | SKIP: body kosong/pendek (len={body_len}) | preview: {body_preview}")
         return None
 
-    try:
-        doc = NLP(body)
-    except Exception as e:
-        # DEBUG: log detail Stanza error untuk identifikasi root cause
-        logger.error(f"ID: {art['id'][:8]} | Stanza Error: {type(e).__name__}: {e}")
-        logger.error(f"  body length: {len(body) if body else 0}")
-        logger.error(f"  body preview: {body[:100] if body else 'None'}...")
-        logger.error(f"  NLP type: {type(NLP).__name__}")
-        return None
+    # v20: LIGHTWEIGHT MODE - skip Stanza, use regex only
+    if LIGHTWEIGHT_MODE or NLP is None:
+        full_persons = []  # empty = is_false_positive will skip PROPN check
+        import re as _re
+        _sent_splits = list(_re.finditer(r"(?<=[.!?])\s+", body))
+        sentences = []
+        pos = 0
+        for m in _sent_splits:
+            sent_text = body[pos:m.start()].strip()
+            if len(sent_text) > 10:
+                sentences.append({"text": sent_text, "start": pos, "end": m.start(), "parsed": None})
+            pos = m.end()
+        if pos < len(body):
+            sent_text = body[pos:].strip()
+            if len(sent_text) > 10:
+                sentences.append({"text": sent_text, "start": pos, "end": len(body), "parsed": None})
+        if not sentences:
+            return None
+        doc = None
+    else:
+        try:
+            doc = NLP(body)
+        except Exception as e:
+            logger.error(f"ID: {art['id'][:8]} | Stanza Error: {type(e).__name__}: {e}")
+            return None
 
-    persons = []
-    current_person = []
-    for sent in doc.sentences:
-        for word in sent.words:
-            if word.upos == 'PROPN':
-                current_person.append(word.text)
-            else:
-                if current_person:
-                    persons.append(" ".join(current_person))
-                    current_person = []
-        if current_person:
-            persons.append(" ".join(current_person))
+        persons = []
+        current_person = []
+        for sent in doc.sentences:
+            for word in sent.words:
+                if word.upos == 'PROPN':
+                    current_person.append(word.text)
+                else:
+                    if current_person:
+                        persons.append(" ".join(current_person))
+                        current_person = []
+            if current_person:
+                persons.append(" ".join(current_person))
             # FIX EL#2 (MEDIUM): Reset current_person at end of each sentence.
             # Before: current_person not reset → next sentence's PROPN appended
             # to leftover (e.g. "Erick Thohir" + "Jakarta" → "Erick Thohir Jakarta")

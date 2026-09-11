@@ -56,15 +56,31 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
-CONTEXT_VERSION = "v19.1_max_token"
+CONTEXT_VERSION = "v20_lightweight"
 MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
 
-logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
-try:
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=True, batch_size=32)
-except Exception as e:
-    logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
-    NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False, batch_size=32)
+# v20: LIGHTWEIGHT MODE — skip Stanza on CPU/restricted environments
+# Stanza on GitHub Actions (2-core CPU) takes ~10s per article → timeout.
+# Lightweight mode uses regex sentence tokenization → ~0.1s per article.
+# Stanza-dependent features (analyze_entity_role, is_core_argument) are skipped.
+# Env var: LIGHTWEIGHT_MODE=1 to enable, LIGHTWEIGHT_MODE=0 to disable.
+LIGHTWEIGHT_MODE = os.environ.get("LIGHTWEIGHT_MODE", "0") == "1"
+
+NLP = None  # Lazy load — only if NOT lightweight mode
+
+if not LIGHTWEIGHT_MODE:
+    logger.info("Memuat Stanza Pipeline (tokenize,pos,lemma,depparse)...")
+    try:
+        NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=True, batch_size=32)
+    except Exception as e:
+        logger.warning(f"Gagal load GPU Stanza, fallback ke CPU: {e}")
+        try:
+            NLP = stanza.Pipeline('id', processors='tokenize,pos,lemma,depparse', verbose=False, use_gpu=False, batch_size=32)
+        except Exception as e2:
+            logger.warning(f"Stanza load failed entirely: {e2} — using lightweight mode")
+            LIGHTWEIGHT_MODE = True
+else:
+    logger.info("⚡ LIGHTWEIGHT MODE enabled — skipping Stanza (regex-based context extraction)")
 
 # v4.7: Lightweight Coreference Resolution untuk Indonesian
 # FIX FT#11: Stanza coref not available for Indonesian.
@@ -179,6 +195,39 @@ def is_profile_sentence_v23(sentence):
         if re.search(pattern, sentence):
             return True
     return False
+
+# v20: Lightweight regex-based sentence tokenizer (replaces Stanza)
+_SENT_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
+def tokenize_sentences_regex(text: str) -> list:
+    """Split text into sentences using regex (no Stanza needed).
+    
+    Returns list of {text, start, end, parsed} dicts — same format as Stanza sentences.
+    parsed=None in lightweight mode (no dependency parsing available).
+    """
+    sentences = []
+    pos = 0
+    for match in _SENT_SPLIT_RE.finditer(text):
+        sent_text = text[pos:match.start()].strip()
+        if len(sent_text) > 10:
+            sentences.append({
+                "text": sent_text,
+                "start": pos,
+                "end": match.start(),
+                "parsed": None,  # no Stanza parse in lightweight mode
+            })
+        pos = match.end()
+    # Last sentence
+    if pos < len(text):
+        sent_text = text[pos:].strip()
+        if len(sent_text) > 10:
+            sentences.append({
+                "text": sent_text,
+                "start": pos,
+                "end": len(text),
+                "parsed": None,
+            })
+    return sentences
 
 def is_redundant_v23(sentence, previous_sentences, threshold=0.5):
     if not previous_sentences:
@@ -570,29 +619,36 @@ def extract_local_clause(sent_text: str, sent_start_char: int, entity_start: int
 
 
 def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
-    """v18: process 1 article — multi-mention + relevancy pre-filter."""
+    """v20: process 1 article — supports lightweight mode (no Stanza)."""
     art_id = art["id"]
     title = (art.get("title") or "").strip()
     body = (art.get("text") or "").strip()
     clean_text = body  # title excluded (v17 fix preserved)
     if not clean_text: return []
 
-    try:
-        doc = NLP(clean_text)
-    except Exception as e:
-        logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
-        return []
-
-    sentences = []
-    for sent in doc.sentences:
-        if len(sent.text.strip()) > 10:
-            sentences.append({
-                "text": sent.text,
-                "start": sent.tokens[0].start_char,
-                "end": sent.tokens[-1].end_char,
-                "parsed": sent
-            })
-    if not sentences: return []
+    # v20: LIGHTWEIGHT MODE — use regex sentence tokenization (no Stanza)
+    if LIGHTWEIGHT_MODE or NLP is None:
+        sentences = tokenize_sentences_regex(clean_text)
+        if not sentences: return []
+    else:
+        try:
+            doc = NLP(clean_text)
+        except Exception as e:
+            logger.error(f"ID: {art_id[:8]} | Stanza Error: {e}")
+            # Fallback to regex
+            sentences = tokenize_sentences_regex(clean_text)
+            if not sentences: return []
+        else:
+            sentences = []
+            for sent in doc.sentences:
+                if len(sent.text.strip()) > 10:
+                    sentences.append({
+                        "text": sent.text,
+                        "start": sent.tokens[0].start_char,
+                        "end": sent.tokens[-1].end_char,
+                        "parsed": sent
+                    })
+            if not sentences: return []
 
     art_mentions = mentions_by_art.get(art_id, [])
     # v18: collect ALL spans per entity (not just best)
@@ -640,21 +696,42 @@ def process_single_article_context(art: dict, mentions_by_art: dict) -> list:
         anchor_idx = rm["anchor_idx"]
         anchor_sent = sentences[anchor_idx]
         is_crowded = anchor_idx in crowded_sentence_idxs
-        is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
 
-        root_word = ""
-        has_sentiment_predicate = False
-        has_attribution = False
-        has_negative_noun = False
-        has_positive_noun = False
-        for word in anchor_sent["parsed"].words:
-            lemma = (word.lemma or word.text).lower()
-            if word.deprel == 'root':
-                root_word = lemma
-                if root_word in SENTIMENT_PREDICATES_ACTIVE:
+        # v20: LIGHTWEIGHT MODE — skip Stanza-dependent features
+        if LIGHTWEIGHT_MODE or anchor_sent.get("parsed") is None:
+            # No Stanza parse available — use defaults
+            is_main_actor = True  # assume main actor (fail-open)
+            has_sentiment_predicate = False
+            has_attribution = False
+            has_negative_noun = False
+            has_positive_noun = False
+            # Simple keyword check for sentiment verbs (no Stanza needed)
+            sent_text_lower = anchor_sent["text"].lower()
+            for verb in SENTIMENT_PREDICATES_ACTIVE:
+                if verb in sent_text_lower:
                     has_sentiment_predicate = True
-                if root_word in ATTRIBUTION_WORDS:
-                    has_attribution = True
+                    break
+            if not has_sentiment_predicate:
+                for attr_word in ATTRIBUTION_WORDS:
+                    if attr_word in sent_text_lower:
+                        has_attribution = True
+                        break
+        else:
+            is_main_actor = is_core_argument(anchor_sent["parsed"], rm["adjusted_offset"], rm["adjusted_end"])
+
+            root_word = ""
+            has_sentiment_predicate = False
+            has_attribution = False
+            has_negative_noun = False
+            has_positive_noun = False
+            for word in anchor_sent["parsed"].words:
+                lemma = (word.lemma or word.text).lower()
+                if word.deprel == 'root':
+                    root_word = lemma
+                    if root_word in SENTIMENT_PREDICATES_ACTIVE:
+                        has_sentiment_predicate = True
+                    if root_word in ATTRIBUTION_WORDS:
+                        has_attribution = True
             # v18.3: check for negative/positive framing NOUNS anywhere in sentence
             if word.upos in ('NOUN', 'PROPN'):
                 if lemma in NEGATIVE_FRAMING_NOUNS:

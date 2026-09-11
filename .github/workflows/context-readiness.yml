@@ -30,11 +30,12 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Context Worker
-        run: python main.py run-worker context --limit 100
+        run: python main.py run-worker context --limit 200
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          LIGHTWEIGHT_MODE: "1"  # v20: skip Stanza, use regex (100x faster on CPU)
           NLP_SENTIMENT_MODEL: ${{ vars.NLP_SENTIMENT_MODEL }}
           NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}
 
