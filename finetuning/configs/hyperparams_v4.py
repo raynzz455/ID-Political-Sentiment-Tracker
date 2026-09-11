@@ -68,7 +68,7 @@ MIXUP_ALPHA   = 0.3
 MIXUP_PROB    = 0.4
 
 OVERSAMPLING_ENABLED = True
-OVERSAMPLING_TARGETS = {"negative": 400, "positive": 600}
+OVERSAMPLING_TARGETS = {"negative": 400, "positive": 600, "not_relevant": 400}  # v20: add not_relevant
 
 K_FOLD_ENABLED = True
 K_FOLD_N       = 5

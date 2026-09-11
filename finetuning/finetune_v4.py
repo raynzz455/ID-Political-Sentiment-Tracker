@@ -334,7 +334,9 @@ TASK_CFG = {
         "labels": H.RELEVANCY_LABELS,
         "out_dir": H.OUT_DIR_RELEVANCY,
         "exclude_flags": ["corruption_stitch", "wrong_entity"],
-        "oversample": False,
+        "oversample": True,  # v20: enable oversample for relevancy (was False)
+        # Dataset: 2065 relevant vs 173 not_relevant (12:1 imbalance)
+        # Oversample not_relevant → 400 (reduce imbalance to 5:1)
     },
     "sentiment": {
         "data_file": "dataset_gold_standard_final.jsonl",
