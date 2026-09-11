@@ -1,18 +1,41 @@
 -- ============================================================
--- DASHBOARD RPC FUNCTIONS v2 — untuk frontend API routes
--- FIXED: performance + dependency on bio column
+-- DASHBOARD RPC FUNCTIONS v3 — SECURITY DEFINER + fixes
+--
+-- CHANGES v3:
+--   1. Add SECURITY DEFINER to functions that read RLS-blocked tables
+--      (sentiment_scores, raw_texts). Without this, anon browser calls
+--      return 0/empty because RLS blocks access.
+--   2. Add SET search_path = public (security best practice for SECURITY DEFINER)
+--   3. Resolve duplicate get_entity_highlights (drop old, create new)
+--   4. Add get_entity_daily_sentiment (aggregated daily, for line charts)
+--   5. Add get_entities_comparison (head-to-head, for compare page)
 --
 -- PRASYARAT: Run 14_add_entity_enrichment_columns.sql SEBELUM file ini!
--- (karena get_entities_list reference kolom bio)
 --
 -- Jalankan di Supabase SQL Editor
 -- ============================================================
 
+-- ============================================================
+-- DROP old functions first (resolve duplicates/conflicts)
+-- ============================================================
+DROP FUNCTION IF EXISTS get_dashboard_summary();
+DROP FUNCTION IF EXISTS get_entity_sentiment_timeline(uuid, integer);
+DROP FUNCTION IF EXISTS get_entity_highlights(uuid, integer);
+DROP FUNCTION IF EXISTS get_entities_list(integer, integer);
+DROP FUNCTION IF EXISTS get_sentiment_distribution(integer);
+DROP FUNCTION IF EXISTS get_entity_detail(uuid);
+DROP FUNCTION IF EXISTS get_entity_daily_sentiment(uuid, integer);
+DROP FUNCTION IF EXISTS get_entities_comparison(uuid[], integer);
+
+-- ============================================================
 -- 1. get_dashboard_summary — overview untuk dashboard page
--- Returns: total entities, total articles, sentiment counts, trending entities
+-- SECURITY DEFINER: reads sentiment_scores + raw_texts (RLS-blocked for anon)
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_dashboard_summary()
 RETURNS jsonb
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 SELECT jsonb_build_object(
   'total_entities', (SELECT COUNT(*) FROM political_entities WHERE is_active = true),
@@ -39,15 +62,18 @@ SELECT jsonb_build_object(
 );
 $$;
 
--- 2. get_entity_sentiment_timeline — sentiment per entity over time
--- FIXED v2: Use JOIN instead of correlated subquery (faster on partitioned tables)
--- Parameters: p_entity_id, p_days (default 30)
+-- ============================================================
+-- 2. get_entity_sentiment_timeline — per-article sentiment over time
+-- SECURITY DEFINER: reads sentiment_scores + raw_texts
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_entity_sentiment_timeline(
   p_entity_id uuid,
   p_days integer DEFAULT 30
 )
 RETURNS jsonb
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 SELECT COALESCE(jsonb_agg(jsonb_build_object(
   'date', DATE(ss.scored_at),
@@ -67,8 +93,10 @@ WHERE ss.entity_id = p_entity_id
 ORDER BY ss.scored_at DESC;
 $$;
 
--- 3. get_entity_highlights — featured articles per entity
--- Parameters: p_entity_id (optional, NULL = all), p_limit
+-- ============================================================
+-- 3. get_entity_highlights — featured articles
+-- NO SECURITY DEFINER needed: entity_highlights is anon-readable
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_entity_highlights(
   p_entity_id uuid DEFAULT NULL,
   p_limit integer DEFAULT 20
@@ -98,8 +126,10 @@ ORDER BY eh.confidence DESC, eh.published_at DESC NULLS LAST
 LIMIT p_limit;
 $$;
 
--- 4. get_entities_list — list semua entities dengan stats
--- Parameters: p_limit, p_offset (untuk pagination)
+-- ============================================================
+-- 4. get_entities_list — paginated entity list
+-- NO SECURITY DEFINER needed: political_entities is anon-readable
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_entities_list(
   p_limit integer DEFAULT 50,
   p_offset integer DEFAULT 0
@@ -132,13 +162,17 @@ FROM (
 ) pe;
 $$;
 
--- 5. get_sentiment_distribution — untuk pie chart dashboard
--- Parameters: p_days (default 30)
+-- ============================================================
+-- 5. get_sentiment_distribution — pie chart
+-- SECURITY DEFINER: reads sentiment_scores
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_sentiment_distribution(
   p_days integer DEFAULT 30
 )
 RETURNS jsonb
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 SELECT jsonb_build_object(
   'positive', COUNT(*) FILTER (WHERE label = 'positive'),
@@ -150,13 +184,17 @@ FROM sentiment_scores
 WHERE scored_at >= NOW() - (p_days || ' days')::interval;
 $$;
 
--- 6. BONUS: get_entity_detail — detail 1 entity untuk profile page
--- Parameters: p_entity_id
+-- ============================================================
+-- 6. get_entity_detail — full entity profile page
+-- SECURITY DEFINER: reads sentiment_scores
+-- ============================================================
 CREATE OR REPLACE FUNCTION get_entity_detail(
   p_entity_id uuid
 )
 RETURNS jsonb
 LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
 AS $$
 SELECT jsonb_build_object(
   'id', pe.id,
@@ -207,6 +245,94 @@ WHERE pe.id = p_entity_id;
 $$;
 
 -- ============================================================
+-- 7. NEW: get_entity_daily_sentiment — aggregated daily for line charts
+-- Returns: {date, positive, negative, neutral, total, net_score}
+-- net_score = avg(score_positive - score_negative)
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_entity_daily_sentiment(
+  p_entity_id uuid,
+  p_days integer DEFAULT 30
+)
+RETURNS jsonb
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+SELECT COALESCE(jsonb_agg(jsonb_build_object(
+  'date', d.day,
+  'positive', COUNT(*) FILTER (WHERE ss.label = 'positive'),
+  'negative', COUNT(*) FILTER (WHERE ss.label = 'negative'),
+  'neutral', COUNT(*) FILTER (WHERE ss.label = 'neutral'),
+  'total', COUNT(*),
+  'net_score', COALESCE(AVG(ss.score_positive - ss.score_negative), 0)
+)), '[]'::jsonb)
+FROM generate_series(
+  DATE(NOW() - (p_days || ' days')::interval),
+  DATE(NOW()),
+  '1 day'
+) AS d(day)
+LEFT JOIN sentiment_scores ss 
+  ON DATE(ss.scored_at) = d.day 
+  AND ss.entity_id = p_entity_id
+GROUP BY d.day
+ORDER BY d.day ASC;
+$$;
+
+-- ============================================================
+-- 8. NEW: get_entities_comparison — head-to-head compare
+-- Compare multiple entities' daily sentiment side by side
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_entities_comparison(
+  p_entity_ids uuid[],
+  p_days integer DEFAULT 30
+)
+RETURNS jsonb
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+SELECT COALESCE(jsonb_agg(jsonb_build_object(
+  'entity_id', pe.id,
+  'entity_name', pe.canonical_name,
+  'photo_url', pe.photo_url,
+  'daily_data', (
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'date', d.day,
+      'positive', COUNT(*) FILTER (WHERE ss.label = 'positive'),
+      'negative', COUNT(*) FILTER (WHERE ss.label = 'negative'),
+      'neutral', COUNT(*) FILTER (WHERE ss.label = 'neutral'),
+      'total', COUNT(*),
+      'net_score', COALESCE(AVG(ss.score_positive - ss.score_negative), 0)
+    )), '[]'::jsonb)
+    FROM generate_series(
+      DATE(NOW() - (p_days || ' days')::interval),
+      DATE(NOW()),
+      '1 day'
+    ) AS d(day)
+    LEFT JOIN sentiment_scores ss 
+      ON DATE(ss.scored_at) = d.day 
+      AND ss.entity_id = pe.id
+    GROUP BY d.day
+    ORDER BY d.day ASC
+  )
+)), '[]'::jsonb)
+FROM political_entities pe
+WHERE pe.id = ANY(p_entity_ids);
+$$;
+
+-- ============================================================
+-- GRANT EXECUTE to anon and authenticated
+-- ============================================================
+GRANT EXECUTE ON FUNCTION get_dashboard_summary() TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entity_sentiment_timeline(uuid, integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entity_highlights(uuid, integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entities_list(integer, integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_sentiment_distribution(integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entity_detail(uuid) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entity_daily_sentiment(uuid, integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entities_comparison(uuid[], integer) TO anon, authenticated;
+
+-- ============================================================
 -- VERIFIKASI: Test semua functions
 -- ============================================================
 -- SELECT get_dashboard_summary();
@@ -215,3 +341,5 @@ $$;
 -- SELECT get_entities_list(10, 0);
 -- SELECT get_sentiment_distribution(30);
 -- SELECT get_entity_detail('00000000-0000-0000-0000-000000000000'::uuid);
+-- SELECT get_entity_daily_sentiment('00000000-0000-0000-0000-000000000000'::uuid, 30);
+-- SELECT get_entities_comparison(ARRAY['uuid1'::uuid, 'uuid2'::uuid], 30);
