@@ -1,10 +1,15 @@
 -- ============================================================
--- DASHBOARD RPC FUNCTIONS — untuk frontend API routes
+-- DASHBOARD RPC FUNCTIONS v2 — untuk frontend API routes
+-- FIXED: performance + dependency on bio column
+--
+-- PRASYARAT: Run 14_add_entity_enrichment_columns.sql SEBELUM file ini!
+-- (karena get_entities_list reference kolom bio)
+--
 -- Jalankan di Supabase SQL Editor
 -- ============================================================
 
 -- 1. get_dashboard_summary — overview untuk dashboard page
--- Returns: total entities, total articles, avg sentiment, trending entities
+-- Returns: total entities, total articles, sentiment counts, trending entities
 CREATE OR REPLACE FUNCTION get_dashboard_summary()
 RETURNS jsonb
 LANGUAGE sql
@@ -35,6 +40,7 @@ SELECT jsonb_build_object(
 $$;
 
 -- 2. get_entity_sentiment_timeline — sentiment per entity over time
+-- FIXED v2: Use JOIN instead of correlated subquery (faster on partitioned tables)
 -- Parameters: p_entity_id, p_days (default 30)
 CREATE OR REPLACE FUNCTION get_entity_sentiment_timeline(
   p_entity_id uuid,
@@ -44,15 +50,18 @@ RETURNS jsonb
 LANGUAGE sql
 AS $$
 SELECT COALESCE(jsonb_agg(jsonb_build_object(
-  'date', DATE(scored_at),
-  'label', label,
-  'confidence', confidence,
-  'score_positive', score_positive,
-  'score_negative', score_negative,
-  'score_neutral', score_neutral,
-  'title', (SELECT title FROM raw_texts WHERE id = ss.raw_text_id LIMIT 1)
+  'date', DATE(ss.scored_at),
+  'label', ss.label,
+  'confidence', ss.confidence,
+  'score_positive', ss.score_positive,
+  'score_negative', ss.score_negative,
+  'score_neutral', ss.score_neutral,
+  'title', rt.title,
+  'source_url', rt.source_url,
+  'published_at', rt.published_at
 )), '[]'::jsonb)
 FROM sentiment_scores ss
+LEFT JOIN raw_texts rt ON rt.id = ss.raw_text_id
 WHERE ss.entity_id = p_entity_id
   AND ss.scored_at >= NOW() - (p_days || ' days')::interval
 ORDER BY ss.scored_at DESC;
@@ -70,8 +79,8 @@ AS $$
 SELECT COALESCE(jsonb_agg(jsonb_build_object(
   'id', eh.id,
   'entity_id', eh.entity_id,
-  'entity_name', (SELECT canonical_name FROM political_entities WHERE id = eh.entity_id),
-  'entity_photo', (SELECT photo_url FROM political_entities WHERE id = eh.entity_id),
+  'entity_name', pe.canonical_name,
+  'entity_photo', pe.photo_url,
   'polarity', eh.polarity,
   'title', eh.title,
   'source_url', eh.source_url,
@@ -83,6 +92,7 @@ SELECT COALESCE(jsonb_agg(jsonb_build_object(
   'curated_at', eh.curated_at
 )), '[]'::jsonb)
 FROM entity_highlights eh
+LEFT JOIN political_entities pe ON pe.id = eh.entity_id
 WHERE (p_entity_id IS NULL OR eh.entity_id = p_entity_id)
 ORDER BY eh.confidence DESC, eh.published_at DESC NULLS LAST
 LIMIT p_limit;
@@ -140,6 +150,62 @@ FROM sentiment_scores
 WHERE scored_at >= NOW() - (p_days || ' days')::interval;
 $$;
 
+-- 6. BONUS: get_entity_detail — detail 1 entity untuk profile page
+-- Parameters: p_entity_id
+CREATE OR REPLACE FUNCTION get_entity_detail(
+  p_entity_id uuid
+)
+RETURNS jsonb
+LANGUAGE sql
+AS $$
+SELECT jsonb_build_object(
+  'id', pe.id,
+  'name', pe.canonical_name,
+  'aliases', pe.aliases,
+  'entity_type', pe.entity_type,
+  'party', pe.party_affiliation,
+  'position', pe.position,
+  'photo_url', pe.photo_url,
+  'bio', pe.bio,
+  'era', pe.era,
+  'birth_year', pe.birth_year,
+  'is_active', pe.is_active,
+  'mention_count_7d', pe.mention_count_7d,
+  'mention_count_30d', pe.mention_count_30d,
+  'last_mentioned_at', pe.last_mentioned_at,
+  'wikipedia_id_url', pe.wikipedia_id_url,
+  'wikipedia_en_url', pe.wikipedia_en_url,
+  'sentiment_summary', (
+    SELECT jsonb_build_object(
+      'positive', COUNT(*) FILTER (WHERE label = 'positive'),
+      'negative', COUNT(*) FILTER (WHERE label = 'negative'),
+      'neutral', COUNT(*) FILTER (WHERE label = 'neutral'),
+      'total', COUNT(*),
+      'avg_confidence', COALESCE(AVG(confidence), 0)
+    )
+    FROM sentiment_scores
+    WHERE entity_id = p_entity_id
+  ),
+  'recent_highlights', (
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+      'title', eh.title,
+      'polarity', eh.polarity,
+      'source_url', eh.source_url,
+      'source_name', eh.source_name,
+      'image_url', eh.image_url,
+      'confidence', eh.confidence,
+      'published_at', eh.published_at
+    )), '[]'::jsonb)
+    FROM entity_highlights eh
+    WHERE eh.entity_id = p_entity_id
+    ORDER BY eh.published_at DESC NULLS LAST
+    LIMIT 5
+  )
+)
+FROM political_entities pe
+WHERE pe.id = p_entity_id;
+$$;
+
 -- ============================================================
 -- VERIFIKASI: Test semua functions
 -- ============================================================
@@ -148,3 +214,4 @@ $$;
 -- SELECT get_entity_highlights(NULL, 10);
 -- SELECT get_entities_list(10, 0);
 -- SELECT get_sentiment_distribution(30);
+-- SELECT get_entity_detail('00000000-0000-0000-0000-000000000000'::uuid);
