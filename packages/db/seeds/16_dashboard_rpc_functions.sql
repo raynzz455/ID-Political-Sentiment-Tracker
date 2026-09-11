@@ -343,3 +343,151 @@ GRANT EXECUTE ON FUNCTION get_entities_comparison(uuid[], integer) TO anon, auth
 -- SELECT get_entity_detail('00000000-0000-0000-0000-000000000000'::uuid);
 -- SELECT get_entity_daily_sentiment('00000000-0000-0000-0000-000000000000'::uuid, 30);
 -- SELECT get_entities_comparison(ARRAY['uuid1'::uuid, 'uuid2'::uuid], 30);
+
+-- ============================================================
+-- 9. NEW: search_entities — text search di canonical_name + aliases
+-- Untuk fitur search di frontend
+-- ============================================================
+CREATE OR REPLACE FUNCTION search_entities(
+  p_query text,
+  p_limit integer DEFAULT 20
+)
+RETURNS jsonb
+LANGUAGE sql
+AS $$
+SELECT COALESCE(jsonb_agg(jsonb_build_object(
+  'id', pe.id,
+  'name', pe.canonical_name,
+  'aliases', pe.aliases,
+  'entity_type', pe.entity_type,
+  'party', pe.party_affiliation,
+  'position', pe.position,
+  'photo_url', pe.photo_url,
+  'bio', pe.bio,
+  'mention_count_7d', pe.mention_count_7d,
+  'mention_count_30d', pe.mention_count_30d,
+  'last_mentioned_at', pe.last_mentioned_at
+)), '[]'::jsonb)
+FROM political_entities pe
+WHERE pe.is_active = true
+  AND (
+    pe.canonical_name ILIKE '%' || p_query || '%'
+    OR EXISTS (SELECT 1 FROM unnest(pe.aliases) AS alias WHERE alias ILIKE '%' || p_query || '%')
+    OR pe.party_affiliation ILIKE '%' || p_query || '%'
+    OR pe.position ILIKE '%' || p_query || '%'
+  )
+ORDER BY 
+  CASE 
+    WHEN pe.canonical_name ILIKE p_query || '%' THEN 1  -- exact start match
+    WHEN pe.canonical_name ILIKE '%' || p_query || '%' THEN 2  -- contains
+    ELSE 3  -- alias match
+  END,
+  pe.mention_count_7d DESC NULLS LAST
+LIMIT p_limit;
+$$;
+
+-- ============================================================
+-- 10. NEW: get_entities_filtered — filter + pagination + total count
+-- Untuk entity list page dengan filter dan pagination
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_entities_filtered(
+  p_limit integer DEFAULT 50,
+  p_offset integer DEFAULT 0,
+  p_entity_type text DEFAULT NULL,
+  p_party text DEFAULT NULL,
+  p_sort_by text DEFAULT 'trending'  -- 'trending', 'name', 'recent'
+)
+RETURNS jsonb
+LANGUAGE sql
+AS $$
+SELECT jsonb_build_object(
+  'entities', COALESCE(jsonb_agg(jsonb_build_object(
+    'id', pe.id,
+    'name', pe.canonical_name,
+    'aliases', pe.aliases,
+    'entity_type', pe.entity_type,
+    'party', pe.party_affiliation,
+    'position', pe.position,
+    'photo_url', pe.photo_url,
+    'bio', pe.bio,
+    'mention_count_7d', pe.mention_count_7d,
+    'mention_count_30d', pe.mention_count_30d,
+    'last_mentioned_at', pe.last_mentioned_at
+  )), '[]'::jsonb),
+  'total', COUNT(*) OVER (),
+  'limit', p_limit,
+  'offset', p_offset
+)
+FROM (
+  SELECT *
+  FROM political_entities
+  WHERE is_active = true
+    AND (p_entity_type IS NULL OR entity_type = p_entity_type)
+    AND (p_party IS NULL OR party_affiliation ILIKE '%' || p_party || '%')
+  ORDER BY 
+    CASE p_sort_by
+      WHEN 'name' THEN canonical_name
+      ELSE ''
+    END ASC,
+    CASE p_sort_by
+      WHEN 'recent' THEN COALESCE(last_mentioned_at, '1970-01-01'::timestamptz)
+      ELSE '1970-01-01'::timestamptz
+    END DESC,
+    mention_count_7d DESC NULLS LAST
+  LIMIT p_limit
+  OFFSET p_offset
+) pe;
+$$;
+
+-- ============================================================
+-- 11. NEW: get_feed — global feed of latest highlights
+-- Untuk feed page (all entities, latest articles)
+-- ============================================================
+CREATE OR REPLACE FUNCTION get_feed(
+  p_limit integer DEFAULT 30,
+  p_offset integer DEFAULT 0,
+  p_polarity text DEFAULT NULL  -- filter: 'positive', 'negative', NULL=all
+)
+RETURNS jsonb
+LANGUAGE sql
+AS $$
+SELECT jsonb_build_object(
+  'items', COALESCE(jsonb_agg(jsonb_build_object(
+    'id', eh.id,
+    'entity_id', eh.entity_id,
+    'entity_name', pe.canonical_name,
+    'entity_photo', pe.photo_url,
+    'polarity', eh.polarity,
+    'title', eh.title,
+    'source_url', eh.source_url,
+    'source_name', eh.source_name,
+    'image_url', eh.image_url,
+    'label', eh.label,
+    'confidence', eh.confidence,
+    'score_positive', eh.score_positive,
+    'score_negative', eh.score_negative,
+    'published_at', eh.published_at,
+    'curated_at', eh.curated_at
+  )), '[]'::jsonb),
+  'total', COUNT(*) OVER (),
+  'limit', p_limit,
+  'offset', p_offset
+)
+FROM entity_highlights eh
+LEFT JOIN political_entities pe ON pe.id = eh.entity_id
+WHERE (p_polarity IS NULL OR eh.polarity = p_polarity)
+ORDER BY eh.published_at DESC NULLS LAST
+LIMIT p_limit
+OFFSET p_offset;
+$$;
+
+-- GRANT new functions
+GRANT EXECUTE ON FUNCTION search_entities(text, integer) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_entities_filtered(integer, integer, text, text, text) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION get_feed(integer, integer, text) TO anon, authenticated;
+
+-- VERIFIKASI:
+-- SELECT search_entities('Prabowo', 10);
+-- SELECT get_entities_filtered(20, 0, 'president', NULL, 'trending');
+-- SELECT get_feed(30, 0, NULL);
+-- SELECT get_feed(10, 0, 'negative');
