@@ -2271,3 +2271,78 @@ EXPECTED IMPACT:
 - VRAM utilization: 40% → 67% (lebih optimal)
 - OOM crash recovery: dari "crash + restart" → "auto-reduce + retry"
 - Monitoring: dari "tidak tahu VRAM usage" → "log setiap phase"
+
+---
+Task ID: 70
+Agent: Z.ai Code (main)
+Task: Fix GitHub Actions 2a/2b/2c NameError + Database >500MB cleanup solution + relevancy model review.
+
+Work Log:
+- User report: GitHub Actions 2a, 2b, 2c semua crash dengan error yang sama:
+  `NameError: name 'os' is not defined` di entity_resolution_worker.py:61
+  saat `python main.py run-worker enricher --limit 200`.
+- Root cause: main.py import SEMUA worker di top-level (line 41:
+  `from packages.entity import entity_resolution_worker`). Jadi workflow 2a
+  (enricher-only) juga crash karena import entity_resolution_worker gagal.
+- Audit semua worker: HANYA entity_resolution_worker.py yang missing `import os`.
+  Commit culprit: 7b08aa0 "feat(v20): lightweight mode" — nambah
+  `os.environ.get("LIGHTWEIGHT_MODE")` tanpa import os.
+- FIX: tambah `import os` di entity_resolution_worker.py line 30. Syntax check ✓.
+
+- User concern: Supabase DB >500MB (free-tier limit). Butuh cleanup feature.
+- Analisis schema (packages/db/schema.sql):
+  - raw_texts & sentiment_scores: PARTITIONED by month ✓ (ada drop_old_partitions(6))
+  - TAPI entity_mentions, entity_contexts, article_entity_map, raw_text_hashes,
+    pipeline_runs, entity_candidates: NON-partitioned, TIDAK ada auto-cleanup.
+    Ini sumber pertumbuhan tanpa batas.
+  - FK child tables: NO ACTION (no cascade) → child rows jadi orphaned saat
+    partition parent di-drop.
+  - raw_text_hashes (global dedup) tumbuh tanpa batas.
+- SOLUTION: 3 file baru:
+  1. packages/db/seeds/17_database_cleanup_and_maintenance.sql
+     - Full cleanup script (manual run di Supabase SQL Editor)
+     - Dedup raw_texts (content_hash + text_hash + title + failed snippets)
+       dengan child-row cleanup DULU (urutan FK-safe)
+     - Orphan cleanup (mentions/contexts/map/scores/highlights)
+     - raw_text_hashes cleanup (hapus hash yang tidak lagi direferensi)
+     - pipeline_runs 30-day retention
+     - entity_candidates stale cleanup
+     - drop_old_partitions(4) aggressive
+     - db_cleanup_log table untuk audit (before/after snapshot)
+     - pg_cron schedule: light orphan cleanup tiap 6 jam
+  2. packages/db/seeds/18_cleanup_rpc_functions.sql
+     - run_weekly_cleanup() RPC — heavy dedup untuk panggil dari worker
+     - get_db_size_report() RPC — monitoring
+     - drop_old_partitions_aggressive() RPC — wrapper
+  3. packages/db/maintenance_worker.py + .github/workflows/db-maintenance.yml
+     - Weekly GitHub Action (Minggu 02:00 UTC)
+     - Calls RPCs for dedup + orphan cleanup + partition drop
+     - Optional VACUUM ANALYZE via psycopg2 (butuh DATABASE_URL secret)
+       — VACUUM tidak bisa via REST/pg_cron, butuh koneksi langsung
+
+- Relevancy model review (finetuning/docs/MODEL_STATUS.md + sentiment_model.py):
+  - Production saat ini: BASE models (apriandito/indobert-relevancy-classifier,
+    apriandito/indobert-sentiment-classifier)
+  - Finetuned v4 models READY (Raynzz455/id-political-sentiment-relevancy,
+    Raynzz455/id-political-sentiment-sentiment) — tinggal set env var:
+    NLP_RELEVANCY_MODEL, NLP_SENTIMENT_MODEL (GitHub Variables)
+  - context-readiness.yml SUDAH baca dari vars.NLP_RELEVANCY_MODEL &
+    vars.NLP_SENTIMENT_MODEL. Jadi user tinggal set di GitHub repo settings.
+  - M5 method (anti-overconfidence): ECE 0.149, label smoothing 0.05,
+    temperature 1.3 — balanced. Macro-F1 target ≥0.90, kept-set acc ≥0.97.
+  - Dataset: 909 rows, 76% well-labeled, 24% pseudo (down-weighted).
+  - Limitation: 62% labels masih heuristic, GPU test pending.
+
+Stage Summary:
+- ✅ CRITICAL FIX: os import error — semua 3 workflows (2a/2b/2c) bisa jalan lagi
+- ✅ Database cleanup solution lengkap: SQL + RPC + Python worker + GitHub Action
+- ✅ Strategy: pg_cron light cleanup (6 jam) + GitHub Action heavy dedup (mingguan)
+  + optional VACUUM via DATABASE_URL
+- ✅ Audit trail: db_cleanup_log table track before/after sizes
+- ✅ Relevancy model: finetuned v4 siap deploy via env var, tinggal GPU verify
+- Catatan: DATA SCIENCE/ML + DB maintenance task — webDevReview cron TIDAK berlaku
+- ACTION ITEM USER: 
+  1. Jalankan seed 17 + 18 di Supabase SQL Editor (install RPC + pg_cron)
+  2. Set GitHub Variables: NLP_RELEVANCY_MODEL, NLP_SENTIMENT_MODEL
+  3. (Opsional) Add DATABASE_URL secret untuk VACUUM otomatis
+  4. REVOKE GitHub token yang shared publik (security risk!)
