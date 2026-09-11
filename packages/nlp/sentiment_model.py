@@ -33,6 +33,17 @@ except ImportError:
     print("[ERROR] pip install torch transformers --break-system-packages")
     sys.exit(1)
 
+# PEFT optional — untuk load LoRA adapter yang belum di-merge.
+# Kalau model di HuggingFace adalah LoRA adapter (punya lora/adapter_config.json),
+# kita auto-detect dan load via PEFT. Kalau sudah di-merge (full model), skip.
+_PEFT_AVAILABLE = False
+try:
+    from peft import PeftModel
+    import huggingface_hub
+    _PEFT_AVAILABLE = True
+except ImportError:
+    pass
+
 # ─────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────
@@ -166,11 +177,72 @@ class _LoadedModel:
         logger.info(f"Loading {model_id} ...")
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = AutoModelForSequenceClassification.from_pretrained(model_id)
+
+        # Auto-detect: apakah repo ini LoRA adapter atau full model?
+        # LoRA adapter repo punya lora/adapter_config.json tapi TIDAK punya
+        # config.json di root. Full model punya config.json di root.
+        base_model_id, is_lora = self._detect_lora_format(model_id)
+
+        if is_lora and _PEFT_AVAILABLE:
+            logger.info(f"  -> LoRA adapter detected. Loading base + adapter via PEFT...")
+            base = AutoModelForSequenceClassification.from_pretrained(base_model_id)
+            self.model = PeftModel.from_pretrained(base, model_id, subfolder="lora")
+            self.model = self.model.merge_and_unload()
+            logger.info(f"  -> LoRA merged into base (in-memory).")
+        elif is_lora and not _PEFT_AVAILABLE:
+            raise RuntimeError(
+                f"Model {model_id} adalah LoRA adapter tapi library 'peft' belum "
+                f"ter-install. Solusi: (1) pip install peft, ATAU (2) jalankan "
+                f"finetuning/merge_and_upload_lora.py di Colab untuk merge & "
+                f"re-upload sebagai full model."
+            )
+        else:
+            # Full model — load standard
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_id)
+
         self.model.to(DEVICE)
         self.model.eval()
         self.id2label = self.model.config.id2label
         logger.info(f"  -> loaded. id2label = {self.id2label}")
+
+    @staticmethod
+    def _detect_lora_format(model_id: str) -> tuple[str, bool]:
+        """Cek apakah repo HF berisi LoRA adapter atau full model.
+
+        Returns: (base_model_id, is_lora)
+        - is_lora=True jika repo punya lora/adapter_config.json & tidak ada config.json di root
+        - is_lora=False jika repo punya config.json di root (full/merged model)
+        """
+        if not _PEFT_AVAILABLE:
+            # Kalau PEFT tidak ada, anggap full model (legacy behavior)
+            return ("", False)
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            info = api.model_info(model_id)
+            files = [s.rfilename for s in info.siblings]
+            has_lora_config = "lora/adapter_config.json" in files
+            has_root_config = "config.json" in files
+
+            if has_lora_config and not has_root_config:
+                # LoRA adapter — baca base_model dari adapter_config.json
+                import json
+                from huggingface_hub import hf_hub_download
+                cfg_path = hf_hub_download(
+                    model_id, "lora/adapter_config.json",
+                )
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+                base_model_id = cfg.get("base_model_name_or_path", "")
+                logger.info(f"  -> LoRA detected. Base model: {base_model_id}")
+                return (base_model_id, True)
+            else:
+                # Full model (atau LoRA yang sudah di-merge)
+                return ("", False)
+        except Exception as e:
+            # Fallback: anggap full model (jangan block production)
+            logger.debug(f"  -> LoRA detection skipped ({e}), assuming full model")
+            return ("", False)
 
     @torch.no_grad()
     def _forward_pair(self, a: str, b: str) -> list[float]:

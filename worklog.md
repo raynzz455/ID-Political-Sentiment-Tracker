@@ -2346,3 +2346,75 @@ Stage Summary:
   2. Set GitHub Variables: NLP_RELEVANCY_MODEL, NLP_SENTIMENT_MODEL
   3. (Opsional) Add DATABASE_URL secret untuk VACUUM otomatis
   4. REVOKE GitHub token yang shared publik (security risk!)
+
+---
+Task ID: 71
+Agent: Z.ai Code (main)
+Task: Telaah folder /finetuning + verifikasi model HuggingFace + fix LoRA compatibility.
+
+Work Log:
+- User konfirmasi: model sudah ada di HuggingFace, finetuning via Colab dari base model.
+- Verifikasi via HuggingFace API (HTTP 200 untuk kedua model):
+  * Raynzz455/id-political-sentiment-relevancy ✓ exists
+  * Raynzz455/id-political-sentiment-sentiment ✓ exists
+
+- TEMUAN KRITIS #1: Model di-upload sebagai LoRA ADAPTER, bukan full merged model!
+  * File structure: lora/adapter_config.json + lora/adapter_model.safetensors
+  * TIDAK ada config.json atau model.safetensors di root repo
+  * base_model_name_or_path (dari adapter_config.json):
+    - relevancy: apriandito/indobert-relevancy-classifier
+    - sentiment: apriandito/indobert-sentiment-classifier
+  * PROBLEM: production code sentiment_model.py:169 pakai
+    AutoModelForSequenceClassification.from_pretrained(model_id) — butuh full model
+    di root. Kalau set NLP_RELEVANCY_MODEL=Raynzz455/... → CRASH (no config.json).
+
+- TEMUAN #2: Metrics dari evaluation.json (test set, full coverage):
+  * SENTIMENT model: accuracy 97.1%, macro-F1 0.960 ✅ EXCEEDS target ≥0.90
+    Confusion matrix: [[19,0,0],[1,231,8],[0,0,50]] — 9 errors dari 309 samples
+    Status: SIAP PRODUCTION (setelah merge)
+  * RELEVANCY model: accuracy 90.8%, macro-F1 0.736 ❌ BELOW target ≥0.90
+    Confusion matrix: [[17,9],[22,288]] — 22 false negatives untuk not_relevant
+    Artinya: 22 konteks background noise LOLOS filter relevancy → context leakage
+    Temperature 0.05 (terlalu rendah) → deferral sweep tidak membantu (semua near 0/1)
+    Status: KONFIRMASI kekhawatiran user — perlu retrain + hyperparameter tuning
+
+- Hyperparameter aktual (dari metrics.json, beda dari hyperparams_optimized.py!):
+  * LoRA: r=64 (bukan 32), alpha=128 (bukan 64), dropout=0.2 (bukan 0.1)
+  * LR: 2.5e-5, weight_decay 0.03, batch 8×8=64 effective
+  * Epochs: 18, patience 5, focal_gamma 3.0 (bukan 2.5)
+  * Scheduler: cosine_with_restarts (2 cycles)
+
+- SOLUSI yang diimplementasi:
+  1. finetuning/merge_and_upload_lora.py (NEW):
+     - Script Colab untuk merge LoRA → base, save full model, re-upload
+     - Auto-detect base model dari adapter_config.json
+     - Verifikasi load setelah upload
+     - Cara pakai: run di Colab, panggil merge_and_upload("relevancy", token)
+  2. packages/nlp/sentiment_model.py (MODIFIED):
+     - Auto-detect format LoRA vs full model via HuggingFace API
+     - Kalau LoRA: load base + adapter via PEFT, merge_and_unload in-memory
+     - Kalau full: load standard (legacy behavior)
+     - Graceful error message kalau peft belum install
+  3. requirements.txt: tambah peft>=0.7.0 + huggingface_hub>=0.20.0
+
+Stage Summary:
+- ✅ Sentiment model SIAP production: macro-F1 0.960 (exceeds 0.90 target)
+- ❌ Relevancy model BERMASALAH: macro-F1 0.736 — perlu retrain
+  Rekomendasi: oversample not_relevant (173→400 sudah dilakukan di commit 0e8d586
+  tapi sepertinya belum cukup), naikkan temperature, turunkan focal gamma
+- ✅ LoRA compatibility fix: production code sekarang auto-detect & handle LoRA
+- ✅ Merge script disediakan untuk Colab (solusi clean — merge ke full model)
+- ✅ requirements.txt updated dengan peft + huggingface_hub
+- ACTION ITEM USER:
+  1. PILIH A atau B:
+     A) Run merge_and_upload_lora.py di Colab → merge kedua model → re-upload
+        (cleaner, production code tidak perlu peft, download lebih cepat)
+     B) Set variable sekarang (peft akan auto-merge in-memory di GitHub Actions)
+        (butuh peft di requirements, sudah ditambahkan)
+  2. Set GitHub Variables (setelah pilih A atau B):
+     NLP_RELEVANCY_MODEL = Raynzz455/id-political-sentiment-relevancy
+     NLP_SENTIMENT_MODEL = Raynzz455/id-political-sentiment-sentiment
+  3. RETRAIN relevancy model (macro-F1 0.736 terlalu rendah):
+     - Oversample not_relevant lebih agresif (400 → 600+)
+     - Temperature 0.05 → 0.5-1.0 (terlalu confident)
+     - Pertimbangkan class weights lebih strong untuk not_relevant

@@ -8,6 +8,8 @@ rapidfuzz>=3.6.0
 langdetect>=1.0.9
 torch>=2.0.0
 transformers>=4.35.0
+peft>=0.7.0  # v4.8: load LoRA adapter dari HuggingFace (auto-merge in-memory)
+huggingface_hub>=0.20.0
 stanza
 lxml
 wikipedia>=1.4.0  # v4.8: entity enrichment (auto-fetch bio + image)
