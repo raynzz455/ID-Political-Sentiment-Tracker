@@ -2418,3 +2418,84 @@ Stage Summary:
      - Oversample not_relevant lebih agresif (400 → 600+)
      - Temperature 0.05 → 0.5-1.0 (terlalu confident)
      - Pertimbangkan class weights lebih strong untuk not_relevant
+
+---
+Task ID: 72
+Agent: Z.ai Code (main)
+Task: Atasi "exceeded usage limits" Supabase >500MB — emergency + archival strategy.
+
+Work Log:
+- User report: Supabase project kena "exceeded usage limits" karena DB >500MB.
+- Analisis root cause (dari schema.sql + enricher_worker):
+  * raw_texts.text = up to 20,000 char/article (MAX_ARTICLE_LENGTH=20000)
+  * Avg article ~5KB × ribuan rows = ratusan MB
+  * entity_contexts.context_text juga simpan context span (~364 char avg)
+  * raw_text_hashes tumbuh tanpa batas (global dedup, no cleanup)
+  * Child tables (mentions/contexts/map) jadi orphaned saat partition drop
+  * setelah processed, text body TIDAK DIPAKAI dashboard (RLS block anon,
+    FE cuma baca entity_highlights yang cache title+url+scores)
+
+- SOLUSI 3-LAYER:
+
+  LAYER 1: EMERGENCY (seed 19_emergency_size_reduction.sql)
+    Untuk saat DB SUDAH >500MB / paused. Priority order:
+    a) NULL-kan raw_texts.text untuk processed >30 hari (RECLAIM TERBESAR)
+       Dashboard aman karena hanya baca entity_highlights. source_url tetap
+       disimpan untuk re-fetch kalau perlu re-process.
+    b) NULL-kan entity_contexts.context_text untuk processed >30 hari
+    c) drop_old_partitions(2) — keep hanya 2 bulan (dari default 6)
+    d) run_weekly_cleanup() RPC (dedup + orphan)
+    e) VACUUM FULL manual untuk reclaim physical space
+    Semua step log ke db_cleanup_log table untuk audit.
+
+  LAYER 2: ARCHIVAL STRATEGY (seed 20_text_archival_strategy.sql)
+    Long-term control. 2 RPC + pg_cron:
+    a) archive_old_texts(p_days=30) — NULL text+context untuk processed >30d
+       Idempotent, aman run tiap hari. Metadata: text_archived_at timestamp.
+    b) get_storage_breakdown() — monitoring ukuran per tabel + archive potential
+    c) pg_cron schedule: archive_old_texts(30) tiap hari 03:00 UTC (10:00 WIB)
+
+  LAYER 3: MAINTENANCE WORKER UPDATE
+    maintenance_worker.py sekarang 6 step:
+    1. report_before (size snapshot)
+    2. run_weekly_cleanup (dedup + orphan RPC)
+    2.5 archive_old_texts(30) — NEW: reclaim text body space
+    3. drop_old_partitions(4)
+    4. run_vacuum (optional via DATABASE_URL)
+    5. report_after (size delta)
+    GitHub Action db-maintenance.yml mingguan sudah ada (seed dari Task 70).
+
+- KALKULASI ESTIMASI SPACE RECLAIM:
+  Scenario: 10,000 articles processed, 6,000 di antaranya >30 hari
+  - raw_texts.text: 6,000 × ~5KB = ~30MB → NULL = reclaim ~30MB
+  - entity_contexts: 6,000 × ~3 context × 364 char = ~6.5MB → NULL = reclaim ~6MB
+  - drop partitions >2 bulan: ~40% rows hilang = reclaim ~40-60MB
+  - Total estimasi: 76-96MB (cukup untuk turun dari >500 ke <450MB)
+
+- SCENARIO KALAU PROJECT SUDAH PAUSED TOTAL:
+  Supabase free tier: grace period ~7 hari setelah exceed.
+  Selama grace period, SQL Editor biasanya masih bisa akses untuk cleanup.
+  Kalau sudah paused total (tidak bisa akses sama sekali):
+    Option A: Upgrade Pro ($25/bulan) → unpause → run cleanup → pause kembali
+    Option B: Buat project Supabase BARU (free) → migrate data essential:
+      - political_entities (master data, ~50 rows)
+      - scraping_configs (~20 rows)
+      - entity_highlights (cache dashboard, recent 30 days)
+      - sentiment_scores (recent 90 days untuk mv_dashboard_summary)
+      - SKIP raw_texts.text body (terlalu besar) — re-ingest fresh
+    Option C: Archive project lama, start fresh dengan archival strategy aktif
+
+Stage Summary:
+- ✅ Emergency SQL (seed 19): immediate relief untuk >500MB
+- ✅ Archival RPC (seed 20): long-term auto-archive tiap hari
+- ✅ Maintenance worker: 6-step pipeline dengan archival integrated
+- ✅ Estimasi reclaim: 76-96MB (cukup turun ke <450MB)
+- ACTION ITEM USER (URUTAN EKSEKUSI):
+  1. Buka Supabase SQL Editor
+  2. Jalankan seed 18 (RPC functions) — kalau belum
+  3. Jalankan seed 19 (EMERGENCY) — immediate relief
+  4. Jalankan VACUUM manual (di section 5 seed 19) — reclaim fisik
+  5. Jalankan seed 20 (archival) — install auto-archive + pg_cron
+  6. (Opsional) Add DATABASE_URL secret di GitHub → VACUUM otomatis mingguan
+  7. Monitor via get_storage_breakdown() RPC tiap minggu
+- Catatan: DATA SCIENCE/DB maintenance task — webDevReview cron TIDAK berlaku

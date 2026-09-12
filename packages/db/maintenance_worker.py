@@ -136,6 +136,33 @@ def drop_old_partitions(sb, months: int = 4) -> dict:
         return {}
 
 
+def archive_old_texts(sb, days: int = 30) -> dict:
+    """NULL-kan text body untuk artikel processed > {days} hari.
+
+    Ini langkah paling efektif untuk kontrol ukuran DB karena
+    raw_texts.text bisa sampai 20KB per artikel. Setelah processed +
+    highlight curated, text body tidak dipakai dashboard (RLS block anon).
+    """
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info(f"STEP 2.5: Text archival (processed > {days} days)")
+    logger.info("=" * 60)
+    try:
+        res = sb.rpc("archive_old_texts", {"p_days": days}).execute()
+        data = res.data or {}
+        text_n = data.get("archived_text_rows", 0)
+        ctx_n = data.get("archived_context_rows", 0)
+        logger.info(f"  raw_texts.text di-NULL:    {text_n:,} rows")
+        logger.info(f"  entity_contexts di-NULL:  {ctx_n:,} rows")
+        if text_n == 0 and ctx_n == 0:
+            logger.info(f"  (tidak ada row baru untuk di-archive minggu ini)")
+        return data
+    except Exception as e:
+        logger.error(f"  Gagal archive_old_texts: {e}")
+        logger.error("  Pastikan RPC ter-install (seed 20_text_archival_strategy.sql)")
+        return {}
+
+
 def run_vacuum():
     """VACUUM ANALYZE via direct psycopg2 connection (optional).
 
@@ -238,6 +265,7 @@ def main():
 
     before = report_before(sb)
     cleanup_result = run_weekly_cleanup(sb)
+    archive_old_texts(sb, days=30)  # STEP 2.5: reclaim text body space
     drop_old_partitions(sb, months=4)
     run_vacuum()
     report_after(sb, before)
