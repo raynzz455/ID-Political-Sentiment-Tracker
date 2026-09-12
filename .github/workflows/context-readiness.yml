@@ -14,7 +14,7 @@ jobs:
   run-context-readiness:
     name: Run Context Worker + NLP Readiness
     runs-on: ubuntu-latest
-    timeout-minutes: 30  # Paling berat: Stanza + relevancy model + KeyBERT
+    timeout-minutes: 35  # Stanza + relevancy model + sentence-transformers
 
     steps:
       - uses: actions/checkout@v4
@@ -23,11 +23,30 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'  # cache pip downloads
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # Cache Stanza models (~500MB) — first run downloads, subsequent runs use cache
+      - name: Cache Stanza Models
+        uses: actions/cache@v4
+        with:
+          path: ~/stanza_resources
+          key: stanza-id-models-v1
+          restore-keys: |
+            stanza-id-models-
+
+      # Cache HuggingFace models (relevancy + sentiment + fallback = ~1.3GB)
+      - name: Cache HuggingFace Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-context-v1
+          restore-keys: |
+            hf-models-
 
       - name: Run Context Worker
         run: python main.py run-worker context --limit 200
@@ -35,7 +54,15 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          LIGHTWEIGHT_MODE: "1"  # v20: skip Stanza, use regex (100x faster on CPU)
+          # FULL NLP MODE — Stanza aktif untuk akurasi maksimal.
+          # Context worker v18 needs Stanza for:
+          #   - sentence tokenization (accurate, not regex)
+          #   - POS tagging (subject/object detection)
+          #   - dependency parsing (semantic role → kills speaker_not_target bias)
+          # Relevancy model pre-filters spans → removes background noise.
+          # With 4-core CPU + model cache, 200 articles / 4 threads = ~6 min.
+          LIGHTWEIGHT_MODE: "0"
+          MAX_NLP_WORKERS: "4"
           NLP_SENTIMENT_MODEL: ${{ vars.NLP_SENTIMENT_MODEL }}
           NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}
 

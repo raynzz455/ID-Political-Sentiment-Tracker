@@ -56,7 +56,12 @@ logging.getLogger("stanza").setLevel(logging.WARNING)
 
 RESOLVER_VERSION = "v16_lightweight"
 DEFAULT_DAYS_BACK = 30
-MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
+# MAX_NLP_WORKERS: GitHub Actions ubuntu-latest punya 4-core CPU.
+# Default 4 (bukan 2) untuk maksimalkan throughput. Override via env var.
+MAX_NLP_WORKERS = int(os.environ.get(
+    "MAX_NLP_WORKERS",
+    "4" if (os.cpu_count() or 2) >= 4 else "2"
+))
 
 # v20: LIGHTWEIGHT MODE — skip Stanza on CPU/restricted environments
 LIGHTWEIGHT_MODE = os.environ.get("LIGHTWEIGHT_MODE", "0") == "1"

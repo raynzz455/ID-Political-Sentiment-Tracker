@@ -30,6 +30,7 @@ ACCURACY IMPACT (projected):
   - background_only: 39.9% -> ~20% (multi-mention + relevancy filter)
   - Sentiment training signal: 211 -> ~500 clean rows (2.4x boost)
 """
+import os
 import re
 import time
 import logging
@@ -57,7 +58,12 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
 CONTEXT_VERSION = "v20_lightweight"
-MAX_NLP_WORKERS = 4 if torch.cuda.is_available() else 2
+# MAX_NLP_WORKERS: GitHub Actions ubuntu-latest punya 4-core CPU.
+# Default 4 (bukan 2) untuk maksimalkan throughput. Override via env var.
+MAX_NLP_WORKERS = int(os.environ.get(
+    "MAX_NLP_WORKERS",
+    "4" if (os.cpu_count() or 2) >= 4 else "2"
+))
 
 # v20: LIGHTWEIGHT MODE — skip Stanza on CPU/restricted environments
 # Stanza on GitHub Actions (2-core CPU) takes ~10s per article → timeout.
@@ -156,14 +162,13 @@ def get_keybert_model():
 #   crowded multi-entity sentences.
 #
 # Env var overrides for tuning without code change:
-import os as _os
-ATTR_SCORE_SENTIMENT = int(_os.environ.get("ATTR_SCORE_SENTIMENT", "40"))
-ATTR_SCORE_ATTRIBUTION = int(_os.environ.get("ATTR_SCORE_ATTRIBUTION", "10"))
-ACTOR_SCORE_MAIN = int(_os.environ.get("ACTOR_SCORE_MAIN", "30"))
-POS_SCORE_LEAD = int(_os.environ.get("POS_SCORE_LEAD", "20"))
-PRECISION_BONUS_TARGET = int(_os.environ.get("PRECISION_BONUS_TARGET", "15"))
-PRECISION_BONUS_DOMINANT = int(_os.environ.get("PRECISION_BONUS_DOMINANT", "10"))
-PRECISION_PENALTY_DOER = int(_os.environ.get("PRECISION_PENALTY_DOER", "-20"))
+ATTR_SCORE_SENTIMENT = int(os.environ.get("ATTR_SCORE_SENTIMENT", "40"))
+ATTR_SCORE_ATTRIBUTION = int(os.environ.get("ATTR_SCORE_ATTRIBUTION", "10"))
+ACTOR_SCORE_MAIN = int(os.environ.get("ACTOR_SCORE_MAIN", "30"))
+POS_SCORE_LEAD = int(os.environ.get("POS_SCORE_LEAD", "20"))
+PRECISION_BONUS_TARGET = int(os.environ.get("PRECISION_BONUS_TARGET", "15"))
+PRECISION_BONUS_DOMINANT = int(os.environ.get("PRECISION_BONUS_DOMINANT", "10"))
+PRECISION_PENALTY_DOER = int(os.environ.get("PRECISION_PENALTY_DOER", "-20"))
 
 # v18: Load relevancy model for pre-filtering
 RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
@@ -289,8 +294,7 @@ def check_relevancy(entity_name: str, context_text: str) -> float:
     # BUG N6 FIX: normalize premise ke format training v4
     # Training: premise = "Tentang Erick Thohir"
     # Production: entity_name = "Erick Thohir" → normalize → "Tentang Erick Thohir"
-    import os as _os
-    prefix = _os.environ.get("NLP_PREMISE_PREFIX", "Tentang ")
+    prefix = os.environ.get("NLP_PREMISE_PREFIX", "Tentang ")
     premise = entity_name
     if prefix and not entity_name.strip().lower().startswith(prefix.strip().lower()):
         premise = f"{prefix}{entity_name.strip()}"
