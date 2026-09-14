@@ -56,18 +56,17 @@ except ImportError:
 # If env vars not set, falls back to original base models (safe default).
 import os as _os
 
-RELEVANCY_MODEL_ID = _os.environ.get(
-    "NLP_RELEVANCY_MODEL",
-    "apriandito/indobert-relevancy-classifier"
-)
-SENTIMENT_MODEL_ID  = _os.environ.get(
-    "NLP_SENTIMENT_MODEL",
-    "apriandito/indobert-sentiment-classifier"
-)
-FALLBACK_MODEL_ID   = _os.environ.get(
-    "NLP_FALLBACK_MODEL",
-    "taufiqdp/indonesian-sentiment"
-)
+# BUG FIX: GitHub Actions passes NLP_*_MODEL: ${{ vars.NLP_*_MODEL }}.
+# When the GitHub Variable is NOT set, this evaluates to empty string "".
+# os.environ.get("NLP_*_MODEL", "default") returns "" (not "default") because
+# the env var IS set (to empty string). Fix: strip + treat empty as unset.
+def _get_model_env(key: str, default: str) -> str:
+    val = _os.environ.get(key, "").strip()
+    return val if val else default
+
+RELEVANCY_MODEL_ID = _get_model_env("NLP_RELEVANCY_MODEL", "apriandito/indobert-relevancy-classifier")
+SENTIMENT_MODEL_ID  = _get_model_env("NLP_SENTIMENT_MODEL", "apriandito/indobert-sentiment-classifier")
+FALLBACK_MODEL_ID   = _get_model_env("NLP_FALLBACK_MODEL", "taufiqdp/indonesian-sentiment")
 
 logger.info(f"Model config: relevancy={RELEVANCY_MODEL_ID}, "
             f"sentiment={SENTIMENT_MODEL_ID}, fallback={FALLBACK_MODEL_ID}")

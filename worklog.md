@@ -2576,3 +2576,76 @@ Stage Summary:
   3. First run akan download models (~3 min extra), subsequent runs pakai cache
   4. Monitor: jika masih timeout, naikkan limit atau turunkan batch
 - Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku
+
+---
+Task ID: 74
+Agent: Z.ai Code (main)
+Task: Fix context worker 0 contexts output + empty model IDs + skip logic.
+
+Work Log:
+- User report: context worker output sangat buruk — 200 articles SEMUA
+  "Contexts: 0 (Skipped)". Berjalan 35 menit, relevancy model loaded di akhir.
+- Log juga menunjukkan: "Model config: relevancy=, sentiment=" — KOSONG,
+  bukan default apriandito/...
+
+ROOT CAUSE ANALYSIS (3 bugs):
+
+BUG #1: Empty model IDs (relevancy=, sentiment=)
+  - GitHub Actions workflow: NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}
+  - Ketika GitHub Variable BELUM di-set → evaluates to empty string ""
+  - Python: os.environ.get("NLP_RELEVANCY_MODEL", "default") returns ""
+    (bukan "default") karena env var IS set (to empty string)
+  - Fix: _get_model_env() helper — strip + treat empty as unset
+  - Applied to: sentiment_model.py (3 models) + context_worker.py (relevancy)
+  - Verified: empty string now correctly falls back to default ✓
+
+BUG #2: Context worker hardcodes relevancy model
+  - context_worker.py line 174: RELEVANCY_MODEL_ID = "apriandito/..."
+    (hardcoded, ignores NLP_RELEVANCY_MODEL env var)
+  - Fix: use _get_model_env() same pattern as sentiment_model.py
+  - Now respects NLP_RELEVANCY_MODEL env var (base or finetuned v4)
+
+BUG #3 (CRITICAL): Context worker marks 0-context articles as processed
+  - Line 1056 (old): succeeded_art_ids = set(art_ids) — ALL articles
+  - Line 1066 (old): updates = [... context_extracted_at = NOW() ...]
+    for ALL succeeded_art_ids
+  - Artinya: artikel dengan 0 entity_mentions tetap ditandai
+    context_extracted_at = NOW() → tidak akan pernah di-pick up lagi
+  - Root cause of "all skipped": entity resolution sebelumnya run dengan
+    LIGHTWEIGHT_MODE=1 (regex) → 0 mentions → tapi entity_resolved_at
+    tetap di-set → context worker pick up → 0 mentions → skip → mark
+    as processed → STUCK FOREVER
+  - Fix:
+    a) Only mark context_extracted_at untuk artikel yang ACTUALLY punya
+       contexts (arts_with_contexts)
+    b) Log warning untuk arts_no_mentions (need entity re-resolve)
+    c) Log warning untuk arts_with_mentions_no_ctx (offset issue)
+    d) Better batch summary: show "No mentions" vs "Mentions but 0 ctx"
+       separately untuk debugging
+
+BUG #4: Need reset SQL for already-stuck articles
+  - Artikel yang sudah ditandai context_extracted_at (dengan 0 contexts)
+    tidak akan pernah di-pick up lagi oleh context worker
+  - Created: seed 21_reset_failed_context_articles.sql
+    a) Reset context_extracted_at = NULL untuk artikel tanpa entity_contexts
+    b) Reset entity_resolved_at = NULL untuk resolver_version='failed_no_entity'
+    c) Reset entity_resolved_at = NULL untuk artikel dengan 0 entity_mentions
+    d) Diagnostik before/after
+
+Stage Summary:
+- ✅ BUG #1 fixed: empty string env var → falls back to default model
+- ✅ BUG #2 fixed: context_worker uses env var for relevancy model
+- ✅ BUG #3 fixed: 0-context articles NOT marked as processed (can re-run)
+- ✅ BUG #4 fixed: reset SQL untuk unstick already-processed articles
+- ✅ Better observability: batch summary sekarang membedakan "no mentions"
+  vs "mentions but 0 contexts" untuk debugging
+- ACTION ITEM USER (URUTAN EKSEKUSI):
+  1. Pull latest (setelah push ini)
+  2. Run seed 21_reset_failed_context_articles.sql di Supabase SQL Editor
+     → reset artikel yang stuck
+  3. Re-run entity resolution: python main.py run-worker entity --limit 200
+     (LIGHTWEIGHT_MODE=0 — Stanza aktif, akan create proper mentions)
+  4. Re-run context worker: python main.py run-worker context --limit 200
+     (sekarang akan find mentions → extract contexts properly)
+  5. Atau trigger workflow 2b lalu 2c via GitHub Actions UI
+- Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku

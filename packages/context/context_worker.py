@@ -171,7 +171,12 @@ PRECISION_BONUS_DOMINANT = int(os.environ.get("PRECISION_BONUS_DOMINANT", "10"))
 PRECISION_PENALTY_DOER = int(os.environ.get("PRECISION_PENALTY_DOER", "-20"))
 
 # v18: Load relevancy model for pre-filtering
-RELEVANCY_MODEL_ID = "apriandito/indobert-relevancy-classifier"
+# Support env var override (same pattern as sentiment_model.py)
+def _get_model_env(key: str, default: str) -> str:
+    val = os.environ.get(key, "").strip()
+    return val if val else default
+
+RELEVANCY_MODEL_ID = _get_model_env("NLP_RELEVANCY_MODEL", "apriandito/indobert-relevancy-classifier")
 RELEVANCY_THRESHOLD = 0.5
 _relevancy_pipeline = None
 
@@ -1048,7 +1053,30 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         for m in (mentions_res.data or []):
             mentions_by_art.setdefault(m["raw_text_id"], []).append(m)
         context_inserts = process_articles_batch(articles, mentions_by_art)
-        succeeded_art_ids = set(art_ids)
+        
+        # BUG FIX: Only mark articles as context_extracted_at if they ACTUALLY
+        # produced contexts. Articles with 0 entity_mentions (entity resolution
+        # failed or ran in lightweight mode) should NOT be marked — otherwise
+        # they'll never be picked up again after entity resolution is fixed.
+        arts_with_contexts = {c["raw_text_id"] for c in context_inserts}
+        arts_no_mentions = {aid for aid in art_ids if aid not in mentions_by_art}
+        arts_with_mentions_no_ctx = (set(art_ids) - arts_with_contexts) - arts_no_mentions
+        
+        if arts_no_mentions:
+            logger.warning(
+                f"  ⚠️  {len(arts_no_mentions)} articles have 0 entity_mentions — "
+                f"entity resolution may have failed or ran in lightweight mode. "
+                f"These articles will NOT be marked as context_extracted so they "
+                f"can be re-processed after entity resolution is re-run."
+            )
+        if arts_with_mentions_no_ctx:
+            logger.warning(
+                f"  ⚠️  {len(arts_with_mentions_no_ctx)} articles had mentions but "
+                f"produced 0 contexts — possible offset mismatch or text issue."
+            )
+        
+        # Only mark articles that actually have contexts
+        succeeded_art_ids = arts_with_contexts.copy()
         if context_inserts:
             for i in range(0, len(context_inserts), 25):
                 chunk = context_inserts[i:i + 25]
@@ -1058,6 +1086,7 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                     logger.error(f"Upsert Error: {e}")
                     failed_ids = {c["raw_text_id"] for c in chunk}
                     succeeded_art_ids -= failed_ids
+        # Mark ONLY articles with actual contexts as context_extracted_at
         updates = [{"id": aid, "context_extracted_at": datetime.now(timezone.utc).isoformat()} for aid in succeeded_art_ids]
         if updates:
             for i in range(0, len(updates), 25):
@@ -1067,7 +1096,10 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                 except Exception as e:
                     logger.error(f"RPC Error: {e}")
         # OBSERVABILITY: Detailed batch summary
-        failed_ctx = len(articles) - len(succeeded_art_ids)
+        # succeeded_art_ids = articles that got contexts extracted
+        # arts_no_mentions = articles with 0 entity_mentions (need entity re-resolve)
+        # arts_with_mentions_no_ctx = articles with mentions but 0 contexts (offset issue)
+        failed_ctx = len(arts_no_mentions) + len(arts_with_mentions_no_ctx)
         total_spans = sum(len(c.get("metadata", {}).get("all_spans", [])) for c in context_inserts)
         relevant_count = sum(1 for c in context_inserts if c.get("metadata", {}).get("is_relevant", True))
         avg_quality = sum(c.get("metadata", {}).get("quality_score", 0) for c in context_inserts) / max(1, len(context_inserts))
@@ -1076,20 +1108,19 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
         logger.info(f"BATCH {batch_num} CONTEXT SUMMARY")
         logger.info(f"{'='*60}")
         logger.info(f"  Articles processed:  {len(articles)}")
-        logger.info(f"  ✅ Succeeded:         {len(succeeded_art_ids)}")
-        logger.info(f"  ❌ Failed/Skipped:     {failed_ctx}")
+        logger.info(f"  ✅ With contexts:     {len(succeeded_art_ids)}")
+        logger.info(f"  ❌ No mentions:       {len(arts_no_mentions)} (re-run entity resolution)")
+        logger.info(f"  ⚠️  Mentions but 0 ctx: {len(arts_with_mentions_no_ctx)} (offset issue)")
         logger.info(f"  📝 Contexts created:  {len(context_inserts)}")
         logger.info(f"  📍 Total spans:      {total_spans}")
         logger.info(f"  ✅ Relevant:          {relevant_count}")
         logger.info(f"  🎯 Avg quality:       {avg_quality:.1f}")
-        if failed_ctx > 0:
-            logger.warning(f"  ⚠️ {failed_ctx} articles failed — see SKIP/ERROR logs above")
+        if arts_no_mentions:
+            logger.warning(f"  ⚠️ {len(arts_no_mentions)} articles have 0 mentions — "
+                         f"re-run entity resolution with LIGHTWEIGHT_MODE=0")
         logger.info(f"{'='*60}")
         total_processed += len(articles)
-        # FIX CW#1 (HIGH): total_success should count articles (succeeded_art_ids),
-        # not entity contexts (context_inserts can be > articles due to multi-entity).
         total_success += len(succeeded_art_ids)
-        # FIX CW#2 (MEDIUM): track actual failed count, not hardcoded 0.
         total_failed += failed_ctx
         batch_num += 1
     # FIX CW#1/CW#2: pass correct succeeded (article-level) and failed counts.
