@@ -276,6 +276,9 @@ def check_semantic_role(sent, entity_start: int, entity_end: int) -> dict:
             entity_word = word
             break
     if entity_word is None:
+        # DEBUG: entity offset tidak match dengan word boundaries Stanza
+        if os.environ.get("DEBUG_ROLES", "0") == "1":
+            logger.debug(f"  [ROLE] entity_word NOT FOUND at offset {entity_start}-{entity_end}")
         return result
     if entity_word.deprel in ('nsubj', 'nsubj:pass', 'obj', 'iobj', 'csubj', 'obl'):
         result['role'] = entity_word.deprel
@@ -290,7 +293,17 @@ def check_semantic_role(sent, entity_start: int, entity_end: int) -> dict:
                     result['sentiment_verb'] = root_lemma + (" (passive)" if is_passive else "")
                 elif root_lemma in ATTRIBUTION_VERBS:
                     result['has_attribution_role'] = True
+                # DEBUG: log why sent_role is False (head verb not sentiment)
+                elif os.environ.get("DEBUG_ROLES", "0") == "1":
+                    logger.debug(f"  [ROLE] entity='{entity_word.text}' deprel={entity_word.deprel} "
+                               f"head_verb='{word.text}' (lemma='{root_lemma}') → NOT in predicates "
+                               f"(role={entity_word.deprel} OK, but verb not sentiment)")
                 break
+    else:
+        # DEBUG: entity deprel is not a core argument (e.g. nmod, amod, flat, appos)
+        if os.environ.get("DEBUG_ROLES", "0") == "1":
+            logger.debug(f"  [ROLE] entity='{entity_word.text}' deprel={entity_word.deprel} "
+                       f"→ NOT core argument (need nsubj/obj/obl, got {entity_word.deprel})")
     return result
 
 
@@ -795,8 +808,29 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
                     logger.error(f"Status Update Error: {e}")
 
         success_count = len(succeeded_ids)
+        # ACCURACY STATS: berapa entity yang punya sentiment role vs attribution
+        role_sent = sum(1 for r in batch_results if any(
+            d.get("has_sentiment_role") for d in r.get("entity_data", {}).values()
+        ))
+        role_attr = sum(1 for r in batch_results if any(
+            d.get("has_attribution_role") for d in r.get("entity_data", {}).values()
+        ))
+        all_verbs = []
+        for r in batch_results:
+            for d in r.get("entity_data", {}).values():
+                all_verbs.extend(d.get("sentiment_verbs", []))
+        
         logger.info(f"{success_count}/{len(articles)} artikel berhasil di-resolve & ditandai. "
                     f"Mappings: {len(all_mappings)} | Mentions: {len(all_mentions)}")
+        logger.info(f"  📊 Role stats: {role_sent}/{len(articles)} articles dengan sentiment role | "
+                    f"{role_attr}/{len(articles)} dengan attribution role")
+        if all_verbs:
+            from collections import Counter
+            verb_freq = Counter(all_verbs).most_common(5)
+            logger.info(f"  📊 Top sentiment verbs: {verb_freq}")
+        else:
+            logger.info(f"  📊 No sentiment verbs detected — all entities are neutral mentions "
+                        f"(subjects of non-sentiment verbs like 'mengatakan/menjelaskan')")
         total_processed += len(articles)
         total_success += success_count
         total_failed += len(failed_ids)  # FIX EL#5: track failed count

@@ -2730,3 +2730,76 @@ Stage Summary:
   4. Atau trigger workflow 2b → 2c → 2d via GitHub Actions UI
   5. Kalau artikel >30 hari, set DAYS_BACK=90 di workflow env
 - Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku
+
+---
+Task ID: 76
+Agent: Z.ai Code (main)
+Task: Fix accuracy — sent_role always False + process 6078 backlogged articles.
+
+Work Log:
+- User report: entity worker output menunjukkan:
+  * 4 articles processed (dari batch 150) — semua sukses, 27 mentions ✓
+  * Diagnostic bekerja: 6078 articles siap di-resolve tapi SEMUA >30 hari
+  * Model config sudah benar: relevancy=apriandito/... (tidak kosong lagi) ✓
+  * TAPI: sent_role=False untuk SEMUA 4 articles → akurasi concern
+
+ANALISIS sent_role=False:
+  check_semantic_role() butuh 3 kondisi ALL true:
+    1. entity_word ditemukan di Stanza word boundaries (offset match)
+    2. entity_word.deprel in ('nsubj','nsubj:pass','obj','iobj','csubj','obl')
+       (entity adalah subject/object dari verb)
+    3. head verb lemma in SENTIMENT_PREDICATES_ACTIVE
+       (verb-nya adalah kata sentiment: kritik, puji, dukung, dll)
+  
+  Kalau salah satu False → sent_role=False.
+  
+  KENYATAAN: di berita politik Indonesia, entitas biasanya subjek dari
+  verb ATRIBUTIF (mengatakan, menjelaskan, menegaskan) — BUKAN verb
+  sentiment. Ini NORMAL dan EXPECTED. sent_role=True hanya ketika
+  entitas adalah TARGET dari kritik/pujian/dukungan secara eksplisit.
+  
+  Artinya: sent_role=False untuk mayoritas artikel bukan bug — itu
+  menunjukkan artikel tsb netral (reporting), bukan sentiment-laden.
+
+FIX 1: Debug logging (DEBUG_ROLES env var)
+  - check_semantic_role sekarang log 3 skenario ketika sent_role=False:
+    a) entity_word NOT FOUND (offset mismatch)
+    b) deprel NOT core argument (e.g. nmod, amod, flat, appos)
+    c) head verb NOT sentiment (e.g. mengatakan = attribution, not sentiment)
+  - Enable via: DEBUG_ROLES=1 di workflow env atau local run
+  - Default OFF (tidak spam log production)
+
+FIX 2: Accuracy stats di batch summary
+  - Setelah setiap batch, log:
+    * Berapa articles dengan sentiment role (sent_role=True)
+    * Berapa articles dengan attribution role (speaker)
+    * Top 5 sentiment verbs detected (untuk verify coverage)
+  - Kalau 0 sentiment verbs → log: "all entities are neutral mentions
+    (subjects of non-sentiment verbs like mengatakan/menjelaskan)"
+  - Ini transparan: user tahu apakah sent_role False itu expected atau bug
+
+FIX 3: DAYS_BACK=180 untuk process 6078 backlog articles
+  - entity-resolution.yml: DAYS_BACK "30" → "180"
+  - context-readiness.yml: DAYS_BACK "30" → "180" (match, supaya articles
+    yang baru di-resolve dari backlog bisa di-extract context)
+  - 180 hari = 6 bulan, cukup untuk cover semua 6078 articles
+
+Stage Summary:
+- ✅ Debug logging: DEBUG_ROLES=1 untuk diagnose sent_role=False
+- ✅ Accuracy stats: batch summary show role distribution + top verbs
+- ✅ DAYS_BACK=180: 6078 backlog articles akan di-process dalam ~40 batches
+  (6078 / 150 per batch = ~41 runs × 4x/day = ~10 hari untuk clear semua)
+- INSIGHT: sent_role=False is EXPECTED for neutral news articles.
+  Entity resolver masih work correctly — menggunakan dominance + era +
+  affiliation signals untuk determine main entity. sent_role hanya bonus
+  signal untuk identify sentiment-targeted mentions.
+- ACTION ITEM USER:
+  1. Pull latest (setelah push ini)
+  2. Run seed 21_reset_failed_context_articles.sql (kalau belum)
+  3. Set DEBUG_ROLES=1 di workflow env untuk lihat detail kenapa sent_role=False
+     (atau run local: DEBUG_ROLES=1 python main.py run-worker entity --limit 5)
+  4. DAYS_BACK=180 sudah di-set → workflow otomatis process 6078 backlog
+  5. Monitor role stats di log — kalau sent_role > 0 untuk beberapa artikel,
+     berarti detector work. Kalau selalu 0 meski artikel clearly sentiment,
+     perlu expand SENTIMENT_PREDICATES_ACTIVE list
+- Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku

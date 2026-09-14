@@ -57,7 +57,8 @@ jobs:
           # (kills speaker_not_target bias).
           LIGHTWEIGHT_MODE: "0"
           MAX_NLP_WORKERS: "4"
-          # Extend lookback window if articles are older than 30 days
-          DAYS_BACK: "30"
+          # Extend lookback — match entity resolution (180d) supaya articles
+          # yang baru di-resolve (dari backlog 6078) bisa di-extract context
+          DAYS_BACK: "180"
           NLP_SENTIMENT_MODEL: ${{ vars.NLP_SENTIMENT_MODEL }}
           NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}

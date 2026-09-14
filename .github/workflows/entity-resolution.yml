@@ -62,5 +62,6 @@ jobs:
           # With 4-core CPU + model cache, 150 articles / 4 threads = ~3 min.
           LIGHTWEIGHT_MODE: "0"
           MAX_NLP_WORKERS: "4"
-          # Extend lookback window if articles are older than 30 days
-          DAYS_BACK: "30"
+          # Extend lookback window — ada 6078 articles siap di-resolve
+          # tapi semua >30 hari lalu. Set 180 hari untuk pick up backlog.
+          DAYS_BACK: "180"
