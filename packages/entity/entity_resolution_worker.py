@@ -55,7 +55,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("stanza").setLevel(logging.WARNING)
 
 RESOLVER_VERSION = "v16_lightweight"
-DEFAULT_DAYS_BACK = 30
+# DEFAULT_DAYS_BACK: env var override — user bisa extend lookback window.
+# Default 30, tapi kalau artikel lebih lama, set DAYS_BACK=90 atau 180.
+DEFAULT_DAYS_BACK = int(os.environ.get("DAYS_BACK", "30"))
 # MAX_NLP_WORKERS: GitHub Actions ubuntu-latest punya 4-core CPU.
 # Default 4 (bukan 2) untuk maksimalkan throughput. Override via env var.
 MAX_NLP_WORKERS = int(os.environ.get(
@@ -711,6 +713,29 @@ def main(limit: int = 50, max_total: int = 0, days_back: int = DEFAULT_DAYS_BACK
 
         articles = res.data or []
         if not articles:
+            # DIAGNOSTIK: kalau 0 articles, cek kenapa — count per kondisi filter
+            # supaya user tahu apakah perlu reset SQL atau extend days_back
+            try:
+                time_filter = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+                # Count articles yang match SEBAGIAN filter (progressive)
+                c_validated = sb.table("raw_texts").select("id", count="exact").eq("status", pc.STATUS_VALIDATED).execute().count or 0
+                c_preprocessed = sb.table("raw_texts").select("id", count="exact").eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").execute().count or 0
+                c_not_resolved = sb.table("raw_texts").select("id", count="exact").eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").is_("entity_resolved_at", "null").execute().count or 0
+                c_recent = sb.table("raw_texts").select("id", count="exact").eq("status", pc.STATUS_VALIDATED).not_.is_("preprocessed_at", "null").is_("entity_resolved_at", "null").gte("ingested_at", time_filter).execute().count or 0
+                logger.info(f"  --- DIAGNOSTIK (kenapa 0 articles?) ---")
+                logger.info(f"  status=validated:          {c_validated}")
+                logger.info(f"  + preprocessed_at NOT NULL: {c_preprocessed}")
+                logger.info(f"  + entity_resolved_at NULL:  {c_not_resolved}")
+                logger.info(f"  + ingested within {days_back}d: {c_recent}")
+                if c_not_resolved > 0 and c_recent == 0:
+                    logger.warning(f"  ⚠️  Ada {c_not_resolved} articles siap di-resolve tapi SEMUA >{days_back} hari lalu!")
+                    logger.warning(f"      Solusi: set DAYS_BACK=90 atau 180 (env var) untuk extend lookback")
+                elif c_not_resolved == 0 and c_validated > 0:
+                    logger.warning(f"  ⚠️  Semua validated articles sudah entity_resolved_at!")
+                    logger.warning(f"      Solusi: run seed 21_reset_failed_context_articles.sql")
+                    logger.warning(f"      untuk reset artikel dengan resolver_version='failed_no_entity'")
+            except Exception as diag_e:
+                logger.debug(f"  Diagnostik query failed: {diag_e}")
             break
 
         # DEBUG: log batch info

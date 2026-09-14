@@ -2649,3 +2649,84 @@ Stage Summary:
      (sekarang akan find mentions → extract contexts properly)
   5. Atau trigger workflow 2b lalu 2c via GitHub Actions UI
 - Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku
+
+---
+Task ID: 75
+Agent: Z.ai Code (main)
+Task: Fix entity worker 1-article issue + split NLP readiness + reduce batch to 150.
+
+Work Log:
+- User report: entity worker hanya menemukan 1 article ("Batch 1: 1 articles")
+  padahal limit 200. Plus minta: split NLP readiness jadi action sendiri,
+  kurangi batch ke 150.
+
+ROOT CAUSE (entity worker 1 article):
+  Query filter butuh 6 kondisi ALL true:
+    1. status='validated'
+    2. preprocessed_at IS NOT NULL
+    3. entity_resolved_at IS NULL  ← INI YANG BLOK
+    4. text != ''
+    5. content_type != 'SNIPPET'
+    6. ingested_at >= now-30days
+  Sebelumnya entity resolution run dengan LIGHTWEIGHT_MODE=1 → mark SEMUA
+  artikel entity_resolved_at=NOW() (bahkan yang failed_no_entity).
+  Akibatnya: hanya 1 artikel baru (recently preprocessed) yang lolos filter.
+
+FIX 1: Diagnostic logging (entity_resolution_worker.py)
+  Saat 0 articles ditemukan, jalankan progressive count:
+    - count status=validated
+    - count + preprocessed_at NOT NULL
+    - count + entity_resolved_at NULL
+    - count + ingested within {days_back}d
+  Log warning dengan solusi spesifik:
+    - Kalau c_not_resolved > 0 tapi c_recent == 0 → "set DAYS_BACK=90 atau 180"
+    - Kalau c_not_resolved == 0 → "run seed 21_reset_failed_context_articles.sql"
+
+FIX 2: DAYS_BACK env var override (entity + context worker)
+  - OLD: DEFAULT_DAYS_BACK = 30 (hardcoded)
+  - NEW: DEFAULT_DAYS_BACK = int(os.environ.get("DAYS_BACK", "30"))
+  - User bisa set DAYS_BACK=90 atau 180 di workflow env kalau artikel lebih lama
+  - Applied to: entity_resolution_worker.py + context_worker.py
+
+FIX 3: Split NLP readiness into separate workflow (2d)
+  - OLD: context-readiness.yml (2c) = context worker + nlp readiness
+    → 35 min timeout, kalau context worker lambat, readiness ikut timeout
+  - NEW: 2 workflow terpisah:
+    2c (context-readiness.yml): context worker ONLY, timeout 25 min, batch 150
+    2d (nlp-readiness.yml): nlp readiness ONLY, timeout 15 min, batch 150
+  - Schedule 2d: 25 menit setelah 2c mulai (context worker ~20 min dengan batch 150)
+    - 02:00 UTC (09:00 WIB) — setelah 2c 01:35
+    - 07:05 UTC (14:05 WIB) — setelah 2c 06:40
+    - 12:05 UTC (19:05 WIB) — setelah 2c 11:40
+    - 17:25 UTC (00:25 WIB) — setelah 2c 17:00
+
+FIX 4: Reduce batch 200 → 150 (semua 3 workflows)
+  - entity-resolution.yml: --limit 200 → --limit 150, timeout 25→20 min
+  - context-readiness.yml: --limit 200 → --limit 150, timeout 35→25 min
+  - nlp-readiness.yml (NEW): --limit 150, timeout 15 min
+  - Alasan: batch 150 lebih aman untuk Stanza CPU + 4 threads
+    150 articles × ~5s / 4 threads = ~188s = ~3 min (entity)
+    150 articles × ~6.5s / 4 threads = ~244s = ~4 min (context)
+
+Schedule overview (4x sehari, WIB):
+  2a (preprocessing):  07:45, 12:55, 17:55, 23:15
+  2b (entity):         08:05, 13:10, 18:10, 23:30
+  2c (context):        08:35, 13:40, 18:40, 00:00
+  2d (nlp readiness):  09:00, 14:05, 19:05, 00:25
+  3  (nlp worker):     (existing, via nlp-worker.yaml)
+
+Stage Summary:
+- ✅ Entity worker: diagnostic logging untuk debug "1 article" issue
+- ✅ DAYS_BACK env var: extend lookback window tanpa code change
+- ✅ NLP readiness split: 2d workflow terpisah, tidak ikut timeout context
+- ✅ Batch 150: semua 3 workflows (2b, 2c, 2d) konsisten
+- ✅ Timeout optimized: 20/25/15 min (was 25/35 combined)
+- ACTION ITEM USER:
+  1. Pull latest (setelah push ini)
+  2. Run seed 21_reset_failed_context_articles.sql di Supabase SQL Editor
+     → reset artikel yang entity_resolved_at='failed_no_entity'
+  3. Re-run entity resolution: python main.py run-worker entity --limit 150
+     → sekarang akan find lebih dari 1 article (setelah reset)
+  4. Atau trigger workflow 2b → 2c → 2d via GitHub Actions UI
+  5. Kalau artikel >30 hari, set DAYS_BACK=90 di workflow env
+- Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku

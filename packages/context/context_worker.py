@@ -582,7 +582,8 @@ MAX_CONTEXT_WORDS = 160
 MAX_CONTEXT_CHARS = 850
 # v19: how many surrounding sentences to include (was effectively 1-2)
 CONTEXT_WINDOW_SENTENCES = 3  # anchor ± 1-2 surrounding sentences
-DEFAULT_DAYS_BACK = 30
+# DEFAULT_DAYS_BACK: env var override — user bisa extend lookback window.
+DEFAULT_DAYS_BACK = int(os.environ.get("DAYS_BACK", "30"))
 
 def get_paragraph_index(text: str, offset: int) -> int:
     """Return paragraph index for the given character offset.
