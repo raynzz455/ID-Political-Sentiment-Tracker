@@ -2803,3 +2803,133 @@ Stage Summary:
      berarti detector work. Kalau selalu 0 meski artikel clearly sentiment,
      perlu expand SENTIMENT_PREDICATES_ACTIVE list
 - Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku
+
+---
+Task ID: 77
+Agent: Z.ai Code (main)
+Task: Comprehensive plan — model improvement, DB, FE data, historical, discovery.
+
+Work Log:
+- User asked 10 comprehensive questions. Saya audit semua area:
+  * Model improvement (relevancy macro-F1 0.736, need retrain)
+  * Database full (>500MB)
+  * 2 databases needed?
+  * Finetuning + hyperparameter
+  * Tests to verify
+  * Fast FE data
+  * DB normalization
+  * Historical sentiment per entity
+  * Entity historical backfill
+  * Entity discovery
+
+AUDIT RESULTS — apa yang SUDAH ada vs GAP:
+
+  SUDAH ADA:
+  ✅ Entity Discovery: packages/entity_discovery/auto_discover.py + workflow auto-discovery.yaml (weekly)
+  ✅ Historical Backfill CODE: packages/historical_backfill/gdelt_historical.py (GDELT API)
+  ✅ FE Data RPC: 11 RPC functions di seed 16 (get_dashboard_summary, get_entity_sentiment_timeline, get_entity_highlights, search_entities, get_feed, dll)
+  ✅ Materialized View: mv_dashboard_summary (tapi hanya 90 hari)
+  ✅ entity_highlights cache (refreshed every 15 min)
+  ✅ DB FKs: 6 foreign keys (already normalized)
+  ✅ Text archival: seed 20 (NULL text for processed >30d)
+  ✅ Emergency cleanup: seed 19
+  ✅ Evaluation scripts: finetuning/evaluate.py, evaluate_v4.py, tests/ folder
+
+  GAP (yang saya ISI sekarang):
+  ❌ → ✅ Historical backfill workflow (code ada, workflow tidak ada)
+     Created: .github/workflows/historical-backfill.yml (every 2 days)
+  ❌ → ✅ Historical retention 90 → 180 days
+     Created: seed 22_extend_historical_retention.sql
+     + RPC get_entity_historical_sentiment(entity_id, days=180) untuk FE
+  ❌ → ✅ Automated model evaluation pipeline
+     Created: finetuning/evaluate_model_production.py
+     - Load base + finetuned, run inference pada gold test set
+     - Compute accuracy, macro-F1, ECE, confusion matrix, confidence sweep
+     - Gate check: macro-F1>=0.85/0.80, ECE<=0.20/0.25, kept-acc>=0.90/0.85
+     - Compare base vs finetuned (must beat by 5pp)
+     - Output JSON report untuk audit
+  ❌ → ✅ Model evaluation workflow
+     Created: .github/workflows/model-evaluation.yml (manual trigger + auto on gold dataset push)
+
+COMPREHENSIVE ANSWERS (untuk user):
+
+1. MODEL IMPROVEMENT (relevancy):
+   Status: macro-F1 0.736 (poor). Sentiment 0.960 (good).
+   Plan: retrain relevancy dengan:
+   - Oversample not_relevant lebih agresif (400 → 600+)
+   - Temperature 0.05 → 0.5-1.0 (terlalu overconfident)
+   - Focal gamma 3.0 → 2.5 (kurang agresif)
+   - Class weight not_relevant diperkuat
+   - Setelah retrain, run model-evaluation workflow untuk verify
+
+2. DATABASE FULL:
+   Sudah ada 3 layer solution:
+   - Emergency (seed 19): NULL text processed >30d, drop partitions 2 bulan
+   - Archival (seed 20): auto-archive daily via pg_cron
+   - Maintenance worker: weekly VACUUM + dedup (GitHub Action)
+   Estimasi: 76-96MB reclaim (turun dari >500 ke <450MB)
+
+3. 2 DATABASE?
+   TIDAK PERLU. Single DB dengan aggressive archival lebih baik:
+   - Cross-DB queries sulit di Supabase free tier
+   - 500MB per project, 2 project = 1GB total tapi terpisah
+   - Better: 1 DB, NULL text body (biggest field), partitioning by month
+   - Kalau mau 2 DB: DB1=hot (recent 90d+highlights), DB2=cold archive
+     Tapi migrasi cross-DB complex, ROI rendah
+
+4. FINETUNING + HYPERPARAMETER (relevancy):
+   Problem: macro-F1 0.736, confusion matrix [[17,9],[22,288]]
+   - 22 false-negatives (not_relevant diprediksi relevant) → background noise lolos
+   - Temperature 0.05 (semua near 0/1) → deferral tidak membantu
+   Fix: retrain dengan hyperparams yang disesuaikan (lihat #1)
+
+5. TESTS UNTUK MENGUJI:
+   SUDAH ada: finetuning/evaluate.py, evaluate_v4.py, tests/ folder
+   BARU dibuat: finetuning/evaluate_model_production.py
+   - Automated pipeline: load model → inference → metrics → gate check
+   - Workflow: model-evaluation.yml (manual trigger + auto on gold dataset change)
+   - Gate criteria: macro-F1, ECE, kept-acc — FAIL kalau tidak pass
+
+6. FE DATA CEPAT:
+   SUDAH ada 3 layer caching:
+   - entity_highlights: cache 30d (refreshed every 15 min) → live feed + featured articles
+   - mv_dashboard_summary: materialized view (refreshed every 10 min) → trend charts
+   - 11 RPC functions (seed 16): get_dashboard_summary, search_entities, get_feed, dll
+   Semua pakai SECURITY DEFINER + RLS → FE query instan
+
+7. DB NORMALISASI:
+   SUDAH normalized (6 FKs, partitioned tables).
+   Field terberat = raw_texts.text (20KB/article) → sudah di-address
+   dengan text archival (NULL untuk processed >30d).
+   Tidak perlu normalisasi tambahan.
+
+8. HISTORICAL SENTIMENT PER ENTITY:
+   SUDAH ada: mv_dashboard_summary (90d) + get_entity_sentiment_timeline RPC
+   DIPERLUAS: seed 22 extend ke 180 hari + RPC get_entity_historical_sentiment
+   FE bisa query: SELECT * FROM get_entity_historical_sentiment(entity_id, 180)
+
+9. ENTITY HISTORICAL BACKFILL:
+   CODE ada: packages/historical_backfill/gdelt_historical.py (GDELT API)
+   WORKFLOW DIBUAT: historical-backfill.yml (every 2 days)
+   - Fetch artikel lama dari GDELT untuk top 5 tokoh hot + 5 cold-start
+   - URL validation → insert ke pgmq untuk NLP processing
+
+10. ENTITY DISCOVERY:
+    SUDAH lengkap: packages/entity_discovery/auto_discover.py
+    + workflow auto-discovery.yaml (weekly)
+    - Wikipedia + title scan + GNews validation
+    - Auto-promote kandidat yang qualified
+    + enrich_entities.py untuk fetch bio + image
+
+Stage Summary:
+- ✅ Historical backfill workflow: code existed, now has workflow
+- ✅ Historical retention: 90 → 180 days + new RPC
+- ✅ Model evaluation pipeline: automated test post-retrain
+- ✅ Model evaluation workflow: manual + auto trigger
+- ACTION ITEM USER:
+  1. Run seed 22 di Supabase SQL Editor (extend historical retention)
+  2. Set GitHub Variables NLP_RELEVANCY_MODEL, NLP_SENTIMENT_MODEL
+  3. Retrain relevancy di Colab dengan hyperparams adjusted
+  4. Trigger model-evaluation workflow untuk verify sebelum deploy
+  5. Historical backfill + entity discovery akan jalan otomatis (scheduled)
+- Catatan: DATA SCIENCE/ML task — webDevReview cron TIDAK berlaku

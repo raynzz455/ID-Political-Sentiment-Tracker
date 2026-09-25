@@ -1,0 +1,33 @@
+name: 4. Historical Backfill (GDELT)
+
+on:
+  schedule:
+    # Tiap 2 hari jam 03:00 UTC (10:00 WIB) — ambil data lama
+    - cron: '0 3 */2 * *'
+  workflow_dispatch:
+
+jobs:
+  run-historical-backfill:
+    name: Run GDELT Historical Backfill
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run GDELT Historical Backfill
+        run: python -m packages.historical_backfill.gdelt_historical
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

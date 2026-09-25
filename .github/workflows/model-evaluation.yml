@@ -1,0 +1,68 @@
+name: 5. Model Evaluation (Post-Retrain Test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task to evaluate'
+        required: true
+        default: 'sentiment'
+        type: choice
+        options:
+          - sentiment
+          - relevancy
+          - both
+  push:
+    paths:
+      - 'finetuning/datasets/dataset_gold_standard_final.jsonl'
+
+jobs:
+  evaluate:
+    name: Evaluate Finetuned Model vs Base
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install peft numpy
+
+      - name: Cache HuggingFace Models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-eval-v1
+          restore-keys: |
+            hf-models-
+
+      - name: Evaluate Sentiment Model
+        if: github.event.inputs.task == 'sentiment' || github.event.inputs.task == 'both' || github.event.inputs.task == null
+        run: python finetuning/evaluate_model_production.py --task sentiment
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NLP_SENTIMENT_MODEL: ${{ vars.NLP_SENTIMENT_MODEL }}
+
+      - name: Evaluate Relevancy Model
+        if: github.event.inputs.task == 'relevancy' || github.event.inputs.task == 'both'
+        run: python finetuning/evaluate_model_production.py --task relevancy
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          NLP_RELEVANCY_MODEL: ${{ vars.NLP_RELEVANCY_MODEL }}
+
+      - name: Upload Evaluation Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-eval-reports
+          path: finetuning/eval_report_*.json
+          retention-days: 90
